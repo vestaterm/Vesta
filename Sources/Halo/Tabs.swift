@@ -119,6 +119,23 @@ final class Workspace {
         handleChange()
     }
 
+    /// Remove a project and all its sessions. Refuses to remove the last project
+    /// (the workspace must always have ≥1 project with ≥1 session).
+    func removeProject(_ p: Int) {
+        guard projs.indices.contains(p), projs.count > 1 else { return }
+        projs.remove(at: p)
+        // Fix activeP: shift down if we removed at/before it, then clamp.
+        if activeP >= p { activeP = max(0, activeP - 1) }
+        activeP = min(activeP, projs.count - 1)
+        // Active project may be a lazy (empty) one — ensure it has a session.
+        if projs[activeP].sessions.isEmpty {
+            projs[activeP].sessions.append(makeTree(cwd: projs[activeP].path))
+            projs[activeP].expanded = true
+        }
+        activeS = min(activeS, projs[activeP].sessions.count - 1)
+        showActive()
+    }
+
     func newProject() {
         let home = NSHomeDirectory()
         var proj = makeProj(name: "untitled", path: home, expanded: true)
@@ -378,6 +395,17 @@ func workspaceSelfCheck() {
     projs[emptyIdx].expanded = true
     activeP = emptyIdx
     assert(activeP == emptyIdx, "toggleExpand on empty: activates the project")
+
+    // ── removeProject: refuse last; fix activeP when removing at/before it ─────
+    // Mirrors removeProject's index math (the real method needs a live Workspace).
+    func fixActiveP(_ active: Int, removed p: Int, count: Int) -> Int {
+        var a = active
+        if a >= p { a = max(0, a - 1) }
+        return min(a, count - 1)
+    }
+    assert(fixActiveP(2, removed: 0, count: 2) == 1, "remove before active shifts it down")
+    assert(fixActiveP(0, removed: 1, count: 2) == 0, "remove after active leaves it")
+    assert(fixActiveP(1, removed: 1, count: 1) == 0, "remove active clamps into range")
 
     print("workspaceSelfCheck OK")
 }

@@ -33,6 +33,7 @@ final class HaloWindowController: NSWindowController {
     private let onNewProject:      () -> Void
     private let onRenameProject:   (Int, String) -> Void
     private let onSetProjectColor: (Int, NSColor?) -> Void
+    private let onRemoveProject:   (Int) -> Void
 
     private var sidebar: NSView!
     private var sidebarWidth: NSLayoutConstraint!
@@ -54,7 +55,8 @@ final class HaloWindowController: NSWindowController {
          onToggleExpand:  @escaping (Int) -> Void      = { _ in },
          onNewProject:    @escaping () -> Void          = {},
          onRenameProject:   @escaping (Int, String) -> Void  = { _, _ in },
-         onSetProjectColor: @escaping (Int, NSColor?) -> Void = { _, _ in }) {
+         onSetProjectColor: @escaping (Int, NSColor?) -> Void = { _, _ in },
+         onRemoveProject:   @escaping (Int) -> Void          = { _ in }) {
         self.theme = theme
         self.surface = theme.background
         self.openWidth = CGFloat(HaloConfig.shared.sidebarWidth)
@@ -65,6 +67,7 @@ final class HaloWindowController: NSWindowController {
         self.onNewProject    = onNewProject
         self.onRenameProject   = onRenameProject
         self.onSetProjectColor = onSetProjectColor
+        self.onRemoveProject   = onRemoveProject
 
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 680),
@@ -416,7 +419,22 @@ final class HaloWindowController: NSWindowController {
         colorMenu.addItem(BlockMenuItem(title: "Reset to accent") { [weak self] in self?.onSetProjectColor(pi, nil) })
         colorItem.submenu = colorMenu
         menu.addItem(colorItem)
+
+        menu.addItem(.separator())
+        menu.addItem(BlockMenuItem(title: "Remove Project") { [weak self] in
+            self?.confirmRemove(pi, name: name)
+        })
         return menu
+    }
+
+    /// Removing a project tears down its live terminal sessions — confirm first.
+    private func confirmRemove(_ pi: Int, name: String) {
+        let alert = NSAlert()
+        alert.messageText = "Remove “\(name)”?"
+        alert.informativeText = "This closes the project's sessions and any running programs in them."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn { onRemoveProject(pi) }
     }
 
     /// 12×12 filled rounded swatch for the color submenu.

@@ -65,6 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onSetProjectColor: { [weak self] p, color in
                 self?.workspace.setProjectColor(p, color)
+            },
+            onRemoveProject: { [weak self] p in
+                self?.workspace.removeProject(p)
             })
 
         workspace.onChange = { [weak self] in self?.refresh() }
