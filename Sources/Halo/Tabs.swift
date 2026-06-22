@@ -22,6 +22,7 @@ struct SidebarProject {
 // MARK: - Project/Session model
 
 struct Proj {
+    var id: String = ""          // stable identity for persistence: "home", "cfg:<path>", "u:<uuid>"
     var name: String
     var path: String
     var sessions: [PaneTree]
@@ -75,7 +76,7 @@ final class Workspace {
         // Launch: home project at ~ with one session at ~, expanded + active.
         // Config projects are appended collapsed + empty by loadProjects/appendProject.
         let home = NSHomeDirectory()
-        var homeProj = makeProj(name: "home", path: home, expanded: true)
+        var homeProj = makeProj(name: "home", path: home, expanded: true, id: "home")
         homeProj.sessions.append(makeTree(cwd: home))
         projs.append(homeProj)
         activeP = 0
@@ -135,12 +136,14 @@ final class Workspace {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         projs[p].name = trimmed
+        saveProjects()
         handleChange()
     }
 
     func setProjectColor(_ p: Int, _ color: NSColor?) {
         guard projs.indices.contains(p) else { return }
         projs[p].color = color
+        saveProjects()
         handleChange()
     }
 
@@ -159,18 +162,20 @@ final class Workspace {
             projs[activeP].expanded = true
         }
         activeS = min(activeS, projs[activeP].sessions.count - 1)
+        saveProjects()
         showActive()
     }
 
     func newProject() {
         let home = NSHomeDirectory()
-        var proj = makeProj(name: "untitled", path: home, expanded: true)
+        var proj = makeProj(name: "untitled", path: home, expanded: true, id: "u:\(UUID().uuidString)")
         // Add one session at home immediately (mirrors home proj behaviour).
         let tree = makeTree(cwd: home)
         proj.sessions.append(tree)
         projs.append(proj)
         activeP = projs.count - 1
         activeS = 0
+        saveProjects()
         showActive()
     }
 
@@ -331,9 +336,49 @@ final class Workspace {
 
     // MARK: - Project appending (called by loadProjects)
 
+    // MARK: - Persistence (created projects + names/colors survive restart)
+
+    private static var projectsFile: String {
+        let dir = NSHomeDirectory() + "/Library/Application Support/halo"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        return dir + "/projects.json"
+    }
+
+    /// Write the current project list (id/name/path/color — not sessions) to disk.
+    private func saveProjects() {
+        let arr: [[String: String]] = projs.map { p in
+            var d = ["id": p.id, "name": p.name, "path": p.path]
+            if let c = p.color { d["color"] = hexString(c) }
+            return d
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: arr, options: [.prettyPrinted]) else { return }
+        try? data.write(to: URL(fileURLWithPath: Self.projectsFile))
+    }
+
+    /// Layer persisted customizations on top of the launch state (home + config):
+    /// update name/color of existing projects by id, and re-add user-created
+    /// projects (`u:…`) that aren't present. Sessions stay lazy. Call after init +
+    /// loadProjects, before `onChange` is wired (so it doesn't trigger a render).
+    func restorePersisted() {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Self.projectsFile)),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] else { return }
+        for d in arr {
+            guard let id = d["id"], let name = d["name"], let path = d["path"] else { continue }
+            let color = d["color"].flatMap { ghosttyColor($0) }
+            if let i = projs.firstIndex(where: { $0.id == id }) {
+                projs[i].name = name
+                projs[i].color = color          // config/home rename + recolor persist
+            } else if id.hasPrefix("u:") {
+                projs.append(Proj(id: id, name: name, path: path, sessions: [], expanded: false, color: color))
+            }
+            // cfg:/home entries not present are intentionally not re-added — they're
+            // driven by the live config (a path removed from config stays gone).
+        }
+    }
+
     /// Append a config project as collapsed + empty (lazy).
     func appendProject(name: String, path: String) {
-        projs.append(Proj(name: name, path: path, sessions: [], expanded: false))
+        projs.append(Proj(id: "cfg:\(path)", name: name, path: path, sessions: [], expanded: false))
     }
 
     // MARK: - Cycle sessions within active project
@@ -361,8 +406,8 @@ final class Workspace {
 
     // MARK: - Private helpers
 
-    private func makeProj(name: String, path: String, expanded: Bool) -> Proj {
-        Proj(name: name, path: path, sessions: [], expanded: expanded, color: nil)
+    private func makeProj(name: String, path: String, expanded: Bool, id: String = "") -> Proj {
+        Proj(id: id, name: name, path: path, sessions: [], expanded: expanded, color: nil)
     }
 
     /// Mark a background session as needing attention (driven by the prompt-return

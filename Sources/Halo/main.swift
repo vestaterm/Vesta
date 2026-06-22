@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Workspace starts with home project at ~; config projects appended below.
         workspace = Workspace(theme: theme)
         loadProjects(ghostty.settings, into: workspace)
+        workspace.restorePersisted()   // layer saved names/colors + user projects on top
 
         // Wire HaloWindowController with the five session-management closures.
         // Each op calls showActive()/handleChange() → workspace.onChange → refresh(),

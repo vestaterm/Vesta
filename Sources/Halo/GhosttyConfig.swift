@@ -14,6 +14,13 @@ func ghosttyColor(_ raw: String) -> NSColor? {
     return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
 }
 
+/// NSColor → "#rrggbb" (sRGB), for persisting custom project colors.
+func hexString(_ color: NSColor) -> String {
+    let c = color.usingColorSpace(.sRGB) ?? color
+    let to255 = { (v: CGFloat) in Int((v * 255).rounded()) }
+    return String(format: "#%02x%02x%02x", to255(c.redComponent), to255(c.greenComponent), to255(c.blueComponent))
+}
+
 // MARK: - Parsing
 
 /// Parse ghostty's `key = value` format into ordered pairs (no filesystem).
