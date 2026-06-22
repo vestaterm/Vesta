@@ -36,6 +36,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // active. Upgrade path: a timer that cycles through all sessions.
     private var metaCache: [ObjectIdentifier: (ports: [Int], dirty: Int)] = [:]
 
+    // Prompt-return attention: per-session (shell pid, currently-busy). When a
+    // BACKGROUND session's foreground pid returns to its shell (command finished),
+    // ring it. ponytail: 1.5s poll; first sighting baselines the shell pid (a fresh
+    // session sits at its prompt). Replaces ghostty's bell/notif action, which this
+    // libghostty build doesn't emit.
+    private var sessionBusy: [ObjectIdentifier: (shell: pid_t, busy: Bool)] = [:]
+    private var attnTimer: Timer?
+
     func applicationDidFinishLaunching(_ note: Notification) {
         Fonts.register()                             // bundle Geist/Martian Mono before building UI
         let ghostty = GhosttyApp.shared             // inits libghostty (init/config/app) — native config sync
@@ -87,7 +95,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         installKeybinds()
         refresh()
+        // Poll background sessions for command-finished (prompt-return) → attention ring.
+        attnTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pollAttention() }
+        }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Ring a background session when its foreground process returns to the shell
+    /// (a command/agent turn finished). Cleared when the session is focused.
+    private func pollAttention() {
+        let activeID = ObjectIdentifier(workspace.activeTree)
+        let sessions = workspace.projs.flatMap(\.sessions)
+        let live = Set(sessions.map(ObjectIdentifier.init))
+        sessionBusy = sessionBusy.filter { live.contains($0.key) }   // evict closed sessions
+        for tree in sessions {
+            let oid = ObjectIdentifier(tree)
+            let pid = tree.focusedPID
+            // Baseline (or re-baseline until a real shell pid is known): a fresh
+            // session sits at its prompt, so the first pid we see is the shell.
+            guard let prev = sessionBusy[oid], prev.shell != 0 else {
+                sessionBusy[oid] = (shell: pid ?? 0, busy: false)
+                continue
+            }
+            let isBusy = pid != nil && pid != prev.shell
+            if prev.busy && !isBusy && oid != activeID {   // busy → idle on a background session
+                workspace.markAttention(tree)
+            }
+            sessionBusy[oid] = (shell: prev.shell, busy: isBusy)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }

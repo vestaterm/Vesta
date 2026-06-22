@@ -365,6 +365,15 @@ final class Workspace {
         Proj(name: name, path: path, sessions: [], expanded: expanded, color: nil)
     }
 
+    /// Mark a background session as needing attention (driven by the prompt-return
+    /// poller in AppDelegate — a background command finished). No-op for the active
+    /// session (you're already looking at it).
+    func markAttention(_ tree: PaneTree) {
+        guard tree !== activeTree else { return }
+        attention.insert(ObjectIdentifier(tree))
+        handleChange()
+    }
+
     private func makeTree(cwd: String?) -> PaneTree {
         let tree = PaneTree(theme: theme, cwd: cwd)
         tree.onFocusChange = { [weak self] in self?.handleChange() }

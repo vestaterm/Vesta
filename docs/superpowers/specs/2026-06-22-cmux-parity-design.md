@@ -63,16 +63,15 @@ sanitization (slashes in branch → safe dir segment).
 - **OSC 9** and **OSC 777** desktop-notification escapes (emitted by Claude
   Code, Codex, and most agent CLIs). libghostty routes both as runtime actions.
 
-> ⚠️ **Known gap (verified live 2026-06-22):** the downstream chain is wired and
-> reviewed (ghostty `RING_BELL`/`DESKTOP_NOTIFICATION` action → `fireAttention` →
-> `PaneTree.onAttention` → `Workspace.attention` → snapshot → sidebar ring), but
-> **this libghostty build did not emit either action** in testing: the bell is
-> gated by ghostty's `bell-features` config (unset in the user's config, and the
-> embed exposes no `config_set` API to inject it), and OSC 9/777 produced no
-> `DESKTOP_NOTIFICATION` action even when emitted to a background surface. So the
-> ring is plumbed but does not light up yet. Follow-up: confirm whether a newer
-> libghostty forwards these, document `bell-features = attention` as a user
-> prerequisite, or switch to an alternative signal (e.g. prompt-return detection).
+**Primary signal — prompt-return poll (verified live 2026-06-22):** this
+libghostty build does NOT emit `RING_BELL`/`DESKTOP_NOTIFICATION` (bell is gated
+by ghostty's `bell-features` config, which the embed exposes no API to inject;
+OSC 9/777 produced no action even to a background surface). So the actual signal
+is a **1.5s poll of `ghostty_surface_foreground_pid`** (AppDelegate.pollAttention):
+a fresh session baselines its shell pid, and when a **background** session's
+foreground pid returns to that shell pid (a command/agent turn finished), it is
+ringed. Cleared on focus. The bell/notification `onAttention` wiring is kept
+(harmless, future-proof) for when a libghostty build forwards those actions.
 
 **Behavior:** a signal in a pane that is **not** the focused pane marks that
 session `attention = true`. The sidebar session row draws a small accent ring
