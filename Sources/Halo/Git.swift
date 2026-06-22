@@ -30,6 +30,17 @@ enum Git {
         return b
     }
 
+    /// Count of uncommitted changes via `git status --porcelain`.
+    /// Returns 0 if `cwd` is not a git repo.
+    static func dirtyCount(_ cwd: String) -> Int {
+        parsePorcelain(run(["status", "--porcelain"], cwd) ?? "")
+    }
+
+    /// Count non-empty lines in porcelain output (each line = one changed path).
+    static func parsePorcelain(_ out: String) -> Int {
+        out.split(separator: "\n").filter { !$0.isEmpty }.count
+    }
+
     private static func run(_ args: [String], _ cwd: String) -> String? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
@@ -47,5 +58,6 @@ enum Git {
 func gitSelfCheck() {
     assert(Git.status("/") == nil,  "/ is not a git repo")   // deterministic
     assert(Git.branch("/") == nil,  "/ has no git branch")   // deterministic
+    assert(Git.parsePorcelain(" M a\n?? b\n") == 2, "parsePorcelain: 2 changed paths")
     print("gitSelfCheck OK")
 }

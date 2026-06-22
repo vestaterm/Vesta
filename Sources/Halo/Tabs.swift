@@ -5,6 +5,8 @@ import AppKit
 struct SidebarSession {
     let label: String
     let active: Bool
+    var ports: [Int] = []   // listening TCP ports of the session's foreground process tree
+    var dirty: Int = 0      // uncommitted changes in the session's cwd (git status --porcelain)
 }
 
 struct SidebarProject {
@@ -13,7 +15,7 @@ struct SidebarProject {
     let expanded: Bool
     let active: Bool
     var color: NSColor? = nil    // custom project tint (nil ⇒ accent)
-    let sessions: [SidebarSession]
+    var sessions: [SidebarSession]  // var so AppDelegate can inject ports/dirty per session
 }
 
 // MARK: - Project/Session model

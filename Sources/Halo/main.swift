@@ -5,7 +5,7 @@ if argv.first == "selfcheck" {
     // Pure-logic checks only. PaneTree/Chrome spawn real ghostty surfaces,
     // which need a live app + run loop — exercised by actually launching the app.
     // workspaceSelfCheck tests the Proj/SidebarProject data model without ghostty.
-    _ = ghosttyConfigSelfCheck(); controlSelfCheck(); gitSelfCheck(); workspaceSelfCheck(); worktreeSelfCheck()
+    _ = ghosttyConfigSelfCheck(); controlSelfCheck(); gitSelfCheck(); portsSelfCheck(); workspaceSelfCheck(); worktreeSelfCheck()
     // chromeSelfCheck creates AppKit objects (HaloWindowController → HaloConfig.shared →
     // GhosttyApp.shared). GhosttyApp.shared calls NSApp.isActive; NSApp is nil until
     // NSApplication.shared is first touched. Touch it here so GhosttyApp.shared doesn't crash.
@@ -30,6 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // ponytail: branch rarely changes within a session; no invalidation needed.
     // "" means "checked, not a repo". Upgrade path: FS watcher.
     private var branchCache: [String: String] = [:]
+
+    // ponytail: only the active session's meta (ports + dirty) is refreshed per
+    // change; non-active sessions keep their last cached value until they become
+    // active. Upgrade path: a timer that cycles through all sessions.
+    private var metaCache: [ObjectIdentifier: (ports: [Int], dirty: Int)] = [:]
 
     func applicationDidFinishLaunching(_ note: Notification) {
         Fonts.register()                             // bundle Geist/Martian Mono before building UI
@@ -87,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
 
-    /// Rebuild the sidebar from the live snapshot, filling branch from cache.
+    /// Rebuild the sidebar from the live snapshot, filling branch + meta from caches.
     /// Pure render — must NOT call refresh() (avoid a loop).
     private func renderSidebar() {
         var projs = workspace.snapshot()
@@ -95,6 +100,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let path = workspace.projs[i].path
             let cached = branchCache[path]
             projs[i].branch = (cached == nil || cached!.isEmpty) ? nil : cached
+            // Inject per-session ports + dirty from metaCache (keyed by PaneTree identity).
+            for si in projs[i].sessions.indices {
+                let tree = workspace.projs[i].sessions[si]
+                if let meta = metaCache[ObjectIdentifier(tree)] {
+                    projs[i].sessions[si].ports = meta.ports
+                    projs[i].sessions[si].dirty = meta.dirty
+                }
+            }
         }
         controller.setProjects(projs)
     }
@@ -119,16 +132,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Fill branch cache for any project paths not yet checked, then re-render.
         let unchecked = workspace.projs.map(\.path).filter { branchCache[$0] == nil }
-        guard !unchecked.isEmpty else { return }
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            var fresh: [String: String] = [:]
-            for path in unchecked {
-                fresh[path] = Git.branch(path) ?? ""
+        if !unchecked.isEmpty {
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                var fresh: [String: String] = [:]
+                for path in unchecked {
+                    fresh[path] = Git.branch(path) ?? ""
+                }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.branchCache.merge(fresh) { old, _ in old }
+                        self.renderSidebar()
+                    }
+                }
             }
+        }
+
+        // Compute ports + dirty for the active session off-main, store in metaCache, re-render.
+        // ponytail: only the active session refreshes per change; others keep last value.
+        // Upgrade path: a timer that cycles through all sessions.
+        let activeTree = workspace.activeTree
+        let activeTreeID = ObjectIdentifier(activeTree)
+        let activeCwd = workspace.activeTree.focusedCwd ?? FileManager.default.currentDirectoryPath
+        let activePID = workspace.activeTree.focusedPID
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let ports = activePID.map { Ports.forShell(pid: $0) } ?? []
+            let dirty = Git.dirtyCount(activeCwd)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.branchCache.merge(fresh) { old, _ in old }
+                    self.metaCache[activeTreeID] = (ports: ports, dirty: dirty)
                     self.renderSidebar()
                 }
             }

@@ -293,6 +293,8 @@ final class PaneTree {
     var focusedCwd: String? { focused?.cwd }
     /// The focused pane's live program title (from SET_TITLE/OSC 0/2); empty when none set.
     var focusedTitle: String { focused?.title ?? "" }
+    /// PID of the foreground process in the focused pane (for port scanning).
+    var focusedPID: pid_t? { focused?.foregroundPID }
     /// Number of split panes in this session (for the sidebar's "· N panes").
     var paneCount: Int { leaves.count }
 }

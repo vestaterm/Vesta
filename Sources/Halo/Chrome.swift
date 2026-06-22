@@ -337,7 +337,7 @@ final class HaloWindowController: NSWindowController {
         return row
     }
 
-    /// Session row (indented): [bar]  label …… ×
+    /// Session row (indented): [bar]  label [●N] [:PORT] …… ×
     private func makeSessionRow(_ pi: Int, _ si: Int, _ sess: SidebarSession) -> NSView {
         let active = sess.active
 
@@ -346,7 +346,34 @@ final class HaloWindowController: NSWindowController {
         label.textColor = active ? txt(.full) : txt(.dim)
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        // Inner horizontal stack: label + optional dirty chip + optional port chip.
+        var innerViews: [NSView] = [label]
+
+        if sess.dirty > 0 {
+            let dirtyLabel = NSTextField(labelWithString: "●\(sess.dirty)")
+            dirtyLabel.font = Fonts.mono(10)
+            dirtyLabel.textColor = theme.accent                          // color sync: use theme.accent
+            dirtyLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+            dirtyLabel.setContentHuggingPriority(.required, for: .horizontal)
+            innerViews.append(dirtyLabel)
+        }
+
+        if let port = sess.ports.first {
+            let portLabel = NSTextField(labelWithString: ":\(port)")
+            portLabel.font = Fonts.mono(10)
+            portLabel.textColor = txt(.dim)                              // color sync: dim tone, no hardcoded hex
+            portLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+            portLabel.setContentHuggingPriority(.required, for: .horizontal)
+            innerViews.append(portLabel)
+        }
+
+        let inner = NSStackView(views: innerViews)
+        inner.orientation = .horizontal
+        inner.alignment = .centerY
+        inner.spacing = 5
+        inner.translatesAutoresizingMaskIntoConstraints = false
 
         let closeBtn = tinyButton(symbol: "xmark") { [weak self] in self?.onCloseSession(pi, si) }
         closeBtn.translatesAutoresizingMaskIntoConstraints = false
@@ -360,16 +387,16 @@ final class HaloWindowController: NSWindowController {
         row.layer?.cornerRadius = 5
         row.layer?.backgroundColor = active ? theme.accent.withAlphaComponent(0.09).cgColor : NSColor.clear.cgColor
 
-        row.addSubview(bar); row.addSubview(label); row.addSubview(closeBtn)
+        row.addSubview(bar); row.addSubview(inner); row.addSubview(closeBtn)
         NSLayoutConstraint.activate([
             bar.leadingAnchor.constraint(equalTo: row.leadingAnchor),
             bar.topAnchor.constraint(equalTo: row.topAnchor, constant: 4),
             bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -4),
             bar.widthAnchor.constraint(equalToConstant: 2),
 
-            label.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 32),
-            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: closeBtn.leadingAnchor, constant: -6),
+            inner.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 32),
+            inner.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            inner.trailingAnchor.constraint(lessThanOrEqualTo: closeBtn.leadingAnchor, constant: -6),
 
             closeBtn.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
             closeBtn.centerYAnchor.constraint(equalTo: row.centerYAnchor),

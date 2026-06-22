@@ -96,6 +96,14 @@ import GhosttyKit
         return String(cString: cstr)
     }
 
+    /// PID of the foreground process group leader in this surface's PTY.
+    /// Returns nil if no surface or ghostty reports 0 (nothing running).
+    var foregroundPID: pid_t? {
+        guard let surface else { return nil }
+        let p = ghostty_surface_foreground_pid(surface)   // UInt64; 0 ⇒ none
+        return p > 0 ? pid_t(p) : nil
+    }
+
     /// Called (on the main actor) by GhosttyApp's action callback when ghostty
     /// reports a new title / working directory for this surface.
     func setLiveTitle(_ t: String) { if t != title { title = t; onUpdate?() } }
