@@ -4,7 +4,7 @@ import GhosttyKit
 /// One terminal pane: a real libghostty surface rendered (via Metal) into this
 /// layer-backed NSView. The rest of Halo talks only to this type, never to the
 /// renderer. Adapted from Ghostty's own SurfaceView_AppKit.swift (MIT).
-@MainActor final class TerminalPane: NSView, @preconcurrency NSTextInputClient {
+@MainActor final class TerminalPane: NSView, @preconcurrency NSTextInputClient, PaneContent {
     private(set) var id: Int
     private(set) var cwd: String?          // from ghostty PWD action (OSC 7)
     private(set) var title: String = ""    // from ghostty SET_TITLE action (OSC 0/2)
@@ -71,6 +71,10 @@ import GhosttyKit
     /// no-op; colors update by reloading the ghostty config upstream.
     // ponytail: theming is driven entirely by ghostty's config, not per-pane.
     func apply(_ theme: Theme) {}
+
+    // MARK: - PaneContent
+
+    func focusContent() { window?.makeFirstResponder(self) }
 
     /// Type text into the pane (used by `halo send-keys`).
     func sendKeys(_ s: String) {

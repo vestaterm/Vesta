@@ -1,5 +1,11 @@
 import AppKit
 
+/// Protocol satisfied by any view that can live inside a Leaf.
+/// `TerminalPane` and `BrowserPane` both conform.
+@MainActor protocol PaneContent: NSView {
+    func focusContent()
+}
+
 /// NSSplitView with a wide (grabbable) divider that *draws* as a 1px hairline —
 /// so it looks like the demo's thin split line but is easy to drag-resize.
 final class HaloSplitView: NSSplitView {
@@ -16,24 +22,27 @@ final class HaloSplitView: NSSplitView {
 }
 
 /// tmux-like visual splits built from nested NSSplitViews.
-/// Each leaf is a `Leaf` (a container holding a TerminalPane + a focus overlay).
+/// Each leaf is a `Leaf` (a container holding a PaneContent + a focus overlay).
 /// The tree is implicit in the AppKit view hierarchy of NSSplitViews; we keep a
 /// flat ordered `leaves` array for cycling/listing and a `focusedId`.
 @MainActor
 final class PaneTree {
-    /// A leaf container: holds the terminal plus a focus-ring overlay we toggle.
+    /// A leaf container: holds the content view plus a focus-ring overlay we toggle.
     private final class Leaf: NSView {
-        let pane: TerminalPane
+        /// Stable id assigned from PaneTree.nextId — independent of content type.
+        let id: Int
+        let content: PaneContent
         let overlay: FocusOverlay
-        init(pane: TerminalPane, accent: NSColor, surface: NSColor) {
-            self.pane = pane
+        init(id: Int, content: PaneContent, accent: NSColor, surface: NSColor) {
+            self.id = id
+            self.content = content
             self.overlay = FocusOverlay(accent: accent)
             super.init(frame: .zero)
             wantsLayer = true
             layer?.backgroundColor = surface.cgColor
-            pane.autoresizingMask = [.width, .height]
-            pane.frame = bounds
-            addSubview(pane)
+            content.autoresizingMask = [.width, .height]
+            content.frame = bounds
+            addSubview(content)
             overlay.autoresizingMask = [.width, .height]
             overlay.frame = bounds
             addSubview(overlay)
@@ -97,11 +106,11 @@ final class PaneTree {
         root = NSView()
         root.wantsLayer = true
         root.layer?.backgroundColor = theme.background.cgColor
-        let first = makeLeaf(cwd: cwd)
+        let first = makeTerminalLeaf(cwd: cwd)
         first.autoresizingMask = [.width, .height]
         first.frame = root.bounds
         root.addSubview(first)
-        focusedId = first.pane.id
+        focusedId = first.id
         installClickFocus()
         restyle()
     }
@@ -113,7 +122,7 @@ final class PaneTree {
             guard let self, let win = self.root.window, e.window === win else { return e }
             let pt = self.root.convert(e.locationInWindow, from: nil)
             for l in self.leaves where l.convert(l.bounds, to: self.root).contains(pt) {
-                if l.pane.id != self.focusedId { self.focusedId = l.pane.id; self.restyle() }
+                if l.id != self.focusedId { self.focusedId = l.id; self.restyle() }
                 break
             }
             return e
@@ -124,16 +133,26 @@ final class PaneTree {
 
     var rootView: NSView { root }
 
-    var focused: TerminalPane? { leaf(focusedId)?.pane }
+    /// The focused leaf's content cast to TerminalPane, or nil if it's a browser leaf.
+    var focused: TerminalPane? { (leaf(focusedId)?.content) as? TerminalPane }
 
+    // MARK: Split + attach (shared core for terminal and browser splits)
+
+    /// Inserts `newLeaf` next to the currently-focused leaf in an NSSplitView.
+    /// Returns the inserted leaf. If no focused leaf exists, falls back to just
+    /// appending `newLeaf` to root.
     @discardableResult
-    func splitFocused(_ s: Split, cwd: String?) -> TerminalPane {
-        guard let old = leaf(focusedId) else { return makeAndAttachOrphan(cwd: cwd) }
+    private func splitAndAttach(_ newLeaf: Leaf, split s: Split) -> Leaf {
+        guard let old = leaf(focusedId) else {
+            newLeaf.autoresizingMask = [.width, .height]
+            newLeaf.frame = root.bounds
+            root.addSubview(newLeaf)
+            focusedId = newLeaf.id
+            restyle()
+            return newLeaf
+        }
         if zoomed { unzoom() }
 
-        let newLeaf = makeLeaf(cwd: cwd)
-
-        // An NSSplitView whose divider orientation matches the split.
         let sv = HaloSplitView()
         sv.isVertical = (s == .vertical)          // vertical split = side-by-side
         // frame-based layout: the mask + frame we set below only apply when this
@@ -165,9 +184,26 @@ final class PaneTree {
         let extent = sv.isVertical ? oldFrame.width : oldFrame.height
         sv.setPosition((extent - sv.dividerThickness) / 2, ofDividerAt: 0)
 
-        focusedId = newLeaf.pane.id
+        focusedId = newLeaf.id
         restyle()
-        return newLeaf.pane
+        return newLeaf
+    }
+
+    @discardableResult
+    func splitFocused(_ s: Split, cwd: String?) -> TerminalPane {
+        let newLeaf = makeTerminalLeaf(cwd: cwd)
+        splitAndAttach(newLeaf, split: s)
+        // makeAndAttachOrphan path is handled inside splitAndAttach when leaf(focusedId)==nil
+        return newLeaf.content as! TerminalPane
+    }
+
+    /// Open a browser pane next to the focused pane (vertical split by default).
+    func openBrowser(url: URL) {
+        let browser = BrowserPane(url: url, theme: theme)
+        let id = nextId; nextId += 1
+        let newLeaf = Leaf(id: id, content: browser, accent: theme.accent, surface: theme.background)
+        leaves.append(newLeaf)
+        splitAndAttach(newLeaf, split: .vertical)
     }
 
     func closeFocused() {
@@ -196,14 +232,14 @@ final class PaneTree {
             (grand as? NSSplitView)?.adjustSubviews()
         }
 
-        focusedId = leaves.first?.pane.id ?? 0
+        focusedId = leaves.first?.id ?? 0
         restyle()
     }
 
     func focusNext() {
         guard !leaves.isEmpty else { return }
-        let i = leaves.firstIndex { $0.pane.id == focusedId } ?? -1
-        focusedId = leaves[(i + 1) % leaves.count].pane.id
+        let i = leaves.firstIndex { $0.id == focusedId } ?? -1
+        focusedId = leaves[(i + 1) % leaves.count].id
         restyle()
     }
 
@@ -237,7 +273,7 @@ final class PaneTree {
     }
 
     func list() -> [[String: Any]] {
-        leaves.map { ["id": $0.pane.id, "focused": $0.pane.id == focusedId] }
+        leaves.map { ["id": $0.id, "focused": $0.id == focusedId] }
     }
 
     // MARK: Internals
@@ -256,37 +292,26 @@ final class PaneTree {
         }
     }
 
-    private func leaf(_ id: Int) -> Leaf? { leaves.first { $0.pane.id == id } }
+    private func leaf(_ id: Int) -> Leaf? { leaves.first { $0.id == id } }
 
-    private func makeLeaf(cwd: String?) -> Leaf {
-        let pane = TerminalPane(id: nextId, theme: theme, cwd: cwd)
-        nextId += 1
+    private func makeTerminalLeaf(cwd: String?) -> Leaf {
+        let id = nextId; nextId += 1
+        let pane = TerminalPane(id: id, theme: theme, cwd: cwd)
         pane.onUpdate = { [weak self] in
-            guard let self, pane.id == self.focusedId else { return }
+            guard let self, id == self.focusedId else { return }
             self.onFocusChange?()
         }
         pane.onAttention = { [weak self] in self?.onAttention?() }
-        let l = Leaf(pane: pane, accent: theme.accent, surface: theme.background)
+        let l = Leaf(id: id, content: pane, accent: theme.accent, surface: theme.background)
         leaves.append(l)
         return l
     }
 
-    /// Fallback when the tree somehow has no focused leaf (shouldn't happen).
-    private func makeAndAttachOrphan(cwd: String?) -> TerminalPane {
-        let l = makeLeaf(cwd: cwd)
-        l.autoresizingMask = [.width, .height]
-        l.frame = root.bounds
-        root.addSubview(l)
-        focusedId = l.pane.id
-        restyle()
-        return l.pane
-    }
-
     private func restyle() {
         for l in leaves {
-            let on = (l.pane.id == focusedId)
+            let on = (l.id == focusedId)
             l.overlay.focused = on
-            if on { l.pane.window?.makeFirstResponder(l.pane) }
+            if on { l.content.focusContent() }
         }
         onFocusChange?()
     }

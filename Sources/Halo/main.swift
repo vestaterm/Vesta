@@ -5,7 +5,7 @@ if argv.first == "selfcheck" {
     // Pure-logic checks only. PaneTree/Chrome spawn real ghostty surfaces,
     // which need a live app + run loop — exercised by actually launching the app.
     // workspaceSelfCheck tests the Proj/SidebarProject data model without ghostty.
-    _ = ghosttyConfigSelfCheck(); controlSelfCheck(); gitSelfCheck(); portsSelfCheck(); workspaceSelfCheck(); worktreeSelfCheck()
+    _ = ghosttyConfigSelfCheck(); controlSelfCheck(); gitSelfCheck(); portsSelfCheck(); workspaceSelfCheck(); worktreeSelfCheck(); browserSelfCheck()
     // chromeSelfCheck creates AppKit objects (HaloWindowController → HaloConfig.shared →
     // GhosttyApp.shared). GhosttyApp.shared calls NSApp.isActive; NSApp is nil until
     // NSApplication.shared is first touched. Touch it here so GhosttyApp.shared doesn't crash.
@@ -198,6 +198,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let n = Int(e.charactersIgnoringModifiers ?? "") {
                     self.workspace.selectSessionInActiveProject(n)
                 }
+                return nil
+            // ⌘⇧Return: open browser at the focused session's first detected port, else about:blank
+            case "\r" where shift:
+                let tree = self.workspace.activeTree
+                let treeID = ObjectIdentifier(tree)
+                let url: URL
+                if let port = self.metaCache[treeID]?.ports.first {
+                    url = URL(string: "http://localhost:\(port)")!
+                } else {
+                    url = URL(string: "about:blank")!
+                }
+                tree.openBrowser(url: url)
                 return nil
             default:   return e
             }

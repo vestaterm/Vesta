@@ -7,7 +7,7 @@ func controlSocketPath() -> String {
     return base + "/control.sock"
 }
 
-let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree"]
+let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser"]
 
 // MARK: - Socket helpers
 
@@ -159,6 +159,11 @@ final class ControlServer: @unchecked Sendable {
             let base = argValue(args, "--base")
             workspace.newWorktreeSession(workspace.activeP, branch: branch, base: base)
             return ["ok": true, "branch": branch, "base": base as Any]
+        case "browser":
+            let urlStr = args.first ?? "about:blank"
+            let url = urlStr == "about:blank" ? URL(string: "about:blank")! : BrowserURL.normalize(urlStr)
+            tree.openBrowser(url: url)
+            return ["ok": true, "url": url.absoluteString]
         default:
             return ["ok": false, "error": "unknown cmd: \(cmd)"]
         }
@@ -233,6 +238,7 @@ func printUsage() {
       open [PATH]                           open PATH in a new tab (default ~)
       tab new|next|prev|close [--cwd DIR]   manage tabs
       worktree <branch> [--base <ref>]      open a git-worktree-isolated session on <branch>
+      browser [url|port]                    open an embedded browser pane (port → http://localhost:PORT)
 
     Config (in your ghostty config; libghostty ignores the halo- keys):
       halo-projects = ~/a, ~/b      sidebar projects
