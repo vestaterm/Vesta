@@ -1,9 +1,10 @@
 import AppKit
 
+// Keep the old Project struct for backward compat (used by old callers that may linger)
 struct Project { let name: String; let path: String }
 
 /// Window + chrome + collapsible projects sidebar.
-/// Uniform #161719 everywhere; seamless slim titlebar that flows into content.
+/// Uniform surface everywhere; seamless slim titlebar that flows into content.
 /// Matches the locked mockup: hairlines (white @0.07) do the separating, never
 /// brightness steps. Near-gray mint accent for selection + glow.
 final class HaloWindowController: NSWindowController {
@@ -27,25 +28,40 @@ final class HaloWindowController: NSWindowController {
     }
     private enum Tier { case full, dim, faint }
 
-    private let projects: [Project]
-    private let onSelectProject: (Project) -> Void
-    private var selectedProject = 0
+    // MARK: – five action closures (wired by AppDelegate)
+    private let onSelectSession: (Int, Int) -> Void
+    private let onCloseSession:  (Int, Int) -> Void
+    private let onNewSession:    (Int) -> Void
+    private let onToggleExpand:  (Int) -> Void
+    private let onNewProject:    () -> Void
 
     private var sidebar: NSView!
     private var sidebarWidth: NSLayoutConstraint!
     private var toggleButton: NSButton!
     private var sidebarOpen = true
+    // Track the "open" width so ⌘B always restores to whatever drag set.
+    private var openWidth: CGFloat
 
-    private var projectRows: [(view: TaggedRow, dot: DotView, label: NSTextField, bar: NSView)] = []
     private var footer: NSTextField!
     private var dirLabel: NSTextField!
 
+    // Mutable container for the projects stack — cleared+refilled by setProjects.
+    private var projectsStack: NSStackView!
+
     init(theme: Theme, content: NSView,
-         projects: [Project] = [], onSelectProject: @escaping (Project) -> Void = { _ in }) {
+         onSelectSession: @escaping (Int, Int) -> Void = { _, _ in },
+         onCloseSession:  @escaping (Int, Int) -> Void = { _, _ in },
+         onNewSession:    @escaping (Int) -> Void      = { _ in },
+         onToggleExpand:  @escaping (Int) -> Void      = { _ in },
+         onNewProject:    @escaping () -> Void          = {}) {
         self.theme = theme
         self.surface = theme.background
-        self.projects = projects
-        self.onSelectProject = onSelectProject
+        self.openWidth = CGFloat(HaloConfig.shared.sidebarWidth)
+        self.onSelectSession = onSelectSession
+        self.onCloseSession  = onCloseSession
+        self.onNewSession    = onNewSession
+        self.onToggleExpand  = onToggleExpand
+        self.onNewProject    = onNewProject
 
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 680),
@@ -70,8 +86,44 @@ final class HaloWindowController: NSWindowController {
 
     func setStatus(_ text: String) { footer?.stringValue = text }
     func setDir(_ text: String) {
-        // dir label shows "name / path"; mockup styles name bold, path dim.
         dirLabel?.attributedStringValue = dirAttributed(text)
+    }
+
+    /// Rebuild the PROJECTS area from the given snapshot.
+    /// Single source of sidebar truth — called on every onChange.
+    func setProjects(_ projects: [SidebarProject]) {
+        guard let stack = projectsStack else { return }
+
+        // Remove all previously arranged subviews (avoid constraint leaks).
+        let old = stack.arrangedSubviews
+        old.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
+
+        // PROJECTS header row: section label + trailing "+" button
+        let headerRow = makeProjHeaderRow(count: projects.count)
+        stack.addArrangedSubview(headerRow)
+        stack.setCustomSpacing(6, after: headerRow)
+
+        if projects.isEmpty {
+            let empty = NSTextField(labelWithString: "no projects")
+            empty.font = Fonts.mono(12)
+            empty.textColor = txt(.faint)
+            stack.addArrangedSubview(padded(empty, left: 20, right: 16))
+        } else {
+            for (pi, proj) in projects.enumerated() {
+                let prow = makeProjectRow(pi, proj)
+                stack.addArrangedSubview(prow)
+                // Stretch project row to full stack width (constraint added after insertion).
+                prow.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
+                if proj.expanded {
+                    for (si, sess) in proj.sessions.enumerated() {
+                        let srow = makeSessionRow(pi, si, sess)
+                        stack.addArrangedSubview(srow)
+                        // Stretch session row to full stack width.
+                        srow.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
+                    }
+                }
+            }
+        }
     }
 
     // MARK: build
@@ -87,7 +139,7 @@ final class HaloWindowController: NSWindowController {
         root.addSubview(sidebar)
         root.addSubview(content)
 
-        sidebarWidth = sidebar.widthAnchor.constraint(equalToConstant: sbWidth)
+        sidebarWidth = sidebar.widthAnchor.constraint(equalToConstant: openWidth)
         NSLayoutConstraint.activate([
             sidebar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             sidebar.topAnchor.constraint(equalTo: root.topAnchor),
@@ -100,7 +152,27 @@ final class HaloWindowController: NSWindowController {
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
 
+        // Drag-resize grab strip pinned over the sidebar's right edge.
+        let grab = SidebarGrabView()
+        grab.translatesAutoresizingMaskIntoConstraints = false
+        grab.onDrag = { [weak self] delta in self?.adjustSidebarWidth(by: delta) }
+        root.addSubview(grab)
+        NSLayoutConstraint.activate([
+            grab.topAnchor.constraint(equalTo: root.topAnchor),
+            grab.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            grab.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            grab.widthAnchor.constraint(equalToConstant: 5),
+        ])
+
         window?.contentView = root
+    }
+
+    private func adjustSidebarWidth(by delta: CGFloat) {
+        let clamped = (sidebarWidth.constant + delta).clamped(to: 160...420)
+        sidebarWidth.constant = clamped
+        openWidth = clamped
+        sidebar.superview?.layoutSubtreeIfNeeded()
+        updateToggleTint()
     }
 
     private func makeSidebar() -> NSView {
@@ -117,32 +189,17 @@ final class HaloWindowController: NSWindowController {
         edge.layer?.backgroundColor = hair(0.07).cgColor
         v.addSubview(edge)
 
-        // ── top: scrollless content stack ─────────────────────────
+        // Scrollable content stack — top inset clears 30px titlebar zone
         let stack = NSStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 1
-        // top inset clears the 30px titlebar zone (toggle row lives up there)
+        stack.spacing = 0
         stack.edgeInsets = NSEdgeInsets(top: 46, left: 0, bottom: 0, right: 0)
 
-        // PROJECTS label with count
-        let count = String(format: "%02d", projects.count)
-        stack.addArrangedSubview(sectionLabel("PROJECTS", count: count))
-        stack.setCustomSpacing(8, after: stack.arrangedSubviews.last!)
+        // Preserve reference so setProjects can clear+refill it
+        projectsStack = stack
 
-        for (i, p) in projects.enumerated() {
-            stack.addArrangedSubview(makeProjectRow(i, p))
-        }
-        if projects.isEmpty {
-            let empty = NSTextField(labelWithString: "no projects")
-            empty.font = Fonts.mono(12)
-            empty.textColor = txt(.faint)
-            let wrap = padded(empty, left: 16, right: 16)
-            stack.addArrangedSubview(wrap)
-        }
-
-        // ── footer block: status line + version ──────────────────
         let footBlock = makeFooter()
 
         v.addSubview(stack)
@@ -166,13 +223,220 @@ final class HaloWindowController: NSWindowController {
         return v
     }
 
+    // MARK: – Row builders
+
+    /// PROJECTS section header with count + trailing "+" new-project button.
+    private func makeProjHeaderRow(count: Int) -> NSView {
+        let countStr = String(format: "%02d", count)
+        let header = sectionLabel("PROJECTS", count: countStr)
+
+        let plus = tinyButton(symbol: "plus") { [weak self] in self?.onNewProject() }
+        plus.translatesAutoresizingMaskIntoConstraints = false
+
+        header.addSubview(plus)
+        NSLayoutConstraint.activate([
+            plus.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
+            plus.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            plus.widthAnchor.constraint(equalToConstant: 16),
+            plus.heightAnchor.constraint(equalToConstant: 16),
+        ])
+        return header
+    }
+
+    /// Project row: caret + dot + name + optional branch + trailing "+" new-session button.
+    private func makeProjectRow(_ pi: Int, _ p: SidebarProject) -> NSView {
+        let active = p.active
+
+        // Caret (chevron toggle) — tappable hit area is the whole caret column
+        let caretImg = p.expanded
+            ? NSImage(systemSymbolName: "chevron.down",  accessibilityDescription: nil)
+            : NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)
+        let caretCfg = NSImage.SymbolConfiguration(pointSize: 9, weight: .light)
+        let caretView = NSImageView()
+        caretView.image = caretImg?.withSymbolConfiguration(caretCfg)
+        caretView.contentTintColor = txt(.faint)
+        caretView.translatesAutoresizingMaskIntoConstraints = false
+
+        let dot = DotView()
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.set(selected: active, accent: theme.accent, off: txt(.faint))
+        dot.widthAnchor.constraint(equalToConstant: 6).isActive = true
+        dot.heightAnchor.constraint(equalToConstant: 6).isActive = true
+
+        let nameLabel = NSTextField(labelWithString: p.name)
+        nameLabel.font = Fonts.mono(12.5)
+        nameLabel.textColor = active ? txt(.full) : txt(.dim)
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        // Accent left bar
+        let bar = NSView()
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        bar.wantsLayer = true
+        bar.layer?.cornerRadius = 1
+        bar.layer?.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
+        bar.layer?.backgroundColor = (active ? theme.accent : NSColor.clear).cgColor
+
+        // Trailing "+" new-session button — index captured at build time is safe:
+        // the whole sidebar is rebuilt on each setProjects call, so this closure
+        // fires with the pi value from the snapshot that produced this view.
+        let addBtn = tinyButton(symbol: "plus") { [weak self] in self?.onNewSession(pi) }
+        addBtn.translatesAutoresizingMaskIntoConstraints = false
+
+        let row = TaggedRow()
+        row.tag1 = pi
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.wantsLayer = true
+        row.layer?.backgroundColor = active
+            ? theme.accent.withAlphaComponent(0.10).cgColor
+            : NSColor.clear.cgColor
+
+        row.addSubview(bar)
+        row.addSubview(caretView)
+        row.addSubview(dot)
+        row.addSubview(nameLabel)
+        row.addSubview(addBtn)
+
+        var constraints: [NSLayoutConstraint] = [
+            bar.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            bar.topAnchor.constraint(equalTo: row.topAnchor, constant: 4),
+            bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -4),
+            bar.widthAnchor.constraint(equalToConstant: 2),
+
+            caretView.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 8),
+            caretView.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            caretView.widthAnchor.constraint(equalToConstant: 12),
+
+            dot.leadingAnchor.constraint(equalTo: caretView.trailingAnchor, constant: 4),
+            dot.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+
+            nameLabel.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 7),
+            nameLabel.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+
+            addBtn.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
+            addBtn.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            addBtn.widthAnchor.constraint(equalToConstant: 16),
+            addBtn.heightAnchor.constraint(equalToConstant: 16),
+
+            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: addBtn.leadingAnchor, constant: -4),
+
+            row.heightAnchor.constraint(equalToConstant: 24),
+        ]
+
+        // Optional branch label, trailing-ish after name
+        if let branch = p.branch {
+            let branchLabel = NSTextField(labelWithString: branch)
+            branchLabel.font = Fonts.inst(10)
+            branchLabel.textColor = txt(.faint)
+            branchLabel.translatesAutoresizingMaskIntoConstraints = false
+            branchLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            row.addSubview(branchLabel)
+            constraints += [
+                branchLabel.leadingAnchor.constraint(equalTo: nameLabel.trailingAnchor, constant: 6),
+                branchLabel.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+                branchLabel.trailingAnchor.constraint(lessThanOrEqualTo: addBtn.leadingAnchor, constant: -4),
+            ]
+        }
+
+        NSLayoutConstraint.activate(constraints)
+
+        // Click on the row (not the +) → toggleExpand. Index read from TaggedRow
+        // at click time, so no stale capture across rebuilds.
+        row.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(projectRowClicked(_:))))
+        return row
+    }
+
+    /// Session row (indented): label + trailing "×" close button.
+    private func makeSessionRow(_ pi: Int, _ si: Int, _ sess: SidebarSession) -> NSView {
+        let active = sess.active
+
+        let label = NSTextField(labelWithString: sess.label)
+        label.font = Fonts.mono(12)
+        label.textColor = active ? txt(.full) : txt(.dim)
+        label.lineBreakMode = .byTruncatingTail
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        let bar = NSView()
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        bar.wantsLayer = true
+        bar.layer?.cornerRadius = 1
+        bar.layer?.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
+        bar.layer?.backgroundColor = (active ? theme.accent : NSColor.clear).cgColor
+
+        // Close button — same safe-capture rationale as project + button
+        let closeBtn = tinyButton(symbol: "xmark") { [weak self] in self?.onCloseSession(pi, si) }
+        closeBtn.translatesAutoresizingMaskIntoConstraints = false
+
+        let row = TaggedRow()
+        row.tag1 = pi
+        row.tag2 = si
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.wantsLayer = true
+        row.layer?.backgroundColor = active
+            ? theme.accent.withAlphaComponent(0.07).cgColor
+            : NSColor.clear.cgColor
+
+        row.addSubview(bar)
+        row.addSubview(label)
+        row.addSubview(closeBtn)
+        NSLayoutConstraint.activate([
+            bar.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            bar.topAnchor.constraint(equalTo: row.topAnchor, constant: 3),
+            bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -3),
+            bar.widthAnchor.constraint(equalToConstant: 2),
+
+            label.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 30),
+            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: closeBtn.leadingAnchor, constant: -4),
+
+            closeBtn.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
+            closeBtn.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            closeBtn.widthAnchor.constraint(equalToConstant: 14),
+            closeBtn.heightAnchor.constraint(equalToConstant: 14),
+
+            row.heightAnchor.constraint(equalToConstant: 22),
+        ])
+
+        row.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(sessionRowClicked(_:))))
+        return row
+    }
+
+    // MARK: – Gesture handlers (indices read from TaggedRow at click-time, never stale)
+
+    @objc private func projectRowClicked(_ g: NSClickGestureRecognizer) {
+        guard let row = g.view as? TaggedRow else { return }
+        onToggleExpand(row.tag1)
+    }
+
+    @objc private func sessionRowClicked(_ g: NSClickGestureRecognizer) {
+        guard let row = g.view as? TaggedRow else { return }
+        onSelectSession(row.tag1, row.tag2)
+    }
+
+    // MARK: – Shared helpers
+
+    /// Tiny SF Symbol button with a block action (avoids selector boilerplate for inline lambdas).
+    private func tinyButton(symbol: String, action: @escaping () -> Void) -> NSButton {
+        let btn = BlockButton(action: action)
+        btn.isBordered = false
+        btn.bezelStyle = .regularSquare
+        btn.title = ""
+        btn.imagePosition = .imageOnly
+        let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .light)
+        btn.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg)
+        btn.contentTintColor = txt(.faint)
+        return btn
+    }
+
     /// Tiny uppercase dim label with wide letter-spacing + right-aligned count.
     private func sectionLabel(_ s: String, count: String) -> NSView {
         let l = NSTextField(labelWithString: "")
         l.attributedStringValue = NSAttributedString(string: s, attributes: [
             .font: Fonts.inst(9.5),
             .foregroundColor: txt(.faint),
-            .kern: 1.3,   // ~0.14em at 9.5px
+            .kern: 1.3,
         ])
         l.translatesAutoresizingMaskIntoConstraints = false
 
@@ -188,80 +452,11 @@ final class HaloWindowController: NSWindowController {
         NSLayoutConstraint.activate([
             l.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
             l.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            c.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
+            c.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -36), // leave room for + btn
             c.centerYAnchor.constraint(equalTo: row.centerYAnchor),
             row.heightAnchor.constraint(equalToConstant: 16),
         ])
         return row
-    }
-
-    private func makeProjectRow(_ index: Int, _ p: Project) -> NSView {
-        let selected = index == selectedProject
-
-        let dot = DotView()
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        dot.set(selected: selected, accent: theme.accent, off: txt(.faint))
-        dot.widthAnchor.constraint(equalToConstant: 6).isActive = true
-        dot.heightAnchor.constraint(equalToConstant: 6).isActive = true
-
-        let label = NSTextField(labelWithString: p.name)
-        label.font = Fonts.mono(12.5)
-        label.textColor = selected ? txt(.full) : txt(.dim)
-
-        let inner = NSStackView(views: [dot, label])
-        inner.orientation = .horizontal
-        inner.alignment = .centerY
-        inner.spacing = 8
-        inner.translatesAutoresizingMaskIntoConstraints = false
-
-        let row = TaggedRow()
-        row.idx = index
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.wantsLayer = true
-        row.layer?.backgroundColor = selected
-            ? theme.accent.withAlphaComponent(0.10).cgColor
-            : NSColor.clear.cgColor
-
-        // 2px accent left-edge bar (inset 4px top/bottom), only when selected
-        let bar = NSView()
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        bar.wantsLayer = true
-        bar.layer?.cornerRadius = 1
-        bar.layer?.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
-        bar.layer?.backgroundColor = (selected ? theme.accent : NSColor.clear).cgColor
-
-        row.addSubview(bar)
-        row.addSubview(inner)
-        NSLayoutConstraint.activate([
-            bar.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-            bar.topAnchor.constraint(equalTo: row.topAnchor, constant: 4),
-            bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -4),
-            bar.widthAnchor.constraint(equalToConstant: 2),
-
-            inner.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
-            inner.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            inner.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor, constant: -16),
-            row.heightAnchor.constraint(equalToConstant: 23),  // ~5px pad both sides on 12.5px line
-            row.widthAnchor.constraint(equalToConstant: sbWidth),
-        ])
-        row.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(projectClicked(_:))))
-        projectRows.append((row, dot, label, bar))
-        return row
-    }
-
-    @objc private func projectClicked(_ g: NSClickGestureRecognizer) {
-        guard let i = (g.view as? TaggedRow)?.idx, projects.indices.contains(i) else { return }
-        selectedProject = i
-        for (j, r) in projectRows.enumerated() {
-            let on = j == i
-            r.dot.set(selected: on, accent: theme.accent, off: txt(.faint))
-            r.label.textColor = on ? txt(.full) : txt(.dim)
-            r.bar.layer?.backgroundColor = (on ? theme.accent : NSColor.clear).cgColor
-            r.view.layer?.backgroundColor = on
-                ? theme.accent.withAlphaComponent(0.10).cgColor
-                : NSColor.clear.cgColor
-        }
-        onSelectProject(projects[i])
     }
 
     /// Footer: status line(s) atop a hairline, then a dim version line.
@@ -274,7 +469,6 @@ final class HaloWindowController: NSWindowController {
         topHair.wantsLayer = true
         topHair.layer?.backgroundColor = hair(0.07).cgColor
 
-        // status line — set via setStatus(); e.g. "▌ normal · ⎇ main ↑1 · 2 dirty"
         footer = NSTextField(labelWithString: "▌ normal")
         footer.translatesAutoresizingMaskIntoConstraints = false
         footer.font = Fonts.inst(10)
@@ -307,26 +501,22 @@ final class HaloWindowController: NSWindowController {
         return block
     }
 
-    // MARK: titlebar accessory (left-to-right: lights · toggle · dir)
+    // MARK: – Titlebar accessory (toggle · folder · dir)
 
     private func buildTitlebarAccessory() {
         let acc = NSTitlebarAccessoryViewController()
         acc.layoutAttribute = .leading
 
-        // A titlebar accessory needs a CONCRETE frame — pure Auto Layout leaves it
-        // zero-sized and invisible (the bug). Frame-based host, AL subviews within.
-        // Width ends ~at the sidebar edge so the dir truncates there instead of
-        // overlapping the tab strip (lights eat ~80px before the accessory starts).
-        let host = NSView(frame: NSRect(x: 0, y: 0, width: max(120, sbWidth - 80), height: 30))
+        // ponytail: wide fixed frame — tabs gone from top strip so full width is free.
+        // 700 gives plenty of room for the dir label without clipping.
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: max(240, 700), height: 30))
 
-        // sidebar toggle — vertically centered on the traffic-light row
         let btn = NSButton()
         btn.translatesAutoresizingMaskIntoConstraints = false
         btn.isBordered = false
         btn.bezelStyle = .regularSquare
         btn.title = ""
         btn.imagePosition = .imageOnly
-        // mockup: 15px glyph, light stroke (≈1.3px) — not the heavier .regular.
         let cfg = NSImage.SymbolConfiguration(pointSize: 15, weight: .light)
         btn.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Toggle sidebar")?
             .withSymbolConfiguration(cfg)
@@ -335,7 +525,6 @@ final class HaloWindowController: NSWindowController {
         btn.action = #selector(toggleSidebarAction)
         toggleButton = btn
 
-        // small folder icon + dir label
         let folder = NSImageView()
         folder.translatesAutoresizingMaskIntoConstraints = false
         let fcfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
@@ -353,8 +542,6 @@ final class HaloWindowController: NSWindowController {
         host.addSubview(folder)
         host.addSubview(dirLabel)
 
-        // `.leading` accessory is placed immediately AFTER the traffic lights, so
-        // the toggle needs only the mockup's small gap — not the lights' width.
         NSLayoutConstraint.activate([
             btn.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 6),
             btn.centerYAnchor.constraint(equalTo: host.centerYAnchor),
@@ -368,8 +555,6 @@ final class HaloWindowController: NSWindowController {
 
             dirLabel.leadingAnchor.constraint(equalTo: folder.trailingAnchor, constant: 7),
             dirLabel.centerYAnchor.constraint(equalTo: host.centerYAnchor),
-            // keep the dir within the host (over the sidebar zone) so it truncates
-            // before reaching the tab strip rather than overlapping it.
             dirLabel.trailingAnchor.constraint(lessThanOrEqualTo: host.trailingAnchor, constant: -10),
         ])
 
@@ -380,7 +565,6 @@ final class HaloWindowController: NSWindowController {
     /// "name / path" → name bold (full), "/" faint, path dim. 11.5px.
     private func dirAttributed(_ raw: String) -> NSAttributedString {
         let result = NSMutableAttributedString()
-        // Accept either "name / path" or "name/path" or just "name".
         let parts = raw.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
             .map { $0.trimmingCharacters(in: .whitespaces) }
         let name = parts.first ?? raw
@@ -415,7 +599,7 @@ final class HaloWindowController: NSWindowController {
         return wrap
     }
 
-    // MARK: actions
+    // MARK: – Actions
 
     @objc private func toggleSidebarAction() { toggleSidebar() }
 
@@ -424,20 +608,27 @@ final class HaloWindowController: NSWindowController {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.18
             ctx.allowsImplicitAnimation = true
-            sidebarWidth.animator().constant = sidebarOpen ? sbWidth : 0
+            // Use openWidth (updated by drag) rather than the original sbWidth constant.
+            sidebarWidth.animator().constant = sidebarOpen ? openWidth : 0
             sidebar.superview?.layoutSubtreeIfNeeded()
         }
         updateToggleTint()
     }
 
     private func updateToggleTint() {
-        // mockup keeps the toggle dim grey in every state — never accent-tinted.
         toggleButton?.contentTintColor = txt(.dim)
     }
 }
 
-/// A row/view that carries an integer index for gesture handlers.
-final class TaggedRow: NSView { var idx = 0 }
+// MARK: – Supporting types
+
+/// A row/view that carries two integer indices for gesture handlers.
+/// Index values are read at tap-time from the view — never captured in closures
+/// that outlive a setProjects rebuild — so they cannot go stale.
+final class TaggedRow: NSView {
+    var tag1 = 0   // project index
+    var tag2 = 0   // session index (unused for project rows)
+}
 
 /// A 6px status dot; mint with a soft glow when selected, dim otherwise.
 final class DotView: NSView {
@@ -472,13 +663,74 @@ final class DotView: NSView {
     }
 }
 
-func chromeSelfCheck() {
-    let wc = HaloWindowController(theme: Theme(), content: NSView(),
-                                 projects: [Project(name: "halo", path: "/tmp")])
+/// Drag-resize grab strip: 5px wide, sets resize-left-right cursor, fires onDrag(delta).
+private final class SidebarGrabView: NSView {
+    var onDrag: ((CGFloat) -> Void)?
+    private var lastX: CGFloat = 0
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .resizeLeftRight)
+    }
+
+    override func mouseDown(with e: NSEvent) {
+        lastX = e.locationInWindow.x
+    }
+
+    override func mouseDragged(with e: NSEvent) {
+        let x = e.locationInWindow.x
+        let delta = x - lastX
+        lastX = x
+        onDrag?(delta)
+    }
+}
+
+/// NSButton subclass that stores a block action — avoids `@objc` / `#selector`
+/// boilerplate for inline lambdas in row builders.
+private final class BlockButton: NSButton {
+    private var block: () -> Void
+    init(action: @escaping () -> Void) {
+        self.block = action
+        super.init(frame: .zero)
+        self.target = self
+        self.action = #selector(fire)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    @objc private func fire() { block() }
+}
+
+// MARK: – Comparable clamp helper
+
+private extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
+    }
+}
+
+// MARK: – Self-check
+
+@MainActor func chromeSelfCheck() {
+    // Build with a couple of SidebarProject values: one active+expanded with 2 sessions,
+    // one collapsed. Pure AppKit — no Workspace/ghostty involved.
+    let wc = HaloWindowController(theme: Theme(), content: NSView())
     assert(wc.window != nil, "window must exist")
+
+    let s1 = SidebarSession(label: "shell", active: true)
+    let s2 = SidebarSession(label: "vim",   active: false)
+    let projects: [SidebarProject] = [
+        SidebarProject(name: "halo",  branch: "main", expanded: true,  active: true,  sessions: [s1, s2]),
+        SidebarProject(name: "relay", branch: nil,    expanded: false, active: false, sessions: []),
+    ]
+    wc.setProjects(projects)
+
+    // Calling setProjects again must not crash (rebuild without leaking constraints)
+    wc.setProjects(projects)
+
     wc.setStatus("▌ normal · ⎇ main ↑1 · 2 dirty")
     wc.setDir("halo / ~/dev/halo")
+
+    // toggleSidebar twice must leave sidebar open and not crash
     wc.toggleSidebar(); wc.toggleSidebar()
+
     assert(wc.window?.contentView?.subviews.count ?? 0 >= 2, "sidebar + content present")
     print("chromeSelfCheck OK")
 }

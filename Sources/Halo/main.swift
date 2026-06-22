@@ -6,6 +6,11 @@ if argv.first == "selfcheck" {
     // which need a live app + run loop — exercised by actually launching the app.
     // workspaceSelfCheck tests the Proj/SidebarProject data model without ghostty.
     _ = ghosttyConfigSelfCheck(); controlSelfCheck(); gitSelfCheck(); workspaceSelfCheck()
+    // chromeSelfCheck creates AppKit objects (HaloWindowController → HaloConfig.shared →
+    // GhosttyApp.shared). GhosttyApp.shared calls NSApp.isActive; NSApp is nil until
+    // NSApplication.shared is first touched. Touch it here so GhosttyApp.shared doesn't crash.
+    _ = NSApplication.shared
+    MainActor.assumeIsolated { chromeSelfCheck() }
     print("all self-checks ok"); exit(0)
 }
 if let verb = argv.first, verb == "help" || verb == "--help" || verb == "-h" {
@@ -31,44 +36,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         workspace = Workspace(theme: theme)
         loadProjects(ghostty.settings, into: workspace)
 
-        // Chrome: pass projects snapshot for initial sidebar render.
-        // onSelectProject triggers a new session in that project.
-        let projects = workspace.projs.map { Project(name: $0.name, path: $0.path) }
+        // Wire HaloWindowController with the five session-management closures.
+        // Each closure calls the matching Workspace op then refresh() to keep the
+        // sidebar snapshot in sync. No Workspace.on* stubs needed — Chrome calls
+        // these directly on user action.
         controller = HaloWindowController(
             theme: theme, content: workspace.container,
-            projects: projects,
-            onSelectProject: { [weak self] p in
-                guard let self else { return }
-                if let pi = self.workspace.projs.firstIndex(where: { $0.path == p.path }) {
-                    self.workspace.toggleExpand(pi)
-                } else {
-                    self.workspace.newTab(cwd: p.path)
-                }
-                self.refresh()
+            onSelectSession: { [weak self] p, s in
+                self?.workspace.selectSession(p, s); self?.refresh()
+            },
+            onCloseSession: { [weak self] p, s in
+                self?.workspace.closeSession(p, s);  self?.refresh()
+            },
+            onNewSession: { [weak self] p in
+                self?.workspace.newSession(p);       self?.refresh()
+            },
+            onToggleExpand: { [weak self] p in
+                self?.workspace.toggleExpand(p);     self?.refresh()
+            },
+            onNewProject: { [weak self] in
+                self?.workspace.newProject();         self?.refresh()
             })
-
-        // Wire the five Workspace callbacks (Task B fills Chrome rendering; for now
-        // they drive Workspace + refresh only).
-        workspace.onSelectSession = { [weak self] p, s in
-            self?.workspace.selectSession(p, s)
-            self?.refresh()
-        }
-        workspace.onCloseSession = { [weak self] p, s in
-            self?.workspace.closeSession(p, s)
-            self?.refresh()
-        }
-        workspace.onNewSession = { [weak self] p in
-            self?.workspace.newSession(p)
-            self?.refresh()
-        }
-        workspace.onToggleExpand = { [weak self] p in
-            self?.workspace.toggleExpand(p)
-            self?.refresh()
-        }
-        workspace.onNewProject = { [weak self] in
-            self?.workspace.newProject()
-            self?.refresh()
-        }
 
         workspace.onChange = { [weak self] in self?.refresh() }
         controller.showWindow(nil)
@@ -89,6 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refresh() {
         let cwd = workspace.activeTree.focusedCwd ?? FileManager.default.currentDirectoryPath
         controller.setDir("halo / \(abbreviateHome(cwd))")
+        // Rebuild the sidebar from the live snapshot on every change.
+        controller.setProjects(workspace.snapshot())
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let g = Git.status(cwd)
             DispatchQueue.main.async {
