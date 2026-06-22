@@ -1,0 +1,3 @@
+.build/
+*.xcframework/
+.DS_Store

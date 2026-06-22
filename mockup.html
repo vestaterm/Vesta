@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>halo — look &amp; feel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Martian+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  /* ── tokens ───────────────────────────────────────────────── */
+  :root {
+    /* surfaces — one near-uniform tone so nothing "breaks";
+       hairlines do the separating, not brightness steps. */
+    --surface:      #161719;            /* given base */
+    --surface-rise: #161719;            /* exact same — no lift anywhere */
+    --surface-pane: #161719;            /* exact same */
+    --hair:         oklch(0.85 0.01 195 / 0.07);   /* hairlines */
+    --hair-strong:  oklch(0.85 0.01 195 / 0.12);
+
+    /* text — near-white, never pure */
+    --txt:      oklch(0.93 0.006 195);
+    --txt-dim:  oklch(0.66 0.010 195);
+    --txt-faint:oklch(0.46 0.012 195);
+
+    /* accent — a quiet near-gray with the faintest teal hint.
+       one token: swap chroma up for a louder theme later. */
+    --mint:      oklch(0.86 0.018 190);
+    --mint-soft: oklch(0.86 0.018 190 / 0.10);
+    --mint-line: oklch(0.86 0.020 190 / 0.34);
+
+    --amber: oklch(0.80 0.10 75);       /* one warm tone for warnings only */
+
+    --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
+    --space-4: 16px; --space-6: 24px; --space-8: 32px;
+
+    --r: 11px;        /* window radius */
+    --titlebar-h: 30px;
+    --sidebar-w: 224px;
+
+    --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --inst: "Martian Mono", var(--mono);  /* instrument labels */
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(120% 90% at 50% -10%, #202327 0%, #0c0d0e 60%, #070708 100%);
+    font-family: var(--mono);
+    color: var(--txt);
+    display: grid;
+    place-items: center;
+    padding: 48px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── window ───────────────────────────────────────────────── */
+  .window {
+    width: min(1080px, 100%);
+    height: min(680px, 88vh);
+    background: var(--surface);
+    border: 1px solid var(--hair-strong);
+    border-radius: var(--r);
+    box-shadow:
+      0 0 0 1px rgba(0,0,0,0.4),
+      0 40px 80px -20px rgba(0,0,0,0.7),
+      0 12px 24px -12px rgba(0,0,0,0.6);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateY(8px) scale(0.995);
+    animation: rise 0.6s cubic-bezier(0.16,1,0.3,1) forwards;
+  }
+  @keyframes rise { to { opacity: 1; transform: none; } }
+
+  /* ── titlebar (full width, traffic lights + sidebar toggle) ── */
+  .titlebar {
+    height: var(--titlebar-h);
+    flex: 0 0 auto;
+    background: var(--surface-rise);
+    display: flex;
+    align-items: center;            /* lights + toggle share one center line */
+    padding: 0 var(--space-4) 0 20px;
+    gap: var(--space-3);
+    position: relative;
+    user-select: none;
+  }
+  .lights { display: flex; align-items: center; gap: 8px; }
+  .light {
+    width: 12px; height: 12px; border-radius: 50%;
+    display: grid; place-items: center;
+    font-size: 9px; line-height: 1; color: rgba(0,0,0,0.55);
+    font-family: var(--mono);
+  }
+  .light.r { background: #ec6a5e; }
+  .light.y { background: #f4be4f; }
+  .light.g { background: #61c554; }
+  .light span { opacity: 0; transition: opacity 0.12s; }
+  .titlebar:hover .light span { opacity: 1; }
+
+  /* the sidebar toggle — vertically centered on the SAME row as the
+     traffic lights, so it lines up with them exactly. */
+  .toggle {
+    width: 22px; height: 22px;
+    margin-left: var(--space-2);
+    display: grid; place-items: center;
+    border-radius: 6px;
+    color: var(--txt-dim);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .toggle:hover { background: var(--hair); color: var(--txt); }
+  .toggle.active { color: var(--txt-dim); }
+  .toggle svg { width: 15px; height: 15px; }
+
+  /* minimal: a small dir label sits just left of the toggle */
+  .dir {
+    display: flex; align-items: center; gap: 7px;
+    margin-left: var(--space-2);
+    font-size: 11.5px; color: var(--txt-dim);
+  }
+  .dir svg { width: 13px; height: 13px; color: var(--txt-faint); }
+  .dir b { color: var(--txt); font-weight: 500; }
+
+  /* ── body: sidebar + workspace ────────────────────────────── */
+  .body { flex: 1; display: flex; min-height: 0; }
+
+  .sidebar {
+    width: var(--sidebar-w);
+    flex: 0 0 var(--sidebar-w);
+    background: var(--surface-rise);
+    border-right: 1px solid var(--hair);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .side-section { padding: var(--space-4) 0 var(--space-2); }
+  .side-label {
+    font-family: var(--inst);
+    font-size: 9.5px; font-weight: 500; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--txt-faint);
+    padding: 0 var(--space-4); margin-bottom: var(--space-2);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .side-label .count { color: var(--txt-faint); opacity: 0.7; }
+
+  .proj {
+    display: flex; align-items: center; gap: var(--space-2);
+    padding: 5px var(--space-4);
+    font-size: 12.5px; color: var(--txt-dim);
+    cursor: pointer; position: relative;
+    transition: color 0.12s, background 0.12s;
+  }
+  .proj:hover { background: var(--hair); color: var(--txt); }
+  .proj .pdot { width: 6px; height: 6px; border-radius: 50%; background: var(--txt-faint); flex: 0 0 auto; }
+  .proj.active { color: var(--txt); background: var(--mint-soft); }
+  .proj.active .pdot { background: var(--mint); box-shadow: 0 0 7px var(--mint-line); }
+  .proj.active::before {
+    content: ""; position: absolute; left: 0; top: 4px; bottom: 4px;
+    width: 2px; background: var(--mint); border-radius: 0 2px 2px 0;
+  }
+  .proj .caret { margin-left: auto; color: var(--txt-faint); font-size: 10px; }
+  .proj .branch { margin-left: auto; font-size: 10px; color: var(--txt-faint); font-family: var(--inst); letter-spacing: 0.02em; }
+  .proj.child { padding-left: 34px; font-size: 12px; }
+
+  .side-spacer { flex: 1; }
+  .side-foot {
+    border-top: 1px solid var(--hair);
+    padding: var(--space-3) var(--space-4);
+    font-family: var(--inst); font-size: 10px; letter-spacing: 0.04em;
+    color: var(--txt-faint);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .side-foot kbd {
+    font-family: var(--inst); font-size: 9px; color: var(--txt-dim);
+    background: var(--hair); border: 1px solid var(--hair-strong);
+    border-radius: 4px; padding: 1px 5px;
+  }
+
+  /* ── workspace: panes + status line ───────────────────────── */
+  .workspace { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+  .panes {
+    flex: 1; min-height: 0;
+    background: var(--hair);            /* shows through 1px gaps = split lines */
+    display: grid;
+    grid-template-columns: 1.65fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 1px;
+  }
+  .pane {
+    background: var(--surface-pane);
+    display: flex; flex-direction: column;
+    min-width: 0; min-height: 0; position: relative;
+    overflow: hidden;
+    opacity: 0; animation: paneIn 0.5s cubic-bezier(0.16,1,0.3,1) forwards;
+  }
+  @keyframes paneIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .pane.p1 { grid-row: 1 / 3; animation-delay: 0.10s; }
+  .pane.p2 { grid-column: 2; grid-row: 1; animation-delay: 0.18s; }
+  .pane.p3 { grid-column: 2; grid-row: 2; animation-delay: 0.26s; }
+
+  /* active pane: nothing but four corner ticks (no border, no head) */
+  .pane.focus { z-index: 2; }
+  .corner {
+    position: absolute; width: 9px; height: 9px; pointer-events: none;
+    opacity: 0; transition: opacity 0.14s;
+    border: 1.5px solid var(--mint-line);
+  }
+  .corner.tl { top: 5px; left: 5px; border-right: 0; border-bottom: 0; }
+  .corner.tr { top: 5px; right: 5px; border-left: 0;  border-bottom: 0; }
+  .corner.bl { bottom: 5px; left: 5px; border-right: 0; border-top: 0; }
+  .corner.br { bottom: 5px; right: 5px; border-left: 0; border-top: 0; }
+  .pane.focus .corner { opacity: 1; }
+
+  /* size badge — shown only mid-resize (here: demo on the active pane) */
+  .size {
+    position: absolute; top: 6px; right: 8px;
+    font-family: var(--inst); font-size: 9px; letter-spacing: 0.05em;
+    color: var(--txt-dim); background: var(--surface-rise);
+    border: 1px solid var(--hair-strong); border-radius: 4px;
+    padding: 1px 6px; opacity: 0; transition: opacity 0.14s;
+  }
+  .pane.resizing .size { opacity: 1; }
+  .pane.resizing .corner.tr { opacity: 0; }
+
+  .term {
+    flex: 1; min-height: 0; overflow: hidden;
+    padding: var(--space-3) var(--space-3) var(--space-2);
+    font-size: 12.5px; line-height: 1.65;          /* +leading: light-on-dark */
+    color: var(--txt-dim);
+    white-space: pre-wrap;
+  }
+  .term .row { display: block; }
+  .prompt   { color: var(--txt-dim); }
+  .path     { color: var(--txt-faint); }
+  .cmd      { color: var(--txt); }
+  .ok       { color: var(--txt-dim); }
+  .warn     { color: var(--amber); }
+  .mut      { color: var(--txt-faint); }
+  .ctl      { color: var(--txt-faint); }
+  .ctl b    { color: var(--mint); font-weight: 500; }
+  .cursor {
+    display: inline-block; width: 8px; height: 15px;
+    background: var(--mint); vertical-align: -3px; margin-left: 1px;
+    animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* claude banner block */
+  .banner {
+    color: var(--txt-dim); border: 1px solid var(--hair-strong);
+    border-radius: 6px; padding: 6px 9px; margin: 2px 0 4px;
+    display: inline-block; font-size: 11.5px; line-height: 1.5;
+  }
+  .banner .b-title { color: var(--mint); }
+
+  /* ── status line ──────────────────────────────────────────── */
+  /* sidebar status footer (the status line now lives here, not the bottom) */
+  .side-status {
+    border-top: 1px solid var(--hair);
+    padding: var(--space-3) var(--space-4) var(--space-2);
+    display: flex; flex-direction: column; gap: 5px;
+    font-family: var(--inst); font-size: 10px; letter-spacing: 0.04em;
+    color: var(--txt-faint);
+  }
+  .side-status .line { display: flex; align-items: center; gap: 7px; }
+  .side-status .mode { color: var(--txt-dim); }
+  .side-status .git  { color: var(--txt-dim); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::after { animation: none !important; opacity: 1 !important; transform: none !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="window">
+
+    <!-- titlebar -->
+    <div class="titlebar">
+      <div class="lights">
+        <span class="light r"><span>&times;</span></span>
+        <span class="light y"><span>&minus;</span></span>
+        <span class="light g"><span>&plus;</span></span>
+      </div>
+      <div class="toggle active" title="Toggle sidebar — lined up with the traffic lights">
+        <!-- sidebar icon -->
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3">
+          <rect x="1.5" y="2.5" width="13" height="11" rx="2" />
+          <line x1="6" y1="2.5" x2="6" y2="13.5" />
+        </svg>
+      </div>
+
+      <div class="dir">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3">
+          <path d="M1.5 4.5a1.5 1.5 0 0 1 1.5-1.5h3l1.5 1.6H13a1.5 1.5 0 0 1 1.5 1.5v5.4A1.5 1.5 0 0 1 13 13H3a1.5 1.5 0 0 1-1.5-1.5z"/>
+        </svg>
+        <b>halo</b><span style="color:var(--txt-faint)">/</span>~/dev/halo
+      </div>
+    </div>
+
+    <!-- body -->
+    <div class="body">
+
+      <!-- sidebar -->
+      <aside class="sidebar">
+        <div class="side-section">
+          <div class="side-label">projects <span class="count">04</span></div>
+          <div class="proj active">
+            <span class="pdot"></span>halo
+            <span class="branch">main</span>
+          </div>
+          <div class="proj">
+            <span class="pdot"></span>relay-api
+            <span class="branch">dev</span>
+          </div>
+          <div class="proj">
+            <span class="pdot"></span>ghostty
+            <span class="caret">▸</span>
+          </div>
+          <div class="proj">
+            <span class="pdot"></span>notes.md
+          </div>
+        </div>
+
+        <div class="side-section">
+          <div class="side-label">sessions <span class="count">02</span></div>
+          <div class="proj"><span class="pdot"></span>build · 3 panes</div>
+          <div class="proj"><span class="pdot"></span>scratch · 1 pane</div>
+        </div>
+
+        <div class="side-spacer"></div>
+        <div class="side-status">
+          <div class="line"><span class="mode">▌ normal</span><span>·</span><span>3 panes</span></div>
+          <div class="line"><span class="git"> main</span><span>↑1</span><span>·</span><span>2 dirty</span></div>
+        </div>
+        <div class="side-foot">
+          <span>halo 0.1.0</span>
+          <span><kbd>⌘B</kbd></span>
+        </div>
+      </aside>
+
+      <!-- workspace -->
+      <div class="workspace">
+        <div class="panes">
+
+          <!-- pane 1 : focused -->
+          <div class="pane p1 focus">
+            <span class="corner tl"></span><span class="corner tr"></span>
+            <span class="corner bl"></span><span class="corner br"></span>
+            <div class="term"><span class="row"><span class="path">~/dev/halo on </span><span class="ok">main</span></span><span class="row"><span class="prompt">❯</span> <span class="cmd">swift build</span></span><span class="row"><span class="mut">Compiling Halo · 14 sources</span></span><span class="row"><span class="ok">Build complete!</span> <span class="mut">(3.42s)</span></span><span class="row">&nbsp;</span><span class="row"><span class="path">~/dev/halo</span></span><span class="row"><span class="prompt">❯</span> <span class="cmd">claude</span></span><span class="row">&nbsp;</span><span class="banner"><span class="b-title">✻ Claude Code</span> · ready
+opened pane <b style="color:var(--mint)">[2]</b> for a sub-agent</span><span class="row">&nbsp;</span><span class="row"><span class="ctl">▸ <b>split -v</b> · spawned pane <b>[3]</b></span></span><span class="row"><span class="prompt">❯</span> <span class="cursor"></span></span></div>
+          </div>
+
+          <!-- pane 2 : mid-resize (shows the only-on-resize size badge) -->
+          <div class="pane p2 resizing">
+            <span class="corner tl"></span><span class="corner tr"></span>
+            <span class="corner bl"></span><span class="corner br"></span>
+            <span class="size">68×18</span>
+            <div class="term"><span class="row"><span class="mut">running task:</span> <span class="cmd">add pane status line</span></span><span class="row"><span class="ok">✓</span> <span class="mut">read WindowChrome.swift</span></span><span class="row"><span class="ok">✓</span> <span class="mut">edit StatusBar.swift +41</span></span><span class="row"><span class="warn">●</span> <span class="mut">swift build …</span></span><span class="row">&nbsp;</span><span class="row"><span class="ctl">esc to interrupt</span></span></div>
+          </div>
+
+          <!-- pane 3 -->
+          <div class="pane p3">
+            <span class="corner tl"></span><span class="corner tr"></span>
+            <span class="corner bl"></span><span class="corner br"></span>
+            <div class="term"><span class="row"><span class="prompt">❯</span> <span class="cmd">halo tail --control</span></span><span class="row"><span class="mut">12:04:09</span> attach pane[1]</span><span class="row"><span class="mut">12:04:11</span> <span class="ctl">split -v</span></span><span class="row"><span class="mut">12:04:11</span> <span class="ok">spawn</span> pane[3]</span><span class="row"><span class="mut">12:04:12</span> focus pane[1]</span><span class="row"><span class="prompt">❯</span> <span class="cursor" style="background:var(--txt-faint)"></span></span></div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>
