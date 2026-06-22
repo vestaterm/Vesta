@@ -27,6 +27,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var server: ControlServer!
     var theme = Theme()
 
+    // ponytail: branch rarely changes within a session; no invalidation needed.
+    // "" means "checked, not a repo". Upgrade path: FS watcher.
+    private var branchCache: [String: String] = [:]
+
     func applicationDidFinishLaunching(_ note: Notification) {
         Fonts.register()                             // bundle Geist/Martian Mono before building UI
         let ghostty = GhosttyApp.shared             // inits libghostty (init/config/app) — native config sync
@@ -71,18 +75,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
 
+    /// Rebuild the sidebar from the live snapshot, filling branch from cache.
+    /// Pure render — must NOT call refresh() (avoid a loop).
+    private func renderSidebar() {
+        var projs = workspace.snapshot()
+        for i in projs.indices {
+            let path = workspace.projs[i].path
+            let cached = branchCache[path]
+            projs[i].branch = (cached == nil || cached!.isEmpty) ? nil : cached
+        }
+        controller.setProjects(projs)
+    }
+
     /// Update titlebar dir + sidebar footer (git) for the focused pane. Git runs
     /// off-main so the shell-outs never block the UI.
     private func refresh() {
         let cwd = workspace.activeTree.focusedCwd ?? FileManager.default.currentDirectoryPath
-        controller.setDir("halo / \(abbreviateHome(cwd))")
-        // Rebuild the sidebar from the live snapshot on every change.
-        controller.setProjects(workspace.snapshot())
+        // Ghostty-style titlebar: show the live program title when set, else the cwd.
+        let liveTitle = workspace.activeTree.focusedTitle
+        controller.setDir(liveTitle.isEmpty ? abbreviateHome(cwd) : liveTitle)
+        // Rebuild sidebar with cached branch labels.
+        renderSidebar()
+        // Git footer: off-main to avoid blocking the UI.
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let g = Git.status(cwd)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self?.controller.setStatus("normal" + (g.map { " · \($0)" } ?? ""))
+                }
+            }
+        }
+        // Fill branch cache for any project paths not yet checked, then re-render.
+        let unchecked = workspace.projs.map(\.path).filter { branchCache[$0] == nil }
+        guard !unchecked.isEmpty else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var fresh: [String: String] = [:]
+            for path in unchecked {
+                fresh[path] = Git.branch(path) ?? ""
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.branchCache.merge(fresh) { old, _ in old }
+                    self.renderSidebar()
                 }
             }
         }

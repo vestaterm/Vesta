@@ -291,6 +291,8 @@ final class PaneTree {
     /// The focused pane's label + cwd, for the tab/titlebar/footer.
     var focusedLabel: String { focused?.label ?? "shell" }
     var focusedCwd: String? { focused?.cwd }
+    /// The focused pane's live program title (from SET_TITLE/OSC 0/2); empty when none set.
+    var focusedTitle: String { focused?.title ?? "" }
 }
 
 @MainActor

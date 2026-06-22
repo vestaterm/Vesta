@@ -23,6 +23,13 @@ enum Git {
         return parts.joined(separator: " · ")
     }
 
+    /// Current branch name via `rev-parse --abbrev-ref HEAD`, or nil if not a repo / detached / empty.
+    static func branch(_ cwd: String) -> String? {
+        guard let b = run(["rev-parse", "--abbrev-ref", "HEAD"], cwd), !b.isEmpty, b != "HEAD"
+        else { return nil }
+        return b
+    }
+
     private static func run(_ args: [String], _ cwd: String) -> String? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
@@ -38,6 +45,7 @@ enum Git {
 }
 
 func gitSelfCheck() {
-    assert(Git.status("/") == nil, "/ is not a git repo")   // deterministic
+    assert(Git.status("/") == nil,  "/ is not a git repo")   // deterministic
+    assert(Git.branch("/") == nil,  "/ has no git branch")   // deterministic
     print("gitSelfCheck OK")
 }
