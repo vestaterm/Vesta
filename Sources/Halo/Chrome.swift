@@ -26,11 +26,13 @@ final class HaloWindowController: NSWindowController {
     private enum Tier { case full, dim, faint }
 
     // MARK: – five action closures (wired by AppDelegate)
-    private let onSelectSession: (Int, Int) -> Void
-    private let onCloseSession:  (Int, Int) -> Void
-    private let onNewSession:    (Int) -> Void
-    private let onToggleExpand:  (Int) -> Void
-    private let onNewProject:    () -> Void
+    private let onSelectSession:   (Int, Int) -> Void
+    private let onCloseSession:    (Int, Int) -> Void
+    private let onNewSession:      (Int) -> Void
+    private let onToggleExpand:    (Int) -> Void
+    private let onNewProject:      () -> Void
+    private let onRenameProject:   (Int, String) -> Void
+    private let onSetProjectColor: (Int, NSColor?) -> Void
 
     private var sidebar: NSView!
     private var sidebarWidth: NSLayoutConstraint!
@@ -50,7 +52,9 @@ final class HaloWindowController: NSWindowController {
          onCloseSession:  @escaping (Int, Int) -> Void = { _, _ in },
          onNewSession:    @escaping (Int) -> Void      = { _ in },
          onToggleExpand:  @escaping (Int) -> Void      = { _ in },
-         onNewProject:    @escaping () -> Void          = {}) {
+         onNewProject:    @escaping () -> Void          = {},
+         onRenameProject:   @escaping (Int, String) -> Void  = { _, _ in },
+         onSetProjectColor: @escaping (Int, NSColor?) -> Void = { _, _ in }) {
         self.theme = theme
         self.surface = theme.background
         self.openWidth = CGFloat(HaloConfig.shared.sidebarWidth)
@@ -59,6 +63,8 @@ final class HaloWindowController: NSWindowController {
         self.onNewSession    = onNewSession
         self.onToggleExpand  = onToggleExpand
         self.onNewProject    = onNewProject
+        self.onRenameProject   = onRenameProject
+        self.onSetProjectColor = onSetProjectColor
 
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 680),
@@ -113,14 +119,18 @@ final class HaloWindowController: NSWindowController {
                 stack.addArrangedSubview(prow)
                 // Stretch project row to full stack width (constraint added after insertion).
                 prow.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
+                var last: NSView = prow
                 if proj.expanded {
+                    stack.setCustomSpacing(3, after: prow)   // tighter gap before nested sessions
                     for (si, sess) in proj.sessions.enumerated() {
                         let srow = makeSessionRow(pi, si, sess)
                         stack.addArrangedSubview(srow)
-                        // Stretch session row to full stack width.
                         srow.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
+                        last = srow
                     }
                 }
+                // Breathing room between project groups.
+                if pi < projects.count - 1 { stack.setCustomSpacing(10, after: last) }
             }
         }
     }
@@ -147,7 +157,9 @@ final class HaloWindowController: NSWindowController {
 
             content.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
             content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            content.topAnchor.constraint(equalTo: root.topAnchor),
+            // Inset below the ~30px titlebar so the terminal's first row doesn't
+            // collide with the traffic lights / dir title (ghostty-style top gap).
+            content.topAnchor.constraint(equalTo: root.topAnchor, constant: 34),
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
 
@@ -193,8 +205,8 @@ final class HaloWindowController: NSWindowController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 0
-        stack.edgeInsets = NSEdgeInsets(top: 46, left: 0, bottom: 0, right: 0)
+        stack.spacing = 2
+        stack.edgeInsets = NSEdgeInsets(top: 48, left: 0, bottom: 0, right: 0)
 
         // Preserve reference so setProjects can clear+refill it
         projectsStack = stack
@@ -242,110 +254,84 @@ final class HaloWindowController: NSWindowController {
         return header
     }
 
-    /// Project row: caret + dot + name + optional branch + trailing "+" new-session button.
+    /// Project row: [bar] caret · dot · name · branch …… +   (inner hstack = reliable alignment)
     private func makeProjectRow(_ pi: Int, _ p: SidebarProject) -> NSView {
         let active = p.active
+        let tint = p.color ?? theme.accent
 
-        // Caret (chevron toggle) — tappable hit area is the whole caret column
+        let caretView = NSImageView()
         let caretImg = p.expanded
             ? NSImage(systemSymbolName: "chevron.down",  accessibilityDescription: nil)
             : NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)
-        let caretCfg = NSImage.SymbolConfiguration(pointSize: 9, weight: .light)
-        let caretView = NSImageView()
-        caretView.image = caretImg?.withSymbolConfiguration(caretCfg)
+        caretView.image = caretImg?.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
         caretView.contentTintColor = txt(.faint)
-        caretView.translatesAutoresizingMaskIntoConstraints = false
+        caretView.setContentHuggingPriority(.required, for: .horizontal)
 
         let dot = DotView()
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        dot.set(selected: active, accent: theme.accent, off: txt(.faint))
-        dot.widthAnchor.constraint(equalToConstant: 6).isActive = true
-        dot.heightAnchor.constraint(equalToConstant: 6).isActive = true
+        dot.set(selected: active, accent: tint, off: p.color ?? txt(.faint))
+        dot.widthAnchor.constraint(equalToConstant: 7).isActive = true
+        dot.heightAnchor.constraint(equalToConstant: 7).isActive = true
 
         let nameLabel = NSTextField(labelWithString: p.name)
-        nameLabel.font = Fonts.mono(12.5)
+        nameLabel.font = Fonts.mono(12.5, medium: active)
         nameLabel.textColor = active ? txt(.full) : txt(.dim)
         nameLabel.lineBreakMode = .byTruncatingTail
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        // Accent left bar
-        let bar = NSView()
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        bar.wantsLayer = true
-        bar.layer?.cornerRadius = 1
-        bar.layer?.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
-        bar.layer?.backgroundColor = (active ? theme.accent : NSColor.clear).cgColor
+        let content = NSStackView(views: [caretView, dot, nameLabel])
+        content.orientation = .horizontal
+        content.alignment = .centerY
+        content.spacing = 7
+        content.translatesAutoresizingMaskIntoConstraints = false
 
-        // Trailing "+" new-session button — index captured at build time is safe:
-        // the whole sidebar is rebuilt on each setProjects call, so this closure
-        // fires with the pi value from the snapshot that produced this view.
+        if let branch = p.branch {
+            let branchLabel = NSTextField(labelWithString: branch)
+            branchLabel.font = Fonts.inst(10)
+            branchLabel.textColor = txt(.faint)
+            branchLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+            content.addArrangedSubview(branchLabel)
+            content.setCustomSpacing(8, after: nameLabel)
+        }
+
         let addBtn = tinyButton(symbol: "plus") { [weak self] in self?.onNewSession(pi) }
         addBtn.translatesAutoresizingMaskIntoConstraints = false
+
+        let bar = accentBar(active ? tint : .clear)
 
         let row = TaggedRow()
         row.tag1 = pi
         row.translatesAutoresizingMaskIntoConstraints = false
         row.wantsLayer = true
-        row.layer?.backgroundColor = active
-            ? theme.accent.withAlphaComponent(0.10).cgColor
-            : NSColor.clear.cgColor
+        row.layer?.cornerRadius = 5
+        row.layer?.backgroundColor = active ? tint.withAlphaComponent(0.12).cgColor : NSColor.clear.cgColor
 
-        row.addSubview(bar)
-        row.addSubview(caretView)
-        row.addSubview(dot)
-        row.addSubview(nameLabel)
-        row.addSubview(addBtn)
-
-        var constraints: [NSLayoutConstraint] = [
+        row.addSubview(bar); row.addSubview(content); row.addSubview(addBtn)
+        NSLayoutConstraint.activate([
             bar.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-            bar.topAnchor.constraint(equalTo: row.topAnchor, constant: 4),
-            bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -4),
+            bar.topAnchor.constraint(equalTo: row.topAnchor, constant: 5),
+            bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -5),
             bar.widthAnchor.constraint(equalToConstant: 2),
 
-            caretView.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 8),
-            caretView.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            caretView.widthAnchor.constraint(equalToConstant: 12),
-
-            dot.leadingAnchor.constraint(equalTo: caretView.trailingAnchor, constant: 4),
-            dot.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-
-            nameLabel.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 7),
-            nameLabel.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            content.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 13),
+            content.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            content.trailingAnchor.constraint(lessThanOrEqualTo: addBtn.leadingAnchor, constant: -6),
 
             addBtn.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
             addBtn.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            addBtn.widthAnchor.constraint(equalToConstant: 16),
-            addBtn.heightAnchor.constraint(equalToConstant: 16),
+            addBtn.widthAnchor.constraint(equalToConstant: 18),
+            addBtn.heightAnchor.constraint(equalToConstant: 18),
 
-            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: addBtn.leadingAnchor, constant: -4),
+            row.heightAnchor.constraint(equalToConstant: 30),
+        ])
 
-            row.heightAnchor.constraint(equalToConstant: 24),
-        ]
-
-        // Optional branch label, trailing-ish after name
-        if let branch = p.branch {
-            let branchLabel = NSTextField(labelWithString: branch)
-            branchLabel.font = Fonts.inst(10)
-            branchLabel.textColor = txt(.faint)
-            branchLabel.translatesAutoresizingMaskIntoConstraints = false
-            branchLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            row.addSubview(branchLabel)
-            constraints += [
-                branchLabel.leadingAnchor.constraint(equalTo: nameLabel.trailingAnchor, constant: 6),
-                branchLabel.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-                branchLabel.trailingAnchor.constraint(lessThanOrEqualTo: addBtn.leadingAnchor, constant: -4),
-            ]
-        }
-
-        NSLayoutConstraint.activate(constraints)
-
-        // Click on the row (not the +) → toggleExpand. Index read from TaggedRow
-        // at click time, so no stale capture across rebuilds.
-        row.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(projectRowClicked(_:))))
+        // mouseDown (not a gesture recognizer) so the + NSButton hit-tests first.
+        row.onClick = { [weak self] in self?.onToggleExpand(pi) }
+        row.menu = makeProjectMenu(pi, name: p.name, hasColor: p.color != nil)
         return row
     }
 
-    /// Session row (indented): label + trailing "×" close button.
+    /// Session row (indented): [bar]  label …… ×
     private func makeSessionRow(_ pi: Int, _ si: Int, _ sess: SidebarSession) -> NSView {
         let active = sess.active
 
@@ -356,61 +342,107 @@ final class HaloWindowController: NSWindowController {
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         label.translatesAutoresizingMaskIntoConstraints = false
 
+        let closeBtn = tinyButton(symbol: "xmark") { [weak self] in self?.onCloseSession(pi, si) }
+        closeBtn.translatesAutoresizingMaskIntoConstraints = false
+
+        let bar = accentBar(active ? theme.accent : .clear)
+
+        let row = TaggedRow()
+        row.tag1 = pi; row.tag2 = si
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.wantsLayer = true
+        row.layer?.cornerRadius = 5
+        row.layer?.backgroundColor = active ? theme.accent.withAlphaComponent(0.09).cgColor : NSColor.clear.cgColor
+
+        row.addSubview(bar); row.addSubview(label); row.addSubview(closeBtn)
+        NSLayoutConstraint.activate([
+            bar.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            bar.topAnchor.constraint(equalTo: row.topAnchor, constant: 4),
+            bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -4),
+            bar.widthAnchor.constraint(equalToConstant: 2),
+
+            label.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 32),
+            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: closeBtn.leadingAnchor, constant: -6),
+
+            closeBtn.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
+            closeBtn.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            closeBtn.widthAnchor.constraint(equalToConstant: 16),
+            closeBtn.heightAnchor.constraint(equalToConstant: 16),
+
+            row.heightAnchor.constraint(equalToConstant: 26),
+        ])
+
+        row.onClick = { [weak self] in self?.onSelectSession(pi, si) }
+        return row
+    }
+
+    /// A 2px rounded accent left-edge bar (shared by project + session rows).
+    private func accentBar(_ color: NSColor) -> NSView {
         let bar = NSView()
         bar.translatesAutoresizingMaskIntoConstraints = false
         bar.wantsLayer = true
         bar.layer?.cornerRadius = 1
         bar.layer?.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
-        bar.layer?.backgroundColor = (active ? theme.accent : NSColor.clear).cgColor
-
-        // Close button — same safe-capture rationale as project + button
-        let closeBtn = tinyButton(symbol: "xmark") { [weak self] in self?.onCloseSession(pi, si) }
-        closeBtn.translatesAutoresizingMaskIntoConstraints = false
-
-        let row = TaggedRow()
-        row.tag1 = pi
-        row.tag2 = si
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.wantsLayer = true
-        row.layer?.backgroundColor = active
-            ? theme.accent.withAlphaComponent(0.07).cgColor
-            : NSColor.clear.cgColor
-
-        row.addSubview(bar)
-        row.addSubview(label)
-        row.addSubview(closeBtn)
-        NSLayoutConstraint.activate([
-            bar.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-            bar.topAnchor.constraint(equalTo: row.topAnchor, constant: 3),
-            bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -3),
-            bar.widthAnchor.constraint(equalToConstant: 2),
-
-            label.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 30),
-            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: closeBtn.leadingAnchor, constant: -4),
-
-            closeBtn.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
-            closeBtn.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            closeBtn.widthAnchor.constraint(equalToConstant: 14),
-            closeBtn.heightAnchor.constraint(equalToConstant: 14),
-
-            row.heightAnchor.constraint(equalToConstant: 22),
-        ])
-
-        row.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(sessionRowClicked(_:))))
-        return row
+        bar.layer?.backgroundColor = color.cgColor
+        return bar
     }
 
-    // MARK: – Gesture handlers (indices read from TaggedRow at click-time, never stale)
+    // MARK: – Project rename / recolor (right-click context menu)
 
-    @objc private func projectRowClicked(_ g: NSClickGestureRecognizer) {
-        guard let row = g.view as? TaggedRow else { return }
-        onToggleExpand(row.tag1)
+    /// Preset project tints (mockup-friendly muted tones). "Custom…" opens the
+    /// system color panel; "Reset" clears back to the accent.
+    private static let colorPresets: [(String, NSColor)] = [
+        ("Mint",   NSColor(srgbRed: 0.55, green: 0.73, blue: 0.66, alpha: 1)),
+        ("Blue",   NSColor(srgbRed: 0.46, green: 0.62, blue: 0.80, alpha: 1)),
+        ("Violet", NSColor(srgbRed: 0.64, green: 0.56, blue: 0.82, alpha: 1)),
+        ("Amber",  NSColor(srgbRed: 0.85, green: 0.68, blue: 0.40, alpha: 1)),
+        ("Rose",   NSColor(srgbRed: 0.84, green: 0.52, blue: 0.56, alpha: 1)),
+        ("Slate",  NSColor(srgbRed: 0.58, green: 0.60, blue: 0.64, alpha: 1)),
+    ]
+
+    private func makeProjectMenu(_ pi: Int, name: String, hasColor: Bool) -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(BlockMenuItem(title: "Rename…") { [weak self] in self?.promptRename(pi, current: name) })
+
+        let colorItem = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
+        let colorMenu = NSMenu()
+        for (label, color) in Self.colorPresets {
+            let item = BlockMenuItem(title: label) { [weak self] in self?.onSetProjectColor(pi, color) }
+            item.image = Self.swatch(color)
+            colorMenu.addItem(item)
+        }
+        colorMenu.addItem(.separator())
+        colorMenu.addItem(BlockMenuItem(title: "Reset to accent") { [weak self] in self?.onSetProjectColor(pi, nil) })
+        colorItem.submenu = colorMenu
+        menu.addItem(colorItem)
+        return menu
     }
 
-    @objc private func sessionRowClicked(_ g: NSClickGestureRecognizer) {
-        guard let row = g.view as? TaggedRow else { return }
-        onSelectSession(row.tag1, row.tag2)
+    /// 12×12 filled rounded swatch for the color submenu.
+    private static func swatch(_ color: NSColor) -> NSImage {
+        let size = NSSize(width: 12, height: 12)
+        let img = NSImage(size: size)
+        img.lockFocus()
+        NSBezierPath(roundedRect: NSRect(origin: .zero, size: size), xRadius: 3, yRadius: 3).addClip()
+        color.setFill(); NSRect(origin: .zero, size: size).fill()
+        img.unlockFocus()
+        return img
+    }
+
+    /// Lazy native rename: a small modal NSAlert with a text field.
+    private func promptRename(_ pi: Int, current: String) {
+        let alert = NSAlert()
+        alert.messageText = "Rename project"
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.stringValue = current
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        if alert.runModal() == .alertFirstButtonReturn {
+            onRenameProject(pi, field.stringValue)
+        }
     }
 
     // MARK: – Shared helpers
@@ -627,6 +659,48 @@ final class HaloWindowController: NSWindowController {
 final class TaggedRow: NSView {
     var tag1 = 0   // project index
     var tag2 = 0   // session index (unused for project rows)
+    var onClick: (() -> Void)?
+
+    // Claim every click on the row EXCEPT over real buttons (the +/× actions).
+    // Decorative subviews (labels, caret, dot) would otherwise swallow the click
+    // and the row's mouseDown would never fire — that's why collapse/select looked dead.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit is NSButton ? hit : (bounds.contains(convert(point, from: superview)) ? self : hit)
+    }
+
+    override func mouseDown(with event: NSEvent) { onClick?() }
+
+    // Light hover highlight so rows feel interactive.
+    private var tracking: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = tracking { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
+        addTrackingArea(t); tracking = t
+    }
+    override func mouseEntered(with event: NSEvent) {
+        if (layer?.backgroundColor.flatMap { $0.alpha } ?? 0) < 0.01 {
+            layer?.backgroundColor = NSColor(white: 1, alpha: 0.04).cgColor
+        }
+    }
+    override func mouseExited(with event: NSEvent) {
+        if let bg = layer?.backgroundColor, bg.alpha <= 0.05 {
+            layer?.backgroundColor = NSColor.clear.cgColor
+        }
+    }
+}
+
+/// NSMenuItem with a stored closure — avoids @objc/#selector for inline menu actions.
+private final class BlockMenuItem: NSMenuItem {
+    private let block: () -> Void
+    init(title: String, block: @escaping () -> Void) {
+        self.block = block
+        super.init(title: title, action: #selector(fire), keyEquivalent: "")
+        self.target = self
+    }
+    required init(coder: NSCoder) { fatalError() }
+    @objc private func fire() { block() }
 }
 
 /// A 6px status dot; mint with a soft glow when selected, dim otherwise.

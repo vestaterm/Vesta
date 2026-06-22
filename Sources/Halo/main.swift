@@ -59,6 +59,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onNewProject: { [weak self] in
                 self?.workspace.newProject()
+            },
+            onRenameProject: { [weak self] p, name in
+                self?.workspace.renameProject(p, name)
+            },
+            onSetProjectColor: { [weak self] p, color in
+                self?.workspace.setProjectColor(p, color)
             })
 
         workspace.onChange = { [weak self] in self?.refresh() }

@@ -12,6 +12,7 @@ struct SidebarProject {
     var branch: String?
     let expanded: Bool
     let active: Bool
+    var color: NSColor? = nil    // custom project tint (nil ⇒ accent)
     let sessions: [SidebarSession]
 }
 
@@ -22,6 +23,7 @@ struct Proj {
     var path: String
     var sessions: [PaneTree]
     var expanded: Bool
+    var color: NSColor? = nil    // custom tint, set via the sidebar context menu
 }
 
 /// Owns projects; each project owns sessions (PaneTrees).
@@ -64,7 +66,7 @@ final class Workspace {
         // Launch: home project at ~ with one session at ~, expanded + active.
         // Config projects are appended collapsed + empty by loadProjects/appendProject.
         let home = NSHomeDirectory()
-        var homeProj = makeProj(name: "~", path: home, expanded: true)
+        var homeProj = makeProj(name: "home", path: home, expanded: true)
         homeProj.sessions.append(makeTree(cwd: home))
         projs.append(homeProj)
         activeP = 0
@@ -103,9 +105,23 @@ final class Workspace {
         addSession(p, cwd: NSHomeDirectory())
     }
 
+    func renameProject(_ p: Int, _ name: String) {
+        guard projs.indices.contains(p) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        projs[p].name = trimmed
+        handleChange()
+    }
+
+    func setProjectColor(_ p: Int, _ color: NSColor?) {
+        guard projs.indices.contains(p) else { return }
+        projs[p].color = color
+        handleChange()
+    }
+
     func newProject() {
         let home = NSHomeDirectory()
-        var proj = makeProj(name: "~", path: home, expanded: true)
+        var proj = makeProj(name: "untitled", path: home, expanded: true)
         // Add one session at home immediately (mirrors home proj behaviour).
         let tree = makeTree(cwd: home)
         proj.sessions.append(tree)
@@ -161,14 +177,22 @@ final class Workspace {
 
     func snapshot() -> [SidebarProject] {
         projs.enumerated().map { (pi, proj) in
+            let multi = proj.sessions.count > 1
             let sessions = proj.sessions.enumerated().map { (si, tree) in
-                SidebarSession(label: tree.focusedLabel, active: pi == activeP && si == activeS)
+                // Disambiguate sibling sessions (otherwise every ~ shell reads "nuh").
+                let base = tree.focusedLabel
+                let panes = tree.paneCount
+                var label = base
+                if panes > 1 { label += " · \(panes) panes" }
+                if multi { label = "\(si + 1). \(label)" }
+                return SidebarSession(label: label, active: pi == activeP && si == activeS)
             }
             return SidebarProject(
                 name: proj.name,
                 branch: nil,   // filled by AppDelegate's git fetch in Task C
                 expanded: proj.expanded,
                 active: pi == activeP,
+                color: proj.color,
                 sessions: sessions
             )
         }
@@ -270,7 +294,7 @@ final class Workspace {
     // MARK: - Private helpers
 
     private func makeProj(name: String, path: String, expanded: Bool) -> Proj {
-        Proj(name: name, path: path, sessions: [], expanded: expanded)
+        Proj(name: name, path: path, sessions: [], expanded: expanded, color: nil)
     }
 
     private func makeTree(cwd: String?) -> PaneTree {
