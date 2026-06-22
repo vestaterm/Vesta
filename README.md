@@ -51,7 +51,7 @@ halo new-pane --cwd <path>      # new pane in a dir
 halo focus <id> | halo focus next
 halo zoom                       # toggle zoom on the focused pane
 halo close                      # close the focused pane
-halo send-keys <text>           # type into the focused pane
+halo send-keys <target> <text>  # type into a pane (target = pane id or "focused")
 halo capture                    # dump the focused pane's screen
 halo list                       # JSON: sessions + panes + focus
 halo tab new|next|prev|<n>      # session control

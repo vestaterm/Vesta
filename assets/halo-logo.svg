@@ -20,11 +20,8 @@
 
   <!-- the halo: a ring in perspective, glowing -->
   <g filter="url(#glow)">
-    <ellipse cx="256" cy="212" rx="150" ry="60" fill="none" stroke="url(#ring)" stroke-width="26"/>
+    <ellipse cx="256" cy="256" rx="150" ry="60" fill="none" stroke="url(#ring)" stroke-width="26"/>
   </g>
 
-  <!-- terminal cursor sitting under the halo: prompt + blink block -->
-  <path d="M196 300 l40 34 l-40 34" fill="none" stroke="#e7efed" stroke-width="22"
-        stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.92"/>
-  <rect x="268" y="312" width="58" height="48" rx="8" fill="url(#ring)"/>
+
 </svg>

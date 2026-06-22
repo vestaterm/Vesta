@@ -148,6 +148,7 @@ final class Workspace {
     /// (the workspace must always have ≥1 project with ≥1 session).
     func removeProject(_ p: Int) {
         guard projs.indices.contains(p), projs.count > 1 else { return }
+        projs[p].sessions.forEach { forget($0) }   // evict identity-keyed state
         projs.remove(at: p)
         // Fix activeP: shift down if we removed at/before it, then clamp.
         if activeP >= p { activeP = max(0, activeP - 1) }
@@ -180,13 +181,31 @@ final class Workspace {
         showActive()
     }
 
+    /// Drop all identity-keyed state for a session being removed. Without this a
+    /// later PaneTree that reuses the freed heap address inherits a stale
+    /// worktree label or a phantom attention ring. (metaCache is evicted in
+    /// AppDelegate.renderSidebar, which can see the live session set.)
+    private func forget(_ tree: PaneTree) {
+        let k = ObjectIdentifier(tree)
+        worktreeBranch[k] = nil
+        attention.remove(k)
+    }
+
     /// Returns true when the last session is about to be removed — replace instead of deleting.
     nonisolated static func replaceOnClose(totalSessions: Int) -> Bool { totalSessions <= 1 }
 
     func closeSession(_ p: Int, _ s: Int) {
         guard projs.indices.contains(p), projs[p].sessions.indices.contains(s) else { return }
-        // Drop any worktree-branch tag for the session being removed/replaced.
-        worktreeBranch.removeValue(forKey: ObjectIdentifier(projs[p].sessions[s]))
+        let closing = projs[p].sessions[s]
+        // If this was a worktree session, best-effort remove its worktree dir
+        // off-main (non-force → dirty worktrees are left intact, never destroyed).
+        if let branch = worktreeBranch[ObjectIdentifier(closing)] {
+            let repo = projs[p].path
+            let dir = Worktree.dirFor(repo: repo, branch: branch)
+            DispatchQueue.global(qos: .utility).async { try? Worktree.remove(repo: repo, dir: dir) }
+        }
+        // Forget identity-keyed state for the session being removed/replaced.
+        forget(closing)
         // Never let global session count reach 0.
         let total = projs.reduce(0) { $0 + $1.sessions.count }
         if Workspace.replaceOnClose(totalSessions: total) {

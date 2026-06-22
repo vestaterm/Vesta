@@ -17,9 +17,7 @@ enum Worktree {
 extension Worktree {
     @discardableResult
     static func add(repo: String, branch: String, base: String?) throws -> String {
-        let root = (NSHomeDirectory() as NSString).appendingPathComponent(".halo/worktrees")
-        let repoName = (repo as NSString).lastPathComponent
-        let target = dir(root: root, repo: repoName, branch: branch)
+        let target = dirFor(repo: repo, branch: branch)
         try FileManager.default.createDirectory(
             atPath: (target as NSString).deletingLastPathComponent,
             withIntermediateDirectories: true)
@@ -28,8 +26,23 @@ extension Worktree {
         try run("git", args)        // run: throws on nonzero exit, see below
         return target
     }
-    static func remove(repo: String, dir: String) throws {
-        try run("git", ["-C", repo, "worktree", "remove", dir, "--force"])
+
+    /// Managed root for all worktrees: ~/.halo/worktrees
+    static var defaultRoot: String {
+        (NSHomeDirectory() as NSString).appendingPathComponent(".halo/worktrees")
+    }
+    /// The deterministic worktree dir for a repo + branch (recomputable at close).
+    static func dirFor(repo: String, branch: String) -> String {
+        dir(root: defaultRoot, repo: (repo as NSString).lastPathComponent, branch: branch)
+    }
+
+    /// Remove a worktree. ponytail: non-force by default — git refuses to remove a
+    /// dirty/locked worktree, so uncommitted work is never destroyed (the dir is
+    /// just left on disk). Pass force only when the caller has confirmed data loss.
+    static func remove(repo: String, dir: String, force: Bool = false) throws {
+        var args = ["-C", repo, "worktree", "remove", dir]
+        if force { args.append("--force") }
+        try run("git", args)
     }
     private static func run(_ tool: String, _ args: [String]) throws {
         let p = Process()

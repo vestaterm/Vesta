@@ -44,9 +44,12 @@ Upgrade path: make the root a `halo-worktree-root` config key.)
 **Branch label:** worktree sessions show `⎇ <branch>` as their sidebar label
 instead of the program title.
 
-**Removal:** closing a worktree session offers `git worktree remove <dir>`
-behind a confirm (same data-loss guard as remove-project). Decline → worktree
-left on disk (recoverable). Never delete uncommitted work silently.
+**Removal:** closing a worktree session best-effort removes its worktree dir
+off-main via **non-force** `git worktree remove` (no modal). Git refuses to
+remove a dirty/locked worktree, so uncommitted work is never destroyed — the
+dir is simply left on disk. Clean worktrees self-clean. (This replaces the
+originally-planned confirm dialog: non-force removal IS the data-loss guard and
+avoids a blocking modal in the shared close path the CLI also uses.)
 
 **Self-check:** `worktreeDir(root, repo, branch)` path computation + branch-name
 sanitization (slashes in branch → safe dir segment).

@@ -95,6 +95,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Rebuild the sidebar from the live snapshot, filling branch + meta from caches.
     /// Pure render — must NOT call refresh() (avoid a loop).
     private func renderSidebar() {
+        // Evict meta for sessions that no longer exist, so a new PaneTree reusing
+        // a freed heap address can't inherit a stale chip. (Workspace evicts its
+        // own identity dicts; metaCache lives here, so prune it here.)
+        let live = Set(workspace.projs.flatMap(\.sessions).map(ObjectIdentifier.init))
+        metaCache = metaCache.filter { live.contains($0.key) }
+
         var projs = workspace.snapshot()
         for i in projs.indices {
             let path = workspace.projs[i].path
@@ -153,11 +159,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Upgrade path: a timer that cycles through all sessions.
         let activeTree = workspace.activeTree
         let activeTreeID = ObjectIdentifier(activeTree)
-        let activeCwd = workspace.activeTree.focusedCwd ?? FileManager.default.currentDirectoryPath
+        // focusedCwd is nil when the focused leaf is a browser (no terminal) —
+        // don't scan an unrelated dir for git/ports; show empty meta instead.
+        let activeCwd = workspace.activeTree.focusedCwd
         let activePID = workspace.activeTree.focusedPID
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let ports = activePID.map { Ports.forShell(pid: $0) } ?? []
-            let dirty = Git.dirtyCount(activeCwd)
+            let dirty = activeCwd.map { Git.dirtyCount($0) } ?? 0
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
