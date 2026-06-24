@@ -77,7 +77,10 @@ final class Daemon {
         if n > 0 {
             let data = Data(tmp[0..<n])
             s.ingest(data)
-            for c in s.clientFDs { sendFrame(c, encode(ServerFrame.output(data))) }
+            let frame = encode(ServerFrame.output(data))
+            var stuck: [Int32] = []
+            for c in s.clientFDs where !sendFrame(c, frame) { stuck.append(c) }
+            for c in stuck { closeClient(c) }   // drop desynced/stuck clients after iterating
         } else if n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
             s.markDead()
         }
@@ -86,9 +89,12 @@ final class Daemon {
     private func reapDeadShells() {
         for (id, s) in sessions where !s.alive {
             let status = reapAndDecode(s.pid)   // blocks briefly: child's PTY is already EOF/killed
-            for c in s.clientFDs { sendFrame(c, encode(ServerFrame.exited(status: status))) }
+            let frame = encode(ServerFrame.exited(status: status))
+            var stuck: [Int32] = []
+            for c in s.clientFDs where !sendFrame(c, frame) { stuck.append(c) }
             sessions[id] = nil
             Daemon.ringFor[s.screenKey] = nil
+            for c in stuck { closeClient(c) }   // drop stuck clients after iterating + removing session
         }
     }
 
@@ -132,7 +138,8 @@ final class Daemon {
             if let existing = sessions[paneID] { s = existing }
             else {
                 guard let fresh = Session(paneID: paneID, cols: Int32(cols), rows: Int32(rows)) else {
-                    sendFrame(fd, encode(ServerFrame.exited(status: 1))); return
+                    if !sendFrame(fd, encode(ServerFrame.exited(status: 1))) { closeClient(fd) }
+                    return
                 }
                 installScrollback(fresh)
                 sessions[paneID] = fresh; s = fresh
@@ -141,7 +148,9 @@ final class Daemon {
             // all attached clients (a second mirror joining no longer blindly resizes).
             let cid = s.addClient(fd: fd, cols: Int(cols), rows: Int(rows))
             clientSession[fd] = (paneID: paneID, clientID: cid)
-            sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion)))
+            if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion))) {
+                closeClient(fd); return
+            }
             // Clean redraw: current screen + restored scrollback + cached images.
             // Scrollback shown = on-disk spilled history + the in-memory ring tail.
             // After a daemon crash this fresh session has an empty ring but the prior
@@ -150,8 +159,10 @@ final class Daemon {
             var scrollback = (try? Data(contentsOf: URL(fileURLWithPath: MuxPaths.sessionLog(s.paneID)))) ?? Data()
             if !scrollback.isEmpty, scrollback.last != 0x0a { scrollback.append(0x0a) }
             scrollback.append(Data(s.ring.lines().joined(separator: [0x0a])))
-            sendFrame(fd, encode(ServerFrame.snapshot(
-                screen: s.screenSnapshot(), scrollback: scrollback, images: s.images.replayBytes())))
+            if !sendFrame(fd, encode(ServerFrame.snapshot(
+                screen: s.screenSnapshot(), scrollback: scrollback, images: s.images.replayBytes()))) {
+                closeClient(fd); return
+            }
         case let .input(data):
             // Input-from-any: any client's keystrokes go to the single PTY master.
             if let st = clientSession[fd] { sessions[st.paneID]?.writeInput(data) }
@@ -168,7 +179,7 @@ final class Daemon {
         case .list:
             let infos = sessions.values.map { SessionInfo(id: $0.paneID, name: $0.name, cwd: $0.cwd,
                 alive: $0.alive, attachedCount: $0.clients.count) }
-            sendFrame(fd, encode(ServerFrame.sessions(infos)))
+            if !sendFrame(fd, encode(ServerFrame.sessions(infos))) { closeClient(fd) }
         case let .focus(on):
             // Focused client drives the shared PTY grid via arbitration.
             if let st = clientSession[fd] {
@@ -196,44 +207,33 @@ final class Daemon {
         s.installScreenCallbacks(cbs, user: s.screenKey)
     }
 
-    private func sendFrame(_ fd: Int32, _ data: Data) {
-        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            guard let base = raw.baseAddress else { return }
+    /// Write a whole length-prefixed frame to `fd`. Returns true if every byte was
+    /// written; false means the client is stuck/broken and MUST be dropped (a partial
+    /// frame would permanently desync that client's decoder). Client fds are
+    /// O_NONBLOCK, so a full send buffer yields EAGAIN: we wait (bounded poll) for the
+    /// fd to drain rather than truncating, but bail after 5s so one stuck client can't
+    /// stall the single-threaded daemon forever.
+    @discardableResult
+    private func sendFrame(_ fd: Int32, _ data: Data) -> Bool {
+        return data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
+            guard let base = raw.baseAddress else { return true }
             var off = 0
             while off < raw.count {
                 let n = write(fd, base.advanced(by: off), raw.count - off)
-                if n <= 0 { break }; off += n
+                if n > 0 { off += n; continue }
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    if errno == EAGAIN || errno == EWOULDBLOCK {
+                        var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                        let pr = poll(&pfd, 1, 5000)   // wait up to 5s for writable
+                        if pr > 0 { continue }          // drained → retry write
+                        return false                    // timeout or poll error → drop
+                    }
+                }
+                return false                            // 0, EPIPE, ECONNRESET, etc → drop
             }
+            return true
         }
     }
 
-    // ── Lazy launch: setsid so the daemon outlives the app ────────────────────
-    static func spawnIfNeeded() {
-        // Already up? A connect to the socket succeeds → nothing to do.
-        if socketAlive(MuxPaths.daemonSocket) { return }
-        let exe = Bundle.main.executableURL?.deletingLastPathComponent()
-            .appendingPathComponent("halod").path
-            ?? (CommandLine.arguments[0] as NSString).deletingLastPathComponent + "/halod"
-        // setsid via a tiny shell wrapper so the daemon detaches from our session.
-        let wrapper = Process()
-        wrapper.executableURL = URL(fileURLWithPath: "/bin/sh")
-        wrapper.arguments = ["-c", "setsid \"\(exe)\" >/dev/null 2>&1 &"]
-        try? wrapper.run(); wrapper.waitUntilExit()
-        // Wait briefly for the socket to appear.
-        for _ in 0..<50 { if socketAlive(MuxPaths.daemonSocket) { return }; usleep(20_000) }
-    }
-
-    static func socketAlive(_ path: String) -> Bool {
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0); if fd < 0 { return false }
-        defer { close(fd) }
-        var addr = sockaddr_un(); addr.sun_family = sa_family_t(AF_UNIX)
-        let bytes = Array(path.utf8)
-        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
-            for i in 0..<min(bytes.count, raw.count - 1) { raw[i] = bytes[i] }
-        }
-        let len = socklen_t(MemoryLayout<sockaddr_un>.size)
-        return withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) == 0 }
-        }
-    }
 }
