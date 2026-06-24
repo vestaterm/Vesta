@@ -41,6 +41,10 @@ echo ">> assembling ${APP}..."
 rm -rf "${APP}"
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 cp "$BIN" "${APP}/Contents/MacOS/Halo"
+# Mux helpers (Milestone 3): the daemon + the per-pane relay. They live beside
+# the main binary so muxHelperPath() resolves them via Bundle.main.executableURL.
+cp "$BINDIR/halod"        "${APP}/Contents/MacOS/halod"
+cp "$BINDIR/halo-attach"  "${APP}/Contents/MacOS/halo-attach"
 # Resource bundle as DATA in Resources (Bundle.module also searches Bundle.main.resourceURL),
 # so codesign doesn't treat it as unsigned nested code.
 cp -R "$BUNDLE" "${APP}/Contents/Resources/"
@@ -115,10 +119,16 @@ if [ -n "${SIGN_ID:-}" ]; then
   codesign --force --options runtime --timestamp --entitlements "$ENT" \
     --sign "$SIGN_ID" "${APP}/Contents/MacOS/Halo"
   codesign --force --options runtime --timestamp --entitlements "$ENT" \
+    --sign "$SIGN_ID" "${APP}/Contents/MacOS/halod"
+  codesign --force --options runtime --timestamp --entitlements "$ENT" \
+    --sign "$SIGN_ID" "${APP}/Contents/MacOS/halo-attach"
+  codesign --force --options runtime --timestamp --entitlements "$ENT" \
     --sign "$SIGN_ID" "${APP}"
   echo "OK: signed with Developer ID ($SIGN_ID)"
 else
   codesign --force --sign - "${APP}/Contents/MacOS/Halo" >/dev/null 2>&1 || true
+  codesign --force --sign - "${APP}/Contents/MacOS/halod" >/dev/null 2>&1 || true
+  codesign --force --sign - "${APP}/Contents/MacOS/halo-attach" >/dev/null 2>&1 || true
   codesign --force --sign - "${APP}" >/dev/null 2>&1 && echo "OK: signed (ad-hoc)" || echo "  (codesign skipped)"
 fi
 
