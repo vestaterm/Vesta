@@ -9,7 +9,8 @@ final class Daemon {
     private var listenFD: Int32 = -1
     private var sessions: [String: Session] = [:]
     private var clientBufs: [Int32: Data] = [:]   // partial inbound frames per client fd
-    private var clientSession: [Int32: String] = [:]
+    // Per-connection state: fd → (paneID it attached to, daemon-assigned clientID).
+    private var clientSession: [Int32: (paneID: String, clientID: Int)] = [:]
 
     // Per-session sb_pushline trampoline: libvterm hands us scrolled-off rows.
     // We can't capture Swift state in a C function pointer, so route via a global
@@ -76,7 +77,7 @@ final class Daemon {
         if n > 0 {
             let data = Data(tmp[0..<n])
             s.ingest(data)
-            for c in s.attached { sendFrame(c, encode(ServerFrame.output(data))) }
+            for c in s.clientFDs { sendFrame(c, encode(ServerFrame.output(data))) }
         } else if n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
             s.markDead()
         }
@@ -85,7 +86,7 @@ final class Daemon {
     private func reapDeadShells() {
         for (id, s) in sessions where !s.alive {
             let status = reapAndDecode(s.pid)   // blocks briefly: child's PTY is already EOF/killed
-            for c in s.attached { sendFrame(c, encode(ServerFrame.exited(status: status))) }
+            for c in s.clientFDs { sendFrame(c, encode(ServerFrame.exited(status: status))) }
             sessions[id] = nil
             Daemon.ringFor[s.screenKey] = nil
         }
@@ -116,7 +117,7 @@ final class Daemon {
     }
 
     private func closeClient(_ fd: Int32) {
-        if let sid = clientSession[fd] { sessions[sid]?.attached.removeAll { $0 == fd } }
+        if let st = clientSession[fd] { sessions[st.paneID]?.removeClient(id: st.clientID) }
         clientSession[fd] = nil; clientBufs[fd] = nil; close(fd)
     }
 
@@ -128,7 +129,7 @@ final class Daemon {
             // helloAck.version to its own muxProtocolVersion and bails on mismatch. This
             // is what makes remote attach (M5) against a newer/older daemon safe.
             let s: Session
-            if let existing = sessions[paneID] { s = existing; s.resize(cols: Int32(cols), rows: Int32(rows)) }
+            if let existing = sessions[paneID] { s = existing }
             else {
                 guard let fresh = Session(paneID: paneID, cols: Int32(cols), rows: Int32(rows)) else {
                     sendFrame(fd, encode(ServerFrame.exited(status: 1))); return
@@ -136,7 +137,10 @@ final class Daemon {
                 installScrollback(fresh)
                 sessions[paneID] = fresh; s = fresh
             }
-            s.attached.append(fd); clientSession[fd] = paneID
+            // Register this client; addClient re-arbitrates the shared PTY grid from
+            // all attached clients (a second mirror joining no longer blindly resizes).
+            let cid = s.addClient(fd: fd, cols: Int(cols), rows: Int(rows))
+            clientSession[fd] = (paneID: paneID, clientID: cid)
             sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion)))
             // Clean redraw: current screen + restored scrollback + cached images.
             // Scrollback shown = on-disk spilled history + the in-memory ring tail.
@@ -149,19 +153,27 @@ final class Daemon {
             sendFrame(fd, encode(ServerFrame.snapshot(
                 screen: s.screenSnapshot(), scrollback: scrollback, images: s.images.replayBytes())))
         case let .input(data):
-            if let sid = clientSession[fd] { sessions[sid]?.writeInput(data) }
+            // Input-from-any: any client's keystrokes go to the single PTY master.
+            if let st = clientSession[fd] { sessions[st.paneID]?.writeInput(data) }
         case let .resize(cols, rows):
-            if let sid = clientSession[fd] { sessions[sid]?.resize(cols: Int32(cols), rows: Int32(rows)) }
+            // Per-client: update THIS client's reported grid; the shared PTY size
+            // now follows arbitration (focused client wins), not the last resize.
+            if let st = clientSession[fd] {
+                sessions[st.paneID]?.setClientGrid(id: st.clientID, cols: Int(cols), rows: Int(rows))
+            }
         case .detach:
-            closeClient(fd)
+            closeClient(fd)   // removes this client + re-arbitrates (no PTY reap)
         case .kill:
-            if let sid = clientSession[fd], let s = sessions[sid] { kill(s.pid, SIGKILL); s.markDead() }
+            if let st = clientSession[fd], let s = sessions[st.paneID] { kill(s.pid, SIGKILL); s.markDead() }
         case .list:
             let infos = sessions.values.map { SessionInfo(id: $0.paneID, name: $0.name, cwd: $0.cwd,
-                alive: $0.alive, attachedCount: $0.attached.count) }
+                alive: $0.alive, attachedCount: $0.clients.count) }
             sendFrame(fd, encode(ServerFrame.sessions(infos)))
-        case .focus:
-            break  // M4 task 4.3–4.5 will wire mirror-resize logic here
+        case let .focus(on):
+            // Focused client drives the shared PTY grid via arbitration.
+            if let st = clientSession[fd] {
+                sessions[st.paneID]?.setClientFocus(id: st.clientID, focused: on)
+            }
         }
     }
 

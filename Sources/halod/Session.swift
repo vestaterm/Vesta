@@ -20,7 +20,13 @@ final class Session {
     private let callbacks = UnsafeMutablePointer<VTermScreenCallbacks>.allocate(capacity: 1)
     let ring: ScrollbackRing
     let images = ImageCache()
-    var attached: [Int32] = []     // attached client fds (mirroring)
+    // M4: multiple clients may attach to one paneID (mirroring). Each carries its
+    // own reported grid + focus, and the shared PTY size follows `arbitrateSize`.
+    struct Client { let id: Int; let fd: Int32; var focused: Bool; var cols: Int; var rows: Int }
+    private(set) var clients: [Client] = []
+    private var nextClientID = 0
+    /// The attached client fds, for output fan-out / exit broadcast.
+    var clientFDs: [Int32] { clients.map(\.fd) }
     private(set) var alive = true
     var cwd: String?
     var name: String?
@@ -108,6 +114,53 @@ final class Session {
         var ws = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
         _ = ioctl(masterFD, TIOCSWINSZ, &ws)
         vterm_set_size(vt, Int32(rows), Int32(cols))
+    }
+
+    // ── M4: per-client roster + size arbitration ──────────────────────────────
+    /// Register a newly-attached client (its Hello cols/rows). New clients start
+    /// `focused: false`; the relay sends `focus(true)` once if its surface is key.
+    /// Returns the daemon-assigned client id (stored in the per-connection state).
+    func addClient(fd: Int32, cols: Int, rows: Int) -> Int {
+        let id = nextClientID; nextClientID += 1
+        clients.append(Client(id: id, fd: fd, focused: false, cols: cols, rows: rows))
+        applyArbitratedSize()
+        return id
+    }
+
+    /// Drop a client (relay died / pane closed / detach). Re-arbitrates so the
+    /// surviving mirror's size takes over. Does NOT reap the PTY — a detached
+    /// session with zero clients stays alive (reaped only on shell Exited).
+    func removeClient(id: Int) {
+        clients.removeAll { $0.id == id }
+        applyArbitratedSize()
+    }
+
+    func clientIndex(id: Int) -> Int? { clients.firstIndex { $0.id == id } }
+
+    /// A client reported a new grid (its surface resized). Re-arbitrate.
+    func setClientGrid(id: Int, cols: Int, rows: Int) {
+        guard let i = clientIndex(id: id) else { return }
+        clients[i].cols = cols; clients[i].rows = rows
+        applyArbitratedSize()
+    }
+
+    /// A client gained/lost focus. Re-arbitrate (focused client drives the grid).
+    func setClientFocus(id: Int, focused: Bool) {
+        guard let i = clientIndex(id: id) else { return }
+        clients[i].focused = focused
+        applyArbitratedSize()
+    }
+
+    /// Pick the grid from the focused client (idle mirrors letterbox) and apply it
+    /// to the single shared PTY + libvterm via `resize`. No-op when no clients are
+    /// attached, or when arbitration leaves the grid unchanged.
+    func applyArbitratedSize() {
+        let infos = clients.map {
+            MirrorClient(clientID: $0.id, focused: $0.focused, cols: $0.cols, rows: $0.rows)
+        }
+        guard let (newCols, newRows) = arbitrateSize(infos) else { return }
+        guard Int32(newCols) != cols || Int32(newRows) != rows else { return }
+        resize(cols: Int32(newCols), rows: Int32(newRows))
     }
 
     func writeInput(_ data: Data) {
