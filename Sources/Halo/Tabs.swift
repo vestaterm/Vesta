@@ -250,7 +250,7 @@ final class Workspace {
             let multi = proj.sessions.count > 1
             let sessions = proj.sessions.enumerated().map { (si, tree) in
                 // Disambiguate sibling sessions (otherwise every ~ shell reads "nuh").
-                let base = tree.focusedLabel
+                let base = tree.name ?? tree.focusedLabel
                 let panes = tree.paneCount
                 var label = base
                 if panes > 1 { label += " · \(panes) panes" }

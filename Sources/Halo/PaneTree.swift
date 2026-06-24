@@ -108,6 +108,18 @@ final class PaneTree {
     /// Fired when any pane in this tree rings the bell or fires a desktop notification.
     var onAttention: (() -> Void)?
 
+    /// User-assigned session name (nil ⇒ derive a label from the focused pane).
+    /// Persisted in Tabs.swift's per-session snapshot.
+    private(set) var name: String?
+
+    /// Set (or clear, when blank) this session's name. Fires onFocusChange so
+    /// the sidebar + any open switcher re-render.
+    func setName(_ s: String?) {
+        let trimmed = s?.trimmingCharacters(in: .whitespacesAndNewlines)
+        name = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        onFocusChange?()
+    }
+
     init(theme: Theme, cwd: String? = nil) {
         self.theme = theme
         root = NSView()
@@ -386,5 +398,10 @@ func paneTreeSelfCheck() {
     assert(t.list().count == 2, "expected 2 leaves after split")
     let focusedCount = t.list().filter { ($0["focused"] as? Bool) == true }.count
     assert(focusedCount == 1, "exactly one leaf must be focused")
+    assert(t.name == nil, "new PaneTree has no name")
+    t.setName("build")
+    assert(t.name == "build", "setName stores the name")
+    t.setName("  ")
+    assert(t.name == nil, "blank name clears back to nil")
     print("paneTreeSelfCheck OK")
 }
