@@ -43,65 +43,103 @@ let defaultPrefixKeytable: [String: PrefixAction] = [
     "x": .kill,
 ]
 
-/// Parse `halo-prefix-bind` config lines of the form `key action` into a keytable.
-/// Unknown tokens are silently skipped. Entries override `defaultPrefixKeytable`
-/// when merged in Task 1.2.
+/// Map an action NAME (config token) to a PrefixAction. Names match the
+/// tmux-ish verbs; unknown names return nil (entry skipped).
+private func prefixActionNamed(_ name: String) -> PrefixAction? {
+    switch name {
+    case "split-vertical", "split": return .splitVertical
+    case "split-horizontal", "vsplit": return .splitHorizontal
+    case "focus-left": return .focusLeft
+    case "focus-down": return .focusDown
+    case "focus-up": return .focusUp
+    case "focus-right": return .focusRight
+    case "zoom": return .zoom
+    case "new-session": return .newSession
+    case "next-session": return .nextSession
+    case "prev-session": return .prevSession
+    case "rename": return .rename
+    case "switcher": return .switcher
+    case "detach": return .detach
+    case "kill": return .kill
+    default: return nil
+    }
+}
+
+/// Build the active keytable: start from `defaultPrefixKeytable`, then apply any
+/// `halo-prefix-bind = <key>:<action>` overrides. `entries` is the raw list of
+/// such values. A malformed entry (no `:`, empty key, unknown action) is skipped
+/// so a typo never disarms the whole table. Case-insensitive on the action name;
+/// the KEY token is taken verbatim (so `%`, `"`, `,` survive).
 func parsePrefixKeytable(_ entries: [String]) -> [String: PrefixAction] {
-    let nameToAction: [String: PrefixAction] = [
-        "split-vertical": .splitVertical,
-        "split-horizontal": .splitHorizontal,
-        "focus-left": .focusLeft,
-        "focus-down": .focusDown,
-        "focus-up": .focusUp,
-        "focus-right": .focusRight,
-        "zoom": .zoom,
-        "new-session": .newSession,
-        "next-session": .nextSession,
-        "prev-session": .prevSession,
-        "rename": .rename,
-        "switcher": .switcher,
-        "detach": .detach,
-        "kill": .kill,
-    ]
-    var table: [String: PrefixAction] = [:]
-    for entry in entries {
-        let parts = entry.split(separator: " ", maxSplits: 1).map(String.init)
-        guard parts.count == 2, let action = nameToAction[parts[1]] else { continue }
-        table[parts[0]] = action
+    var table = defaultPrefixKeytable
+    for raw in entries {
+        guard let colon = raw.firstIndex(of: ":") else { continue }
+        let key = String(raw[..<colon]).trimmingCharacters(in: .whitespaces)
+        let name = String(raw[raw.index(after: colon)...]).trimmingCharacters(in: .whitespaces).lowercased()
+        guard !key.isEmpty, let action = prefixActionNamed(name) else { continue }
+        table[key] = action
     }
     return table
 }
 
-func prefixModeSelfCheck() {
-    // defaultPrefixKeytable coverage: all 14 actions are reachable
-    assert(defaultPrefixKeytable["%"] == .splitVertical)
-    assert(defaultPrefixKeytable["\""] == .splitHorizontal)
-    assert(defaultPrefixKeytable["h"] == .focusLeft)
-    assert(defaultPrefixKeytable["left"] == .focusLeft)
-    assert(defaultPrefixKeytable["j"] == .focusDown)
-    assert(defaultPrefixKeytable["down"] == .focusDown)
-    assert(defaultPrefixKeytable["k"] == .focusUp)
-    assert(defaultPrefixKeytable["up"] == .focusUp)
-    assert(defaultPrefixKeytable["l"] == .focusRight)
-    assert(defaultPrefixKeytable["right"] == .focusRight)
-    assert(defaultPrefixKeytable["z"] == .zoom)
-    assert(defaultPrefixKeytable["c"] == .newSession)
-    assert(defaultPrefixKeytable["n"] == .nextSession)
-    assert(defaultPrefixKeytable["p"] == .prevSession)
-    assert(defaultPrefixKeytable[","] == .rename)
-    assert(defaultPrefixKeytable["s"] == .switcher)
-    assert(defaultPrefixKeytable["d"] == .detach)
-    assert(defaultPrefixKeytable["x"] == .kill)
-    assert(defaultPrefixKeytable.count == 18)   // 14 actions, 4 arrow aliases
+/// Resolve a pressed key token (a single character, or "left"/"down"/"up"/"right"
+/// for arrows) to its action. Returns nil when the key isn't bound — the caller
+/// cancels the pending state on a nil resolve.
+func resolvePrefix(_ key: String, in table: [String: PrefixAction]) -> PrefixAction? {
+    table[key]
+}
 
-    // parsePrefixKeytable: valid entry parsed, unknown action skipped
-    let parsed = parsePrefixKeytable(["a split-vertical", "b bogus"])
-    assert(parsed["a"] == .splitVertical)
-    assert(parsed["b"] == nil)
-    assert(parsed.count == 1)
+// MARK: - Self-check (pure logic: keytable parse + resolve)
 
-    // parsePrefixKeytable: empty input → empty table
-    assert(parsePrefixKeytable([]).isEmpty)
+func prefixKeytableSelfCheck() {
+    // Default table covers all 14 actions (18 entries: 14 actions, 4 arrow aliases).
+    let d = defaultPrefixKeytable
+    assert(d.count == 18, "defaultPrefixKeytable should have 18 entries (14 actions, 4 arrow aliases)")
+    assert(d["%"] == .splitVertical)
+    assert(d["\""] == .splitHorizontal)
+    assert(d["h"] == .focusLeft)
+    assert(d["left"] == .focusLeft)
+    assert(d["j"] == .focusDown)
+    assert(d["down"] == .focusDown)
+    assert(d["k"] == .focusUp)
+    assert(d["up"] == .focusUp)
+    assert(d["l"] == .focusRight)
+    assert(d["right"] == .focusRight)
+    assert(d["z"] == .zoom)
+    assert(d["c"] == .newSession)
+    assert(d["n"] == .nextSession)
+    assert(d["p"] == .prevSession)
+    assert(d[","] == .rename)
+    assert(d["s"] == .switcher)
+    assert(d["d"] == .detach)
+    assert(d["x"] == .kill)
+    // Default table resolves the canonical tmux bindings.
+    assert(resolvePrefix("%", in: d) == .splitVertical, "% splits vertical")
+    assert(resolvePrefix("\"", in: d) == .splitHorizontal, "\" splits horizontal")
+    assert(resolvePrefix("h", in: d) == .focusLeft, "h focuses left")
+    assert(resolvePrefix("left", in: d) == .focusLeft, "← focuses left")
+    assert(resolvePrefix("l", in: d) == .focusRight, "l focuses right")
+    assert(resolvePrefix("z", in: d) == .zoom, "z zooms")
+    assert(resolvePrefix("c", in: d) == .newSession, "c new session")
+    assert(resolvePrefix("n", in: d) == .nextSession, "n next")
+    assert(resolvePrefix("p", in: d) == .prevSession, "p prev")
+    assert(resolvePrefix(",", in: d) == .rename, ", renames")
+    assert(resolvePrefix("s", in: d) == .switcher, "s switcher")
+    assert(resolvePrefix("d", in: d) == .detach, "d detach")
+    assert(resolvePrefix("x", in: d) == .kill, "x kill")
+    // Unbound key → nil (caller cancels).
+    assert(resolvePrefix("Q", in: d) == nil, "unbound key resolves nil")
 
-    print("prefixModeSelfCheck ok")
+    // Overrides: rebind a key, add a new one, leave the rest untouched.
+    let t = parsePrefixKeytable(["v:split-vertical", "x:zoom"])
+    assert(resolvePrefix("v", in: t) == .splitVertical, "override adds v→splitVertical")
+    assert(resolvePrefix("x", in: t) == .zoom, "override rebinds x→zoom")
+    assert(resolvePrefix("h", in: t) == .focusLeft, "non-overridden keys keep defaults")
+
+    // Malformed entries are skipped, never crash, never disarm the table.
+    let m = parsePrefixKeytable(["", "nope", ":zoom", "q:bogus-action", "q:kill"])
+    assert(resolvePrefix("q", in: m) == .kill, "last valid entry for a key wins; junk skipped")
+    assert(resolvePrefix("%", in: m) == .splitVertical, "malformed input leaves defaults intact")
+
+    print("prefixKeytableSelfCheck OK")
 }
