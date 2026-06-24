@@ -97,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func saveWindows() {
         let arr = windows.map { $0.workspace.serialize() }
         guard let data = try? JSONSerialization.data(withJSONObject: arr, options: [.prettyPrinted]) else { return }
-        try? data.write(to: URL(fileURLWithPath: Self.windowsFile))
+        try? data.write(to: URL(fileURLWithPath: Self.windowsFile), options: .atomic)
     }
 
     func applicationWillTerminate(_ note: Notification) { saveWindows() }

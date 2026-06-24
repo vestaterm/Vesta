@@ -146,10 +146,21 @@ import GhosttyKit
     /// in the session, so matches highlight across the whole split — not just here.
     var broadcastSearch: ((String) -> Void)?
     var broadcastEndSearch: (() -> Void)?
+    /// In multiplex mode, report this surface's match total up to PaneTree so the
+    /// pane showing the search bar can display the session-wide total.
+    var reportTotal: ((TerminalPane, Int) -> Void)?
+
+    /// True when this pane is the one showing the search field.
+    var searchVisible: Bool { searchBar.map { !$0.isHidden } ?? false }
 
     /// Apply a search needle to THIS surface only (libghostty highlights its matches).
     func applySearchNeedle(_ q: String) { bindingAction("search:" + q) }
-    func endSearchHere() { bindingAction("end_search") }
+    func endSearchHere() { bindingAction("end_search"); searchTotal = 0; searchSelected = -1 }
+
+    /// Display a session-wide match total (multiplex): no per-match position.
+    func showSearchTotal(_ total: Int) {
+        searchCount?.stringValue = total == 0 ? "no matches" : "\(total) match\(total == 1 ? "" : "es")"
+    }
 
     /// Open the search field (⌘F).
     func startSearch() {
@@ -216,8 +227,15 @@ import GhosttyKit
         if q.isEmpty { searchTotal = 0; searchSelected = -1; updateSearchCount() }
     }
 
-    func setSearchTotal(_ t: Int)    { searchTotal = t; updateSearchCount() }
-    func setSearchSelected(_ s: Int) { searchSelected = s; updateSearchCount() }
+    func setSearchTotal(_ t: Int) {
+        searchTotal = t
+        if let r = reportTotal { r(self, t) }   // multiplex: PaneTree aggregates
+        else { updateSearchCount() }             // single pane: show position/total
+    }
+    func setSearchSelected(_ s: Int) {
+        searchSelected = s
+        if reportTotal == nil { updateSearchCount() }   // multiplex has no cross-pane position
+    }
     private func updateSearchCount() {
         guard let label = searchCount else { return }
         if (searchInput?.stringValue ?? "").isEmpty { label.stringValue = "" }

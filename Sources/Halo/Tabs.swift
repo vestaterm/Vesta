@@ -353,7 +353,7 @@ final class Workspace {
             return d
         }
         guard let data = try? JSONSerialization.data(withJSONObject: arr, options: [.prettyPrinted]) else { return }
-        try? data.write(to: URL(fileURLWithPath: Self.projectsFile))
+        try? data.write(to: URL(fileURLWithPath: Self.projectsFile), options: .atomic)
     }
 
     /// Layer persisted customizations on top of the launch state (home + config):

@@ -95,6 +95,7 @@ final class PaneTree {
     private var theme: Theme
     private var leaves: [Leaf] = []
     private var focusedId: Int = 0
+    private var searchTotals: [ObjectIdentifier: Int] = [:]   // per-pane match totals (multiplex sum)
     private var nextId = 0
     private let root: NSView
 
@@ -318,10 +319,21 @@ final class PaneTree {
         // Multiplexed search: a query/clear from any pane's search bar fans out to
         // every terminal pane in this session, so matches highlight across the split.
         pane.broadcastSearch = { [weak self] q in
+            self?.searchTotals.removeAll()
             self?.leaves.forEach { ($0.content as? TerminalPane)?.applySearchNeedle(q) }
         }
         pane.broadcastEndSearch = { [weak self] in
+            self?.searchTotals.removeAll()
             self?.leaves.forEach { ($0.content as? TerminalPane)?.endSearchHere() }
+        }
+        // Each pane reports its match total; show the session-wide sum on whichever
+        // pane is displaying the search field.
+        pane.reportTotal = { [weak self] p, total in
+            guard let self else { return }
+            self.searchTotals[ObjectIdentifier(p)] = total
+            let sum = self.searchTotals.values.reduce(0, +)
+            self.leaves.lazy.compactMap { $0.content as? TerminalPane }
+                .first { $0.searchVisible }?.showSearchTotal(sum)
         }
         let l = Leaf(id: id, content: pane, accent: theme.accent, surface: theme.background)
         leaves.append(l)
