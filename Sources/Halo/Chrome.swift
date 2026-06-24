@@ -61,7 +61,9 @@ final class HaloWindowController: NSWindowController {
          onNewWorktree:     @escaping (Int, String) -> Void  = { _, _ in }) {
         self.theme = theme
         self.surface = theme.background
-        self.openWidth = CGFloat(HaloConfig.shared.sidebarWidth)
+        // Restore the dragged sidebar width if saved, else the config default.
+        let savedWidth = UserDefaults.standard.double(forKey: "HaloSidebarWidth")
+        self.openWidth = savedWidth > 0 ? CGFloat(savedWidth) : CGFloat(HaloConfig.shared.sidebarWidth)
         self.onSelectSession = onSelectSession
         self.onCloseSession  = onCloseSession
         self.onNewSession    = onNewSession
@@ -98,6 +100,9 @@ final class HaloWindowController: NSWindowController {
     func setStatus(_ text: String) { footer?.stringValue = text }
     func setDir(_ text: String) {
         dirLabel?.attributedStringValue = dirAttributed(text)
+        // Custom titlebar hides the system title, but set it anyway so Mission
+        // Control, the Window menu, and ⌘` show a meaningful label.
+        window?.title = text
     }
 
     /// Rebuild the PROJECTS area from the given snapshot.
@@ -190,6 +195,7 @@ final class HaloWindowController: NSWindowController {
         let clamped = (sidebarWidth.constant + delta).clamped(to: 160...420)
         sidebarWidth.constant = clamped
         openWidth = clamped
+        UserDefaults.standard.set(Double(clamped), forKey: "HaloSidebarWidth")   // persist across launches
         sidebar.superview?.layoutSubtreeIfNeeded()
         updateToggleTint()
     }
