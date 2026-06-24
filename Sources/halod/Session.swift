@@ -48,10 +48,14 @@ final class Session {
         }
         self.pid = child; self.masterFD = master
         // libvterm: authoritative screen, UTF-8, scrollback callback drains evicted rows.
-        guard let vt = vterm_new(Int32(rows), Int32(cols)) else { close(master); return nil }
+        guard let vt = vterm_new(Int32(rows), Int32(cols)) else {
+            kill(child, SIGKILL); _ = waitpid(child, nil, 0); close(master); return nil
+        }
         self.vt = vt
         vterm_set_utf8(vt, 1)
-        guard let screen = vterm_obtain_screen(vt) else { vterm_free(vt); close(master); return nil }
+        guard let screen = vterm_obtain_screen(vt) else {
+            vterm_free(vt); kill(child, SIGKILL); _ = waitpid(child, nil, 0); close(master); return nil
+        }
         self.screen = screen
         vterm_screen_reset(screen, 1)
         // Disk-spill ring: evicted lines append to the session log (history recovery).
@@ -85,6 +89,10 @@ final class Session {
                 var cell = VTermScreenCell()
                 let pos = VTermPos(row: Int32(row), col: Int32(col))
                 vterm_screen_get_cell(screen, pos, &cell)
+                // Wide glyph (CJK/emoji): a width-2 cell followed by a width-0 continuation
+                // cell. Emit nothing for the continuation — the preceding glyph already spans
+                // both columns (ghostty re-renders it 2 wide); emitting a space would drift cols.
+                if cell.width == 0 { continue }
                 if cell.chars.0 == 0 { out.append(0x20) }
                 else if let u = Unicode.Scalar(cell.chars.0) {
                     out.append(contentsOf: Array(String(u).utf8))

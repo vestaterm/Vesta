@@ -84,14 +84,24 @@ final class Daemon {
 
     private func reapDeadShells() {
         for (id, s) in sessions where !s.alive {
-            for c in s.attached { sendFrame(c, encode(ServerFrame.exited(status: waitStatus(s.pid)))) }
+            let status = reapAndDecode(s.pid)   // blocks briefly: child's PTY is already EOF/killed
+            for c in s.attached { sendFrame(c, encode(ServerFrame.exited(status: status))) }
             sessions[id] = nil
             Daemon.ringFor[s.screenKey] = nil
         }
     }
 
-    private func waitStatus(_ pid: pid_t) -> Int32 {
-        var st: Int32 = 0; waitpid(pid, &st, WNOHANG); return st
+    /// Block until `pid` is reaped, then decode the shell-convention exit code.
+    /// Safe from hanging the select loop: called ONLY after the master PTY returned
+    /// EOF/error (all the child's slave fds are closed → it has exited or is exiting)
+    /// or after an explicit SIGKILL, so the child is dead/dying and waitpid returns
+    /// promptly. Swift exposes no W* macros, so decode via bit ops.
+    private func reapAndDecode(_ pid: pid_t) -> Int32 {
+        var st: Int32 = 0
+        while waitpid(pid, &st, 0) < 0 && errno == EINTR {}   // retry on EINTR
+        if (st & 0x7f) == 0 { return (st >> 8) & 0xff }        // WIFEXITED → WEXITSTATUS
+        let sig = st & 0x7f                                     // WTERMSIG
+        return 128 + sig                                        // signalled → 128+signal
     }
 
     private func readClient(_ fd: Int32) {
