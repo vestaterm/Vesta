@@ -32,6 +32,7 @@ final class HaloWindowController: NSWindowController {
     private let onToggleExpand:    (Int) -> Void
     private let onNewProject:      () -> Void
     private let onRenameProject:   (Int, String) -> Void
+    private let onRenameSession:   (Int, Int, String?) -> Void
     private let onSetProjectColor: (Int, NSColor?) -> Void
     private let onRemoveProject:   (Int) -> Void
     private let onNewWorktree:     (Int, String) -> Void
@@ -59,8 +60,9 @@ final class HaloWindowController: NSWindowController {
          onNewSession:    @escaping (Int) -> Void      = { _ in },
          onToggleExpand:  @escaping (Int) -> Void      = { _ in },
          onNewProject:    @escaping () -> Void          = {},
-         onRenameProject:   @escaping (Int, String) -> Void  = { _, _ in },
-         onSetProjectColor: @escaping (Int, NSColor?) -> Void = { _, _ in },
+         onRenameProject:   @escaping (Int, String) -> Void      = { _, _ in },
+         onRenameSession:   @escaping (Int, Int, String?) -> Void = { _, _, _ in },
+         onSetProjectColor: @escaping (Int, NSColor?) -> Void     = { _, _ in },
          onRemoveProject:   @escaping (Int) -> Void          = { _ in },
          onNewWorktree:     @escaping (Int, String) -> Void  = { _, _ in }) {
         self.theme = theme
@@ -74,6 +76,7 @@ final class HaloWindowController: NSWindowController {
         self.onToggleExpand  = onToggleExpand
         self.onNewProject    = onNewProject
         self.onRenameProject   = onRenameProject
+        self.onRenameSession   = onRenameSession
         self.onSetProjectColor = onSetProjectColor
         self.onRemoveProject   = onRemoveProject
         self.onNewWorktree     = onNewWorktree
@@ -457,6 +460,9 @@ final class HaloWindowController: NSWindowController {
         ])
 
         row.onClick = { [weak self] in self?.onSelectSession(pi, si) }
+        row.onDoubleClick = { [weak self] in
+            self?.promptRenameSession(pi, si, current: sess.label)
+        }
         return row
     }
 
@@ -543,6 +549,22 @@ final class HaloWindowController: NSWindowController {
         alert.window.initialFirstResponder = field
         if alert.runModal() == .alertFirstButtonReturn {
             onRenameProject(pi, field.stringValue)
+        }
+    }
+
+    /// Native rename prompt for a session (double-click a session row).
+    private func promptRenameSession(_ pi: Int, _ si: Int, current: String) {
+        let alert = NSAlert()
+        alert.messageText = "Rename session"
+        alert.informativeText = "Leave blank to clear the name and use the folder name."
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.stringValue = current
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        if alert.runModal() == .alertFirstButtonReturn {
+            onRenameSession(pi, si, field.stringValue)
         }
     }
 
@@ -803,6 +825,7 @@ final class TaggedRow: NSView {
     var tag1 = 0   // project index
     var tag2 = 0   // session index (unused for project rows)
     var onClick: (() -> Void)?
+    var onDoubleClick: (() -> Void)?
 
     // Claim every click on the row EXCEPT over real buttons (the +/× actions).
     // Decorative subviews (labels, caret, dot) would otherwise swallow the click
@@ -812,7 +835,10 @@ final class TaggedRow: NSView {
         return hit is NSButton ? hit : (bounds.contains(convert(point, from: superview)) ? self : hit)
     }
 
-    override func mouseDown(with event: NSEvent) { onClick?() }
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2, let d = onDoubleClick { d(); return }
+        onClick?()
+    }
 
     // Light hover highlight so rows feel interactive.
     private var tracking: NSTrackingArea?

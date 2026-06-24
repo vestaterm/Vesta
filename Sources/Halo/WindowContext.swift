@@ -46,6 +46,7 @@ final class WindowContext {
             onToggleExpand:    { [weak ws] p in ws?.toggleExpand(p) },
             onNewProject:      { [weak ws] in ws?.newProject() },
             onRenameProject:   { [weak ws] p, name in ws?.renameProject(p, name) },
+            onRenameSession:   { [weak ws] p, s, name in ws?.renameSession(p, s, name) },
             onSetProjectColor: { [weak ws] p, color in ws?.setProjectColor(p, color) },
             onRemoveProject:   { [weak ws] p in ws?.removeProject(p) },
             onNewWorktree:     { [weak ws] p, branch in ws?.newWorktreeSession(p, branch: branch) })

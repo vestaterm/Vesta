@@ -141,6 +141,12 @@ final class Workspace {
         handleChange()
     }
 
+    func renameSession(_ p: Int, _ s: Int, _ name: String?) {
+        guard projs.indices.contains(p), projs[p].sessions.indices.contains(s) else { return }
+        projs[p].sessions[s].setName(name)   // setName fires onFocusChange → save + render
+        handleChange()
+    }
+
     func setProjectColor(_ p: Int, _ color: NSColor?) {
         guard projs.indices.contains(p) else { return }
         projs[p].color = color
