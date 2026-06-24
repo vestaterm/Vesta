@@ -121,10 +121,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func checkForUpdates() { Updater.check(silent: false) }
 
-    /// Delete Halo's own config (revert to the ghostty config / defaults) and reload.
+    /// Full reset: delete Halo's config AND the settings persisted outside it
+    /// (UserDefaults — sidebar width, window frame, quit-confirm), then reload so
+    /// everything returns to defaults / the ghostty base.
     @objc func resetConfig() {
         try? FileManager.default.removeItem(atPath: haloConfigPath())
+        let d = UserDefaults.standard
+        for k in ["HaloSidebarWidth", "HaloSkipQuitConfirm", "NSWindow Frame HaloMainWindow"] {
+            d.removeObject(forKey: k)
+        }
         reloadConfig()
+        controller.setSidebarWidth(CGFloat(HaloConfig.shared.sidebarWidth))   // live default
     }
 
     /// Ring a background session when its foreground process returns to the shell
