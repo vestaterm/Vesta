@@ -17,6 +17,9 @@ if argv.first == "selfcheck" {
 if let verb = argv.first, verb == "help" || verb == "--help" || verb == "-h" {
     printUsage(); exit(0)
 }
+if argv.first == "attach" {
+    exit(runRemoteAttach(Array(argv.dropFirst())))
+}
 if let verb = argv.first, controlVerbs.contains(verb) {
     exit(runControlCLI(argv))
 }
