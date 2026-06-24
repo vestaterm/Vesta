@@ -1,6 +1,6 @@
 import Foundation
 
-public let muxProtocolVersion = 1
+public let muxProtocolVersion = 2
 
 public struct SessionInfo: Codable, Equatable {
     public let id: String
@@ -20,6 +20,7 @@ public enum ClientFrame: Equatable {
     case detach
     case kill
     case list
+    case focus(Bool)
 }
 
 public enum ServerFrame: Equatable {
@@ -70,6 +71,9 @@ public func encode(_ f: ClientFrame) -> Data {
     case .detach: return frame(0x04, p)
     case .kill:   return frame(0x05, p)
     case .list:   return frame(0x06, p)
+    case .focus(let on):
+        // tag 7, 1-byte payload: 1 = focused, 0 = idle mirror
+        return frame(0x07, Data([on ? 1 : 0]))
     }
 }
 
@@ -138,6 +142,7 @@ public func decodeClientFrame(from buf: inout Data) -> ClientFrame? {
     case 0x04: return .detach
     case 0x05: return .kill
     case 0x06: return .list
+    case 0x07: return .focus(payload.first == 1)
     default:   return nil
     }
 }
@@ -207,5 +212,16 @@ public func muxProtocolSelfCheck() {
     var two = full
     assert(decodeClientFrame(from: &two) == .input(Data([0xaa, 0xbb, 0xcc])), "first of two decodes")
     assert(two == Data(truncated), "second (partial) frame left intact")
+    // M4: focus frame round-trips both ways, and a partial buffer yields nil
+    var fb = encode(ClientFrame.focus(true))
+    assert(decodeClientFrame(from: &fb) == .focus(true), "focus(true) round-trip")
+    assert(fb.isEmpty, "focus frame fully consumed")
+    var fb2 = encode(ClientFrame.focus(false))
+    assert(decodeClientFrame(from: &fb2) == .focus(false), "focus(false) round-trip")
+    var focusPartial = encode(ClientFrame.focus(true))
+    let focusFull = focusPartial
+    focusPartial.removeLast()                  // drop the payload byte
+    assert(decodeClientFrame(from: &focusPartial) == nil, "partial focus frame returns nil")
+    assert(focusPartial.count == focusFull.count - 1, "partial buffer left untouched")
     print("muxProtocolSelfCheck ok")
 }

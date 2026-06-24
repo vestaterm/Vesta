@@ -160,6 +160,8 @@ final class Daemon {
             let infos = sessions.values.map { SessionInfo(id: $0.paneID, name: $0.name, cwd: $0.cwd,
                 alive: $0.alive, attachedCount: $0.attached.count) }
             sendFrame(fd, encode(ServerFrame.sessions(infos)))
+        case .focus:
+            break  // M4 task 4.3–4.5 will wire mirror-resize logic here
         }
     }
 
