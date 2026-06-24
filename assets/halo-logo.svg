@@ -5,8 +5,8 @@
       <stop offset="1" stop-color="#141517"/>
     </linearGradient>
     <linearGradient id="ring" x1="120" y1="150" x2="392" y2="300" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#9fe6cf"/>
-      <stop offset="1" stop-color="#5fb7a0"/>
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#ffffff"/>
     </linearGradient>
     <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
       <feGaussianBlur stdDeviation="14" result="b"/>

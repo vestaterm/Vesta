@@ -36,13 +36,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // active. Upgrade path: a timer that cycles through all sessions.
     private var metaCache: [ObjectIdentifier: (ports: [Int], dirty: Int)] = [:]
 
-    // Prompt-return attention: per-session (shell pid, currently-busy). When a
-    // BACKGROUND session's foreground pid returns to its shell (command finished),
-    // ring it. ponytail: 1.5s poll; first sighting baselines the shell pid (a fresh
-    // session sits at its prompt). Replaces ghostty's bell/notif action, which this
-    // libghostty build doesn't emit.
-    private var sessionBusy: [ObjectIdentifier: (shell: pid_t, busy: Bool)] = [:]
+    // Prompt-return attention: per-session (shell pid, # of 1.5s ticks the
+    // foreground command has been running). When a BACKGROUND session's foreground
+    // returns to its shell after running long enough, ring it. Replaces ghostty's
+    // bell/notif action, which this libghostty build doesn't emit.
+    private var sessionBusy: [ObjectIdentifier: (shell: pid_t, busyTicks: Int)] = [:]
     private var attnTimer: Timer?
+    // Only ring when a command ran for at least this many ticks (~4.5s), so a quick
+    // `ls`/`cd` in a background session doesn't nag — we want real agent-turn finishes.
+    private let attnMinTicks = 3
 
     func applicationDidFinishLaunching(_ note: Notification) {
         Fonts.register()                             // bundle Geist/Martian Mono before building UI
@@ -119,14 +121,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Baseline (or re-baseline until a real shell pid is known): a fresh
             // session sits at its prompt, so the first pid we see is the shell.
             guard let prev = sessionBusy[oid], prev.shell != 0 else {
-                sessionBusy[oid] = (shell: pid ?? 0, busy: false)
+                sessionBusy[oid] = (shell: pid ?? 0, busyTicks: 0)
                 continue
             }
             let isBusy = pid != nil && pid != prev.shell
-            if prev.busy && !isBusy && oid != activeID {   // busy → idle on a background session
-                workspace.markAttention(tree)
+            if isBusy {
+                sessionBusy[oid] = (shell: prev.shell, busyTicks: prev.busyTicks + 1)
+            } else {
+                // busy → idle: ring only if the command ran long enough and it's not the active session.
+                if prev.busyTicks >= attnMinTicks && oid != activeID {
+                    workspace.markAttention(tree)
+                }
+                sessionBusy[oid] = (shell: prev.shell, busyTicks: 0)
             }
-            sessionBusy[oid] = (shell: prev.shell, busy: isBusy)
         }
     }
 

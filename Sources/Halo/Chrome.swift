@@ -81,6 +81,8 @@ final class HaloWindowController: NSWindowController {
         win.backgroundColor = surface
         win.isMovableByWindowBackground = false
         win.center()
+        // Remember window size/position across launches (falls back to centered).
+        win.setFrameAutosaveName("HaloMainWindow")
 
         super.init(window: win)
 
