@@ -192,10 +192,15 @@ final class HaloWindowController: NSWindowController {
     }
 
     private func adjustSidebarWidth(by delta: CGFloat) {
-        let clamped = (sidebarWidth.constant + delta).clamped(to: 160...420)
+        setSidebarWidth(sidebarWidth.constant + delta)
+    }
+
+    /// Absolute sidebar-width setter (drag + Settings panel), clamped + persisted.
+    func setSidebarWidth(_ w: CGFloat) {
+        let clamped = w.clamped(to: 160...420)
         sidebarWidth.constant = clamped
         openWidth = clamped
-        UserDefaults.standard.set(Double(clamped), forKey: "HaloSidebarWidth")   // persist across launches
+        UserDefaults.standard.set(Double(clamped), forKey: "HaloSidebarWidth")
         sidebar.superview?.layoutSubtreeIfNeeded()
         updateToggleTint()
     }

@@ -96,6 +96,30 @@ func haloConfigPath() -> String {
     return "\(NSHomeDirectory())/.config/halo/config"
 }
 
+/// Update or insert a `key = value` line in Halo's own config (creating it,
+/// seeded from the ghostty config so the user's theme isn't lost on first write).
+/// Used by the Settings panel.
+func setHaloConfigKey(_ key: String, _ value: String) {
+    let path = haloConfigPath()
+    var text = try? String(contentsOfFile: path, encoding: .utf8)
+    if text == nil, let src = ghosttyConfigPath() {
+        text = try? String(contentsOfFile: src, encoding: .utf8)   // seed from ghostty
+    }
+    var lines = (text ?? "").components(separatedBy: "\n")
+    var replaced = false
+    for i in lines.indices {
+        let t = lines[i].trimmingCharacters(in: .whitespaces)
+        guard !t.hasPrefix("#"), let eq = t.firstIndex(of: "=") else { continue }
+        if t[..<eq].trimmingCharacters(in: .whitespaces) == key {
+            lines[i] = "\(key) = \(value)"; replaced = true; break
+        }
+    }
+    if !replaced { lines.append("\(key) = \(value)") }
+    try? FileManager.default.createDirectory(
+        atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+    try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+}
+
 /// The ghostty config Halo would import from (first existing), or nil.
 func ghosttyConfigPath() -> String? {
     let home = NSHomeDirectory()

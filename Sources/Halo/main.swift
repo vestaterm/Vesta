@@ -159,8 +159,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
     }
 
-    /// Open the active config: Halo's own if imported, else the live ghostty config.
+    private var settingsWC: SettingsWindowController?
+
+    /// Open the native settings panel (⌘,).
     @objc func openSettings() {
+        if settingsWC == nil {
+            settingsWC = SettingsWindowController(
+                theme: theme,
+                onSidebarWidth: { [weak self] w in self?.controller.setSidebarWidth(w) },
+                onImport: { [weak self] in self?.importGhosttyConfig() },
+                onOpenConfig: { [weak self] in self?.openConfigFile() })
+        }
+        settingsWC?.showWindow(nil)
+        settingsWC?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Open the active config file in the user's editor: Halo's own if imported,
+    /// else the live ghostty config.
+    @objc func openConfigFile() {
         let fm = FileManager.default
         let halo = haloConfigPath()
         if fm.fileExists(atPath: halo) {

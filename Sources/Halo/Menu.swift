@@ -18,6 +18,8 @@ func makeMainMenu(target: AppDelegate) -> NSMenu {
     app.addItem(.separator())
     app.addItem(withTitle: "Settings…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",")
         .target = target
+    app.addItem(withTitle: "Open Config File", action: #selector(AppDelegate.openConfigFile), keyEquivalent: "")
+        .target = target
     app.addItem(withTitle: "Import ghostty config…", action: #selector(AppDelegate.importGhosttyConfig), keyEquivalent: "")
         .target = target
     app.addItem(.separator())
