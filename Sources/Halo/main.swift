@@ -22,98 +22,61 @@ if let verb = argv.first, controlVerbs.contains(verb) {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    var controller: HaloWindowController!
-    var workspace: Workspace!
+    // Multi-window: each WindowContext owns a Workspace + chrome + per-window caches.
+    // ⌘N opens another. `active` is the key window (last to become key), else the first.
+    var windows: [WindowContext] = []
+    weak var lastKey: WindowContext?
+    var active: WindowContext? { lastKey ?? windows.first }
     var server: ControlServer!
     var theme = Theme()
-
-    // ponytail: branch rarely changes within a session; no invalidation needed.
-    // "" means "checked, not a repo". Upgrade path: FS watcher.
-    private var branchCache: [String: String] = [:]
-
-    // ponytail: only the active session's meta (ports + dirty) is refreshed per
-    // change; non-active sessions keep their last cached value until they become
-    // active. Upgrade path: a timer that cycles through all sessions.
-    private var metaCache: [ObjectIdentifier: (ports: [Int], dirty: Int)] = [:]
-
-    // Prompt-return attention: per-session (shell pid, # of 1.5s ticks the
-    // foreground command has been running). When a BACKGROUND session's foreground
-    // returns to its shell after running long enough, ring it. Replaces ghostty's
-    // bell/notif action, which this libghostty build doesn't emit.
-    private var sessionBusy: [ObjectIdentifier: (shell: pid_t, busyTicks: Int)] = [:]
     private var attnTimer: Timer?
-    // Only ring when a command ran for at least this many ticks (~4.5s), so a quick
-    // `ls`/`cd` in a background session doesn't nag — we want real agent-turn finishes.
-    private let attnMinTicks = 3
+
+    /// Create, show, and track a new window. ⌘N / first launch.
+    @discardableResult
+    func newWindow() -> WindowContext {
+        let prev = active?.controller.window ?? windows.last?.controller.window
+        let ctx = WindowContext(theme: theme,
+            onBecomeKey: { [weak self] c in self?.lastKey = c },
+            onClose:     { [weak self] c in self?.windows.removeAll { $0 === c }
+                                            if self?.lastKey === c { self?.lastKey = self?.windows.last } })
+        windows.append(ctx)
+        lastKey = ctx
+        // Only the first window restores/saves its frame; later ones cascade off it.
+        if let prev, let win = ctx.controller.window {
+            win.setFrameAutosaveName("")
+            win.setFrameOrigin(NSPoint(x: prev.frame.minX + 26, y: prev.frame.minY - 26))
+        }
+        ctx.start()
+        return ctx
+    }
+
+    @objc func newWindowMenu() { newWindow(); NSApp.activate(ignoringOtherApps: true) }
 
     func applicationDidFinishLaunching(_ note: Notification) {
         Fonts.register()                             // bundle Geist/Martian Mono before building UI
         let ghostty = GhosttyApp.shared             // inits libghostty (init/config/app) — native config sync
         theme = ghostty.theme                        // colors from the real ghostty config
 
-        // Workspace starts with home project at ~; config projects appended below.
-        workspace = Workspace(theme: theme)
-        loadProjects(ghostty.settings, into: workspace)
-        workspace.restorePersisted()   // layer saved names/colors + user projects on top
-
-        // Wire HaloWindowController with the five session-management closures.
-        // Each op calls showActive()/handleChange() → workspace.onChange → refresh(),
-        // so no explicit refresh() call is needed here — the onChange callback below handles it.
-        controller = HaloWindowController(
-            theme: theme, content: workspace.container,
-            onSelectSession: { [weak self] p, s in
-                self?.workspace.selectSession(p, s)
-            },
-            onCloseSession: { [weak self] p, s in
-                self?.workspace.closeSession(p, s)
-            },
-            onNewSession: { [weak self] p in
-                self?.workspace.newSession(p)
-            },
-            onToggleExpand: { [weak self] p in
-                self?.workspace.toggleExpand(p)
-            },
-            onNewProject: { [weak self] in
-                self?.workspace.newProject()
-            },
-            onRenameProject: { [weak self] p, name in
-                self?.workspace.renameProject(p, name)
-            },
-            onSetProjectColor: { [weak self] p, color in
-                self?.workspace.setProjectColor(p, color)
-            },
-            onRemoveProject: { [weak self] p in
-                self?.workspace.removeProject(p)
-            },
-            onNewWorktree: { [weak self] p, branch in
-                self?.workspace.newWorktreeSession(p, branch: branch)
-            })
-
-        workspace.onChange = { [weak self] in self?.refresh() }
-        controller.showWindow(nil)
-        controller.window?.makeKeyAndOrderFront(nil)
         NSApp.mainMenu = makeMainMenu(target: self)   // bundle-less binary: build the menu bar
+        newWindow()                                   // first window (shows + focuses)
 
-        server = ControlServer(workspace: workspace)
+        server = ControlServer(workspaceProvider: { [weak self] in self?.active?.workspace })
         server.onReload = { [weak self] in self?.reloadConfig() }
         server.start()
 
         installKeybinds()
-        refresh()
-        // Poll background sessions for command-finished (prompt-return) → attention ring.
+        // Poll background sessions (all windows) for command-finished → attention ring.
         attnTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pollAttention() }
+            MainActor.assumeIsolated { self?.windows.forEach { $0.pollAttention() } }
         }
         NSApp.activate(ignoringOtherApps: true)
-        // Window is key now — focus the active pane so the user can type immediately.
-        workspace.focusActive()
 
         // Finder Services provider ("New Halo Session Here"); drain any folders the
         // app was launched to open (open -a Halo <dir> / Open With).
         NSApp.servicesProvider = self
         if !pendingOpenDirs.isEmpty {
             let dirs = pendingOpenDirs; pendingOpenDirs = []
-            for d in dirs { workspace.newTab(cwd: d) }
+            for d in dirs { active?.workspace.newTab(cwd: d) }
         }
 
         Updater.check(silent: true)   // notify if a newer GitHub release exists
@@ -131,46 +94,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             d.removeObject(forKey: k)
         }
         reloadConfig()
-        controller.setSidebarWidth(CGFloat(HaloConfig.shared.sidebarWidth))   // live default
-    }
-
-    /// Ring a background session when its foreground process returns to the shell
-    /// (a command/agent turn finished). Cleared when the session is focused.
-    private func pollAttention() {
-        let activeID = ObjectIdentifier(workspace.activeTree)
-        let sessions = workspace.projs.flatMap(\.sessions)
-        let live = Set(sessions.map(ObjectIdentifier.init))
-        sessionBusy = sessionBusy.filter { live.contains($0.key) }   // evict closed sessions
-        for tree in sessions {
-            let oid = ObjectIdentifier(tree)
-            let pid = tree.focusedPID
-            // Baseline (or re-baseline until a real shell pid is known): a fresh
-            // session sits at its prompt, so the first pid we see is the shell.
-            guard let prev = sessionBusy[oid], prev.shell != 0 else {
-                sessionBusy[oid] = (shell: pid ?? 0, busyTicks: 0)
-                continue
-            }
-            let isBusy = pid != nil && pid != prev.shell
-            if isBusy {
-                sessionBusy[oid] = (shell: prev.shell, busyTicks: prev.busyTicks + 1)
-            } else {
-                // busy → idle: ring only if the command ran long enough and it's not the active session.
-                if prev.busyTicks >= attnMinTicks && oid != activeID {
-                    workspace.markAttention(tree)
-                }
-                sessionBusy[oid] = (shell: prev.shell, busyTicks: 0)
-            }
-        }
+        active?.controller.setSidebarWidth(CGFloat(HaloConfig.shared.sidebarWidth))   // live default
     }
 
     // Closing the window does NOT quit Halo — the app keeps running (menu bar
     // stays live); reopen via the Dock or ⌘N-style reactivation.
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { false }
 
-    /// Dock-click / reactivation with no visible window → bring the window back.
+    /// Dock-click / reactivation with no visible window → bring a window back
+    /// (or open a fresh one if they were all closed).
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
-            controller.window?.makeKeyAndOrderFront(nil)
+            if let win = windows.first?.controller.window { win.makeKeyAndOrderFront(nil) }
+            else { newWindow() }
             NSApp.activate(ignoringOtherApps: true)
         }
         return true
@@ -214,9 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func reloadConfig() {
         let t = GhosttyApp.shared.reloadConfig()
         theme = t
-        workspace.applyTheme(t)
-        controller.applyTheme(t)
-        refresh()
+        windows.forEach { $0.applyTheme(t) }
     }
 
     /// Open the native settings panel (⌘,).
@@ -224,7 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWC == nil {
             settingsWC = SettingsWindowController(
                 theme: theme,
-                onSidebarWidth: { [weak self] w in self?.controller.setSidebarWidth(w) },
+                onSidebarWidth: { [weak self] w in self?.active?.controller.setSidebarWidth(w) },
                 onImport: { [weak self] in self?.importGhosttyConfig() },
                 onOpenConfig: { [weak self] in self?.openConfigFile() },
                 onReload: { [weak self] in self?.reloadConfig() },
@@ -316,7 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         a.runModal()
     }
 
-    @objc func toggleSidebarMenu() { controller.toggleSidebar() }
+    @objc func toggleSidebarMenu() { active?.controller.toggleSidebar() }
 
     // MARK: - "Default terminal" integration (open folders / Finder Services)
 
@@ -344,92 +278,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             FileManager.default.fileExists(atPath: p, isDirectory: &isDir)
             return isDir.boolValue ? p : (p as NSString).deletingLastPathComponent
         }
-        guard workspace != nil else { pendingOpenDirs += dirs; return }
-        for d in dirs { workspace.newTab(cwd: d) }
-    }
-
-    /// Rebuild the sidebar from the live snapshot, filling branch + meta from caches.
-    /// Pure render — must NOT call refresh() (avoid a loop).
-    private func renderSidebar() {
-        // Evict meta for sessions that no longer exist, so a new PaneTree reusing
-        // a freed heap address can't inherit a stale chip. (Workspace evicts its
-        // own identity dicts; metaCache lives here, so prune it here.)
-        let live = Set(workspace.projs.flatMap(\.sessions).map(ObjectIdentifier.init))
-        metaCache = metaCache.filter { live.contains($0.key) }
-
-        var projs = workspace.snapshot()
-        for i in projs.indices {
-            let path = workspace.projs[i].path
-            let cached = branchCache[path]
-            projs[i].branch = (cached == nil || cached!.isEmpty) ? nil : cached
-            // Inject per-session ports + dirty from metaCache (keyed by PaneTree identity).
-            for si in projs[i].sessions.indices {
-                let tree = workspace.projs[i].sessions[si]
-                if let meta = metaCache[ObjectIdentifier(tree)] {
-                    projs[i].sessions[si].ports = meta.ports
-                    projs[i].sessions[si].dirty = meta.dirty
-                }
-            }
-        }
-        controller.setProjects(projs)
-    }
-
-    /// Update titlebar dir + sidebar footer (git) for the focused pane. Git runs
-    /// off-main so the shell-outs never block the UI.
-    private func refresh() {
-        let cwd = workspace.activeTree.focusedCwd ?? FileManager.default.currentDirectoryPath
-        // Ghostty-style titlebar: show the live program title when set, else the cwd.
-        let liveTitle = workspace.activeTree.focusedTitle
-        controller.setDir(liveTitle.isEmpty ? abbreviateHome(cwd) : liveTitle)
-        // Rebuild sidebar with cached branch labels.
-        renderSidebar()
-        // Git footer: off-main to avoid blocking the UI.
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let g = Git.status(cwd)
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    self?.controller.setStatus("normal" + (g.map { " · \($0)" } ?? ""))
-                }
-            }
-        }
-        // Fill branch cache for any project paths not yet checked, then re-render.
-        let unchecked = workspace.projs.map(\.path).filter { branchCache[$0] == nil }
-        if !unchecked.isEmpty {
-            DispatchQueue.global(qos: .utility).async { [weak self] in
-                var fresh: [String: String] = [:]
-                for path in unchecked {
-                    fresh[path] = Git.branch(path) ?? ""
-                }
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated {
-                        guard let self else { return }
-                        self.branchCache.merge(fresh) { old, _ in old }
-                        self.renderSidebar()
-                    }
-                }
-            }
-        }
-
-        // Compute ports + dirty for the active session off-main, store in metaCache, re-render.
-        // ponytail: only the active session refreshes per change; others keep last value.
-        // Upgrade path: a timer that cycles through all sessions.
-        let activeTree = workspace.activeTree
-        let activeTreeID = ObjectIdentifier(activeTree)
-        // focusedCwd is nil when the focused leaf is a browser (no terminal) —
-        // don't scan an unrelated dir for git/ports; show empty meta instead.
-        let activeCwd = workspace.activeTree.focusedCwd
-        let activePID = workspace.activeTree.focusedPID
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let ports = activePID.map { Ports.forShell(pid: $0) } ?? []
-            let dirty = activeCwd.map { Git.dirtyCount($0) } ?? 0
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.metaCache[activeTreeID] = (ports: ports, dirty: dirty)
-                    self.renderSidebar()
-                }
-            }
-        }
+        guard let ws = active?.workspace else { pendingOpenDirs += dirs; return }
+        for d in dirs { ws.newTab(cwd: d) }
     }
 
     // ponytail: hard-coded keybinds. make them config-driven when asked.
@@ -437,51 +287,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             guard let self, e.modifierFlags.contains(.command) else { return e }
             let shift = e.modifierFlags.contains(.shift)
+            // ⌘N: new window (doesn't need a key window).
+            if !shift, e.charactersIgnoringModifiers == "n" { self.newWindow(); return nil }
+            // Everything else acts on the key window.
+            guard let ctx = self.active else { return e }
+            let ws = ctx.workspace
             switch e.charactersIgnoringModifiers {
             // Split panes (unchanged)
-            case "d":  self.workspace.activeTree.splitFocused(shift ? .horizontal : .vertical, cwd: self.workspace.activeTree.focusedCwd); return nil
+            case "d":  ws.activeTree.splitFocused(shift ? .horizontal : .vertical, cwd: ws.activeTree.focusedCwd); return nil
             // ⌘W: pane → session → window (cascade). ⌘⇧W: close session.
             case "w":
-                let ws = self.workspace!
                 if shift {
                     ws.closeSession(ws.activeP, ws.activeS)
                 } else if ws.activeTree.paneCount > 1 {
-                    ws.activeTree.closeFocused()               // 1) close the pane
+                    ws.activeTree.closeFocused()                  // 1) close the pane
                 } else if ws.totalSessions > 1 {
-                    ws.closeSession(ws.activeP, ws.activeS)     // 2) close the session
+                    ws.closeSession(ws.activeP, ws.activeS)        // 2) close the session
                 } else {
-                    self.controller.window?.performClose(nil)  // 3) last one → close the window
+                    ctx.controller.window?.performClose(nil)      // 3) last one → close the window
                 }
                 return nil
             // ⌘F: in-terminal search (⌃⌘F is full screen — let that fall through)
             case "f" where !e.modifierFlags.contains(.control):
-                self.workspace.activeTree.focused?.startSearch(); return nil
+                ws.activeTree.focused?.startSearch(); return nil
             // ⌘B: toggle sidebar
-            case "b":  self.controller.toggleSidebar(); return nil
+            case "b":  ctx.controller.toggleSidebar(); return nil
             // ⌘]/⌘[: focus next/prev pane within the active session
-            case "]":  self.workspace.activeTree.focusNext(); return nil
-            case "[":  self.workspace.activeTree.focusPrev(); return nil
+            case "]":  ws.activeTree.focusNext(); return nil
+            case "[":  ws.activeTree.focusPrev(); return nil
             // ⌘T: new session in the active project (cwd = ~)
-            case "t":  self.workspace.newSession(self.workspace.activeP); return nil
+            case "t":  ws.newSession(ws.activeP); return nil
             // ⌘}/⌘{: cycle sessions within the active project
-            case "}":  self.workspace.nextSession(); return nil
-            case "{":  self.workspace.prevSession(); return nil
+            case "}":  ws.nextSession(); return nil
+            case "{":  ws.prevSession(); return nil
             // ⌘1–9: select session n in the active project
             case "1","2","3","4","5","6","7","8","9":
                 if let n = Int(e.charactersIgnoringModifiers ?? "") {
-                    self.workspace.selectSessionInActiveProject(n)
+                    ws.selectSessionInActiveProject(n)
                 }
                 return nil
             // ⌘⇧Return: open browser at the focused session's first detected port, else about:blank
             case "\r" where shift:
-                let tree = self.workspace.activeTree
-                let treeID = ObjectIdentifier(tree)
-                let url: URL
-                if let port = self.metaCache[treeID]?.ports.first {
-                    url = URL(string: "http://localhost:\(port)")!
-                } else {
-                    url = URL(string: "about:blank")!
-                }
+                let tree = ws.activeTree
+                let url = ctx.detectedPort(tree).map { URL(string: "http://localhost:\($0)")! } ?? URL(string: "about:blank")!
                 tree.openBrowser(url: url)
                 return nil
             default:   return e

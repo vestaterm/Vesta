@@ -32,6 +32,14 @@ func makeMainMenu(target: AppDelegate) -> NSMenu {
     app.addItem(.separator())
     app.addItem(withTitle: "Quit Halo", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
+    // ── File ───────────────────────────────────────────────────────────────────
+    let fileItem = NSMenuItem()
+    main.addItem(fileItem)
+    let file = NSMenu(title: "File")
+    fileItem.submenu = file
+    file.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindowMenu), keyEquivalent: "n")
+        .target = target
+
     // ── Edit (responder chain: works in text fields; terminal uses ghostty) ───
     let editItem = NSMenuItem()
     main.addItem(editItem)

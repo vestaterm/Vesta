@@ -7,7 +7,7 @@ func controlSocketPath() -> String {
     return base + "/control.sock"
 }
 
-let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser", "reload"]
+let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser", "reload", "search"]
 
 // MARK: - Socket helpers
 
@@ -48,13 +48,14 @@ private func encode(_ obj: Any) -> String {
 // @unchecked Sendable: paneTree is only ever touched on the main thread (via the
 // DispatchQueue.main.sync hop below); the queue/listenFD are server-thread only.
 final class ControlServer: @unchecked Sendable {
-    private let workspace: Workspace
+    /// Resolves the key window's workspace (multi-window); nil if no window.
+    private let workspaceProvider: @MainActor () -> Workspace?
     private let queue = DispatchQueue(label: "halo.control.server")
     private var listenFD: Int32 = -1
     /// Live config reload (set by AppDelegate; re-themes chrome + surfaces).
     var onReload: (@MainActor () -> Void)?
 
-    init(workspace: Workspace) { self.workspace = workspace }
+    init(workspaceProvider: @escaping @MainActor () -> Workspace?) { self.workspaceProvider = workspaceProvider }
 
     func start() {
         queue.async { [weak self] in self?.run() }
@@ -105,6 +106,7 @@ final class ControlServer: @unchecked Sendable {
     }
 
     @MainActor private func leaf(_ args: [String]) -> TerminalPane? {
+        guard let workspace = workspaceProvider() else { return nil }
         let tree = workspace.activeTree
         if let first = args.first, first != "focused", let id = Int(first) {
             tree.focus(id: id)
@@ -113,6 +115,7 @@ final class ControlServer: @unchecked Sendable {
     }
 
     @MainActor private func dispatch(_ cmd: String, _ args: [String]) -> [String: Any] {
+        guard let workspace = workspaceProvider() else { return ["ok": false, "error": "no window"] }
         let cwd = argValue(args, "--cwd")
         let tree = workspace.activeTree
         switch cmd {
