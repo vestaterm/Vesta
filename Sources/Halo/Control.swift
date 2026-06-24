@@ -260,6 +260,7 @@ func printUsage() {
       halo                  launch the GUI app
       halo <verb> [args]    drive the running app over the control socket
       halo help             show this message
+      halo attach ssh://host[:port] [session]   attach to a session on another machine
 
     Control verbs:
       split [-h|--horizontal] [--cwd DIR]   split the focused pane (default vertical)
@@ -290,6 +291,8 @@ func printUsage() {
     Colors also sync from your ghostty background/foreground/palette.
 
     Socket: ~/Library/Application Support/halo/control.sock
+    Remote: `halo attach ssh://host` self-deploys halod/halo-attach over scp
+            when missing/outdated (SSH-forwarded unix socket; no TCP listener).
     """)
 }
 
