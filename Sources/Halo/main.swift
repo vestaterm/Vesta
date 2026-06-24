@@ -106,6 +106,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         // Window is key now — focus the active pane so the user can type immediately.
         workspace.focusActive()
+
+        // Finder Services provider ("New Halo Session Here"); drain any folders the
+        // app was launched to open (open -a Halo <dir> / Open With).
+        NSApp.servicesProvider = self
+        if !pendingOpenDirs.isEmpty {
+            let dirs = pendingOpenDirs; pendingOpenDirs = []
+            for d in dirs { workspace.newTab(cwd: d) }
+        }
     }
 
     /// Ring a background session when its foreground process returns to the shell
@@ -225,6 +233,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func toggleSidebarMenu() { controller.toggleSidebar() }
+
+    // MARK: - "Default terminal" integration (open folders / Finder Services)
+
+    private var pendingOpenDirs: [String] = []
+
+    /// Finder "Open With Halo", `open -a Halo <dir>`, dropping a folder on the icon.
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        openPaths(filenames)
+        sender.reply(toOpenOrPrint: .success)
+    }
+
+    /// Finder right-click ▸ Services ▸ "New Halo Session Here" (registered via Info.plist).
+    @objc func newSessionHere(_ pboard: NSPasteboard, userData: String?,
+                              error: AutoreleasingUnsafeMutablePointer<NSString>?) {
+        let urls = pboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
+        openPaths(urls.filter { $0.isFileURL }.map { $0.path })
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Open a terminal session at each path (a file → its parent dir). Queues if the
+    /// workspace isn't built yet (app launched by the open request).
+    private func openPaths(_ paths: [String]) {
+        let dirs = paths.map { p -> String in
+            var isDir: ObjCBool = false
+            FileManager.default.fileExists(atPath: p, isDirectory: &isDir)
+            return isDir.boolValue ? p : (p as NSString).deletingLastPathComponent
+        }
+        guard workspace != nil else { pendingOpenDirs += dirs; return }
+        for d in dirs { workspace.newTab(cwd: d) }
+    }
 
     /// Rebuild the sidebar from the live snapshot, filling branch + meta from caches.
     /// Pure render — must NOT call refresh() (avoid a loop).

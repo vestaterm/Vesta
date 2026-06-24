@@ -53,6 +53,26 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
   <key>NSHighResolutionCapable</key> <true/>
   <key>NSPrincipalClass</key>        <string>NSApplication</string>
   <key>LSApplicationCategoryType</key> <string>public.app-category.developer-tools</string>
+  <!-- open a folder in Halo: "Open With", `open -a Halo <dir>`, drag-to-icon -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>      <string>Folder</string>
+      <key>CFBundleTypeRole</key>      <string>Viewer</string>
+      <key>LSHandlerRank</key>         <string>Alternate</string>
+      <key>LSItemContentTypes</key>    <array><string>public.folder</string></array>
+    </dict>
+  </array>
+  <!-- Finder right-click > Services > New Halo Session Here -->
+  <key>NSServices</key>
+  <array>
+    <dict>
+      <key>NSMenuItem</key>   <dict><key>default</key><string>New Halo Session Here</string></dict>
+      <key>NSMessage</key>    <string>newSessionHere</string>
+      <key>NSPortName</key>   <string>Halo</string>
+      <key>NSSendFileTypes</key> <array><string>public.folder</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST
