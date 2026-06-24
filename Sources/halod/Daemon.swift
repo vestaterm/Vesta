@@ -22,6 +22,12 @@ final class Daemon {
 
     func run() {
         MuxPaths.ensureDirs()
+        // Single-instance: hold an exclusive lock so concurrent lazy-spawns (one per
+        // pane at launch) don't race to unlink/clobber each other's live socket. A
+        // redundant halod exits cleanly; the relays then all connect to the winner.
+        // lockFD intentionally stays open for the process lifetime (releases on exit).
+        let lockFD = open(MuxPaths.base + "/halod.lock", O_CREAT | O_RDWR, 0o600)
+        guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { exit(0) }
         let path = MuxPaths.daemonSocket
         unlink(path)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
