@@ -53,7 +53,20 @@ final class WindowContext {
             onCloseSession:    { [weak ws] p, s in ws?.closeSession(p, s) },
             onNewSession:      { [weak ws] p in ws?.newSession(p) },
             onToggleExpand:    { [weak ws] p in ws?.toggleExpand(p) },
-            onNewProject:      { [weak ws] in ws?.newProject() },
+            onNewProject:      { [weak ws] in
+                                            guard let ws else { return }
+                                            let panel = NSOpenPanel()
+                                            panel.canChooseDirectories = true
+                                            panel.canChooseFiles = false
+                                            panel.allowsMultipleSelection = false
+                                            panel.prompt = "Add Project"
+                                            panel.message = "Choose a folder for the new project"
+                                            panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory())
+                                            let pick = { (r: NSApplication.ModalResponse) in
+                                                if r == .OK, let url = panel.url { ws.newProject(at: url.path) }
+                                            }
+                                            if let win = ws.container.window { panel.beginSheetModal(for: win, completionHandler: pick) }
+                                            else { pick(panel.runModal()) } },
             onRenameProject:   { [weak ws] p, name in ws?.renameProject(p, name) },
             onRenameSession:   { [weak ws] p, s, name in ws?.renameSession(p, s, name) },
             onSetProjectColor: { [weak ws] p, color in ws?.setProjectColor(p, color) },

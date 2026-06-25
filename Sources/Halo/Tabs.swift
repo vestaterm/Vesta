@@ -187,11 +187,14 @@ final class Workspace {
         showActive()
     }
 
-    func newProject() {
-        let home = NSHomeDirectory()
-        var proj = makeProj(name: "untitled", path: home, expanded: true, id: "u:\(UUID().uuidString)")
-        // Add one session at home immediately (mirrors home proj behaviour).
-        let tree = makeTree(cwd: home)
+    /// Create a project. With a path, the folder name becomes the project name and its
+    /// first session opens there; without one, an "untitled" project at home (legacy default).
+    func newProject(at path: String? = nil) {
+        let dir = path ?? NSHomeDirectory()
+        let name = path == nil ? "untitled" : ((dir as NSString).lastPathComponent.isEmpty ? dir : (dir as NSString).lastPathComponent)
+        var proj = makeProj(name: name, path: dir, expanded: true, id: "u:\(UUID().uuidString)")
+        // Add one session in the project dir immediately (mirrors home proj behaviour).
+        let tree = makeTree(cwd: dir)
         proj.sessions.append(tree)
         projs.append(proj)
         activeP = projs.count - 1

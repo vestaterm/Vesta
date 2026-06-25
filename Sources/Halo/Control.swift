@@ -239,7 +239,10 @@ final class ControlServer: @unchecked Sendable {
         case "project":
             switch args.first {
             case "new":
-                workspace.newProject()
+                // `project new [PATH] [--name X]` — PATH is the positional after "new"
+                // (the CLI injects the caller's cwd when omitted; nil → home).
+                let path = (args.count >= 2 && !args[1].hasPrefix("--")) ? args[1] : nil
+                workspace.newProject(at: path)
                 if let name = argValue(args, "--name") { workspace.renameProject(workspace.activeP, name) }
             case "rename":
                 guard args.count >= 2 else { return ["ok": false, "error": "project rename <name>"] }
@@ -250,7 +253,7 @@ final class ControlServer: @unchecked Sendable {
                 guard args.count >= 2 else { return ["ok": false, "error": "project color <#hex|none>"] }
                 workspace.setProjectColor(workspace.activeP, args[1] == "none" ? nil : ghosttyColor(args[1]))
             default:
-                return ["ok": false, "error": "project: new [--name X] | rename <name> | remove | color <#hex|none>"]
+                return ["ok": false, "error": "project: new [PATH] [--name X] | rename <name> | remove | color <#hex|none>"]
             }
             return ["ok": true, "project": workspace.activeP]
         default:
@@ -275,7 +278,12 @@ func controlSocketAlive() -> Bool {
 
 func runControlCLI(_ args: [String]) -> Int32 {
     guard let verb = args.first else { return 1 }
-    let rest = Array(args.dropFirst())
+    var rest = Array(args.dropFirst())
+    // `halo project new` with no PATH → default to the caller's working directory (resolved
+    // here, since the app's cwd differs from the shell's). An explicit path is left untouched.
+    if verb == "project", rest.first == "new", !(rest.count >= 2 && !rest[1].hasPrefix("--")) {
+        rest.insert(FileManager.default.currentDirectoryPath, at: 1)
+    }
 
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { FileHandle.standardError.write(Data("halo: app not running\n".utf8)); return 1 }
@@ -376,7 +384,7 @@ func printUsage() {
       sessions                              readable session list with select indices (▸ = active)
       select <project> <session>            switch the active window to a session (0-based)
       rename <name>                         rename the active session
-      project new [--name X]|rename <name>|remove|color <#hex|none>   manage projects
+      project new [PATH] [--name X]|rename <name>|remove|color <#hex|none>   manage projects (new: PATH or caller's cwd)
       kill <id>                             terminate a session's shell under the daemon
 
     Config (in your ghostty config; libghostty ignores the halo- keys):
