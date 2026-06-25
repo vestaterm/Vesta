@@ -145,6 +145,9 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
         }
     }
 
-    /// Make the search field first responder once we're in a window.
-    override func viewDidMoveToWindow() { window?.makeFirstResponder(input) }
+    /// Focus the text field once we're in the window hierarchy (async so the window is
+    /// ready). Without this the field never gets keyboard focus and you can't type.
+    override func viewDidMoveToWindow() {
+        DispatchQueue.main.async { [weak self] in guard let self else { return }; self.window?.makeFirstResponder(self.input) }
+    }
 }

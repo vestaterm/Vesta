@@ -114,7 +114,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.frame = host.bounds
         overlay.autoresizingMask = [.width, .height]
         host.addSubview(overlay)
-        active?.controller.window?.makeFirstResponder(overlay)
     }
 
     /// halo.panel: create (id 0) or update (existing id) a plugin panel in the key window.
@@ -143,7 +142,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.frame = host.bounds
         overlay.autoresizingMask = [.width, .height]
         host.addSubview(overlay)
-        active?.controller.window?.makeFirstResponder(overlay)
     }
 
     /// Show `msg` as a transient toast banner in the key window (what `halo.notify` calls).
