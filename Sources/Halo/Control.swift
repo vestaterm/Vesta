@@ -141,9 +141,18 @@ final class ControlServer: @unchecked Sendable {
         case "plugins":
             switch args.first {
             case "sync":         return ["ok": true, "plugins": LuaRuntime.shared.syncPlugins()]
-            case "list", .none:  return ["ok": true,
-                                          "plugins": LuaRuntime.shared.installedPlugins(),
-                                          "disabled": LuaRuntime.shared.disabledPlugins().sorted()]
+            case "list", .none:
+                var locked: [String: [String: Any]] = [:]
+                for (n, e) in LuaRuntime.shared.readLock() {
+                    var d: [String: Any] = ["commit": e.commit]
+                    if let r = e.ref { d["ref"] = r }
+                    if let v = e.version { d["version"] = v }
+                    locked[n] = d
+                }
+                return ["ok": true,
+                        "plugins": LuaRuntime.shared.installedPlugins(),
+                        "disabled": LuaRuntime.shared.disabledPlugins().sorted(),
+                        "locked": locked]
             case "enable", "disable":
                 guard let name = args.dropFirst().first else {
                     return ["ok": false, "error": "plugins \(args[0]) <name>"]
@@ -322,12 +331,22 @@ func runControlCLI(_ args: [String]) -> Int32 {
         for p in panes { print(p) }
     } else if verb == "plugins", let names = obj["plugins"] as? [String] {
         let off = Set(obj["disabled"] as? [String] ?? [])
+        let locked = obj["locked"] as? [String: [String: Any]] ?? [:]
         if let p = obj["plugin"] as? String {        // enable/disable result
             print("\(p): \((obj["enabled"] as? Bool) == true ? "enabled" : "disabled")")
         } else if names.isEmpty {
             print("(no plugins)")
         } else {
-            for n in names { print(off.contains(n) ? "\(n)  (disabled)" : n) }
+            for n in names {
+                var parts = [n]
+                if let info = locked[n] {
+                    if let v = info["version"] as? String { parts.append("v\(v)") }
+                    if let r = info["ref"] as? String { parts.append("@\(r)") }
+                    if let c = info["commit"] as? String { parts.append("(\(c.prefix(7)))") }
+                }
+                if off.contains(n) { parts.append("(disabled)") }
+                print(parts.joined(separator: "  "))
+            }
         }
     } else if verb == "state" {
         if let d = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),

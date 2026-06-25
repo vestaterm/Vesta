@@ -14,7 +14,10 @@ nonisolated(unsafe) var luaEvents: [String: [Int32]] = [:]           // event �
 nonisolated(unsafe) var luaBinds: [(spec: String, ref: Int32)] = []  // "cmd+shift+p" → registry ref
 nonisolated(unsafe) var luaActiveInfo: () -> (cwd: String, title: String, paneID: String)? = { nil }
 nonisolated(unsafe) var luaSendText: (String) -> Void = { _ in }
-nonisolated(unsafe) var luaPluginSpecs: [String] = []                 // declared via halo.plugin(...)
+/// A declared plugin: repo (owner/repo or URL), an optional pinned ref (tag/commit/branch),
+/// and a load priority (higher loads first; ties broken by name).
+struct PluginSpec { var repo: String; var ref: String?; var priority: Int = 0 }
+nonisolated(unsafe) var luaPluginSpecs: [PluginSpec] = []             // declared via halo.plugin(...)
 nonisolated(unsafe) var luaControl: (String, [String]) -> [String: Any] = { _, _ in [:] }  // halo.cmd → control dispatch
 nonisolated(unsafe) var luaScheduleTimer: (Double, Int32) -> Void = { _, _ in }            // halo.timer
 nonisolated(unsafe) var luaClearTimers: () -> Void = {}                                     // reset on reload
@@ -77,8 +80,18 @@ private func l_halo_set(_ L: OpaquePointer?) -> Int32 {
     luaConfigOverrides[key] = val
     return 0
 }
+/// halo.plugin("owner/repo" [, { ref = "v1.2.0", priority = 10 }]) — declare a plugin,
+/// optionally pinned to a ref and/or with an explicit load priority.
 private func l_halo_plugin(_ L: OpaquePointer?) -> Int32 {
-    if let c = luaL_checklstring(L, 1, nil) { luaPluginSpecs.append(String(cString: c)) }
+    guard let c = luaL_checklstring(L, 1, nil) else { return 0 }
+    var spec = PluginSpec(repo: String(cString: c))
+    if lua_type(L, 2) == halo_lua_ttable() {
+        lua_getfield(L, 2, "ref")
+        spec.ref = lua_tolstring(L, -1, nil).map { String(cString: $0) }
+        lua_settop(L, -2)
+        lua_getfield(L, 2, "priority"); spec.priority = Int(lua_tointegerx(L, -1, nil)); lua_settop(L, -2)
+    }
+    luaPluginSpecs.append(spec)
     return 0
 }
 
@@ -220,11 +233,34 @@ private func l_halo_prompt(_ L: OpaquePointer?) -> Int32 {
 }
 
 /// git-clone a plugin (run off-main). `spec` is "owner/repo" (→ GitHub) or a full URL.
-func gitClonePlugin(_ spec: String, to dir: String) -> Bool {
-    let url = (spec.hasPrefix("http") || spec.hasPrefix("git@")) ? spec : "https://github.com/\(spec).git"
-    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-    p.arguments = ["clone", "--depth", "1", url, dir]
+/// Run git with args; true on exit 0.
+@discardableResult
+func runGit(_ args: [String]) -> Bool {
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/git"); p.arguments = args
     do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 } catch { return false }
+}
+
+/// The resolved HEAD commit of a git checkout (nil for a non-git drop-in folder).
+func gitHeadCommit(_ dir: String) -> String? {
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    p.arguments = ["-C", dir, "rev-parse", "HEAD"]
+    let pipe = Pipe(); p.standardOutput = pipe; p.standardError = FileHandle.nullDevice
+    do { try p.run(); p.waitUntilExit() } catch { return nil }
+    guard p.terminationStatus == 0 else { return nil }
+    let s = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    return s.isEmpty ? nil : s
+}
+
+/// Clone a plugin, optionally checking out a pinned ref. Returns the resolved commit, or nil
+/// on failure. A pinned ref needs full history (depth-1 can't reach an arbitrary commit/tag).
+func gitClonePlugin(_ spec: String, to dir: String, ref: String? = nil) -> String? {
+    // owner/repo → GitHub; a full URL (https/git@/file://) or absolute path is used as-is.
+    let url = (spec.contains("://") || spec.hasPrefix("git@") || spec.hasPrefix("/")) ? spec : "https://github.com/\(spec).git"
+    let ok = ref == nil ? runGit(["clone", "--depth", "1", url, dir]) : runGit(["clone", url, dir])
+    guard ok else { return nil }
+    if let ref { _ = runGit(["-C", dir, "checkout", "--quiet", ref]) }
+    return gitHeadCommit(dir)
 }
 private func l_halo_active(_ L: OpaquePointer?) -> Int32 {
     guard let info = luaActiveInfo() else { lua_pushnil(L); return 1 }
@@ -311,39 +347,103 @@ final class LuaRuntime {
     /// missing) plus any drop-in `plugins/*/` folder. Each plugin's `init.lua` (or
     /// `plugin/init.lua`) runs with the same `halo` global, so it registers commands /
     /// events / binds like init.lua does.
+    /// Strip a trailing .git and take the last path component → the plugin's folder name.
+    static func pluginName(_ repo: String) -> String {
+        ((repo as NSString).lastPathComponent as NSString).deletingPathExtension
+    }
+
     private func loadPlugins() {
         let base = Self.pluginsDir
         try? FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         let disabled = disabledPlugins()
-        var handled = Set<String>()
-        for spec in luaPluginSpecs {
-            let name = ((spec as NSString).lastPathComponent as NSString)
-                .deletingPathExtension   // strip a trailing .git
+        let declared = Dictionary(luaPluginSpecs.map { (Self.pluginName($0.repo), $0) },
+                                  uniquingKeysWith: { a, _ in a })
+
+        // 1. Install any declared-but-missing plugins (async on first run so the UI isn't blocked
+        //    by a clone). Pinned ref is checked out; the resolved commit goes in the lockfile.
+        for (name, spec) in declared where !disabled.contains(name) {
             let dir = base + "/" + name
-            handled.insert(dir)
-            if disabled.contains(name) { continue }
-            if FileManager.default.fileExists(atPath: dir) {
-                loadPluginEntry(dir)
-            } else {
-                luaNotify("installing plugin \(spec)…")
-                DispatchQueue.global(qos: .userInitiated).async {
-                    let ok = gitClonePlugin(spec, to: dir)
-                    DispatchQueue.main.async {
-                        if ok { self.loadPluginEntry(dir); luaNotify("plugin \(name) installed") }
-                        else  { luaNotify("plugin \(spec): clone failed") }
-                    }
+            guard !FileManager.default.fileExists(atPath: dir) else { continue }
+            let repo = spec.repo, ref = spec.ref
+            luaNotify("installing plugin \(name)…")
+            DispatchQueue.global(qos: .userInitiated).async {
+                let commit = gitClonePlugin(repo, to: dir, ref: ref)
+                DispatchQueue.main.async {
+                    guard let commit else { luaNotify("plugin \(repo): clone failed"); return }
+                    self.loadPluginEntry(dir)
+                    var lock = self.readLock()
+                    lock[name] = LockEntry(repo: repo, ref: ref, commit: commit, version: self.readManifest(dir).version)
+                    self.writeLock(lock)
+                    luaNotify("plugin \(name) installed")
                 }
             }
         }
-        // Drop-in: any plugins/*/ folder not already declared.
-        let entries = (try? FileManager.default.contentsOfDirectory(atPath: base)) ?? []
-        for e in entries.sorted() {
+
+        // 2. Load all installed (present, enabled) plugins in a deterministic order:
+        //    priority desc (declared opts win over manifest, default 0), then name.
+        struct Item { let name: String; let dir: String; let priority: Int; let version: String? }
+        var items: [Item] = []
+        for e in (try? FileManager.default.contentsOfDirectory(atPath: base))?.sorted() ?? [] {
             let dir = base + "/" + e
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue,
-                  !handled.contains(dir), !disabled.contains(e) else { continue }
-            loadPluginEntry(dir)
+                  !disabled.contains(e) else { continue }
+            let m = readManifest(dir)
+            let prio = declared[e]?.priority ?? m.priority ?? 0
+            items.append(Item(name: e, dir: dir, priority: prio, version: m.version))
         }
+        items.sort { $0.priority != $1.priority ? $0.priority > $1.priority : $0.name < $1.name }
+        for it in items { loadPluginEntry(it.dir) }
+
+        // 3. Refresh the lockfile from the installed git checkouts (records the resolved commit
+        //    + manifest version per plugin; non-git drop-ins are skipped).
+        var lock = readLock()
+        for it in items {
+            guard let commit = gitHeadCommit(it.dir) else { continue }
+            let spec = declared[it.name]
+            lock[it.name] = LockEntry(repo: spec?.repo ?? "", ref: spec?.ref, commit: commit, version: it.version)
+        }
+        writeLock(lock)
+    }
+
+    // MARK: - Manifest + lockfile
+
+    static var lockPath: String { configDir + "/plugins.lock" }
+
+    /// One pinned plugin in the lockfile.
+    struct LockEntry: Codable { var repo: String; var ref: String?; var commit: String; var version: String? }
+
+    func readLock() -> [String: LockEntry] {
+        guard let data = FileManager.default.contents(atPath: Self.lockPath),
+              let lock = try? JSONDecoder().decode([String: LockEntry].self, from: data) else { return [:] }
+        return lock
+    }
+    func writeLock(_ lock: [String: LockEntry]) {
+        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? enc.encode(lock) else { return }
+        try? data.write(to: URL(fileURLWithPath: Self.lockPath), options: .atomic)
+    }
+
+    /// Read a plugin's optional `manifest.lua` (must `return { version=, priority= }`). It runs in
+    /// the shared Lua state; a well-behaved manifest only returns a table. Missing/invalid → nils.
+    func readManifest(_ dir: String) -> (version: String?, priority: Int?) {
+        guard let L = luaState else { return (nil, nil) }
+        let path = dir + "/manifest.lua"
+        guard FileManager.default.fileExists(atPath: path) else { return (nil, nil) }
+        if path.withCString({ luaL_loadfilex(L, $0, nil) }) != 0 || lua_pcallk(L, 0, 1, 0, 0, nil) != 0 {
+            lua_settop(L, -2); return (nil, nil)
+        }
+        defer { lua_settop(L, -2) }   // pop the returned value
+        guard lua_type(L, -1) == halo_lua_ttable() else { return (nil, nil) }
+        lua_getfield(L, -1, "version")
+        let version = lua_tolstring(L, -1, nil).map { String(cString: $0) }
+        lua_settop(L, -2)
+        lua_getfield(L, -1, "priority")
+        var isInt: Int32 = 0
+        let pv = lua_tointegerx(L, -1, &isInt)
+        let priority = isInt != 0 ? Int(pv) : nil
+        lua_settop(L, -2)
+        return (version, priority)
     }
 
     static var disabledPath: String { configDir + "/disabled-plugins" }
@@ -386,15 +486,24 @@ final class LuaRuntime {
         }.sorted()
     }
 
-    /// `git pull` every installed plugin, then reload so updates take effect.
+    /// Update every installed plugin, then reload. A pinned plugin (ref in the declaration or
+    /// lockfile) fetches + checks out that ref (so a moved tag/branch updates); an unpinned one
+    /// fast-forwards. `start()` then rewrites the lockfile with the new resolved commits.
     @discardableResult
     func syncPlugins() -> [String] {
         let base = Self.pluginsDir
+        let lock = readLock()
+        let declared = Dictionary(luaPluginSpecs.map { (Self.pluginName($0.repo), $0) },
+                                  uniquingKeysWith: { a, _ in a })
         let names = installedPlugins()
         for n in names {
-            let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            p.arguments = ["-C", base + "/" + n, "pull", "--ff-only", "--quiet"]
-            try? p.run(); p.waitUntilExit()
+            let dir = base + "/" + n
+            runGit(["-C", dir, "fetch", "--quiet", "--tags"])
+            if let ref = declared[n]?.ref ?? lock[n]?.ref {
+                runGit(["-C", dir, "checkout", "--quiet", ref])
+            } else {
+                runGit(["-C", dir, "pull", "--ff-only", "--quiet"])
+            }
         }
         start()
         return names
