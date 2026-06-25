@@ -19,6 +19,7 @@ nonisolated(unsafe) var luaControl: (String, [String]) -> [String: Any] = { _, _
 nonisolated(unsafe) var luaScheduleTimer: (Double, Int32) -> Void = { _, _ in }            // halo.timer
 nonisolated(unsafe) var luaClearTimers: () -> Void = {}                                     // reset on reload
 nonisolated(unsafe) var luaShowPicker: ([String], Int32) -> Void = { _, _ in }             // halo.pick
+nonisolated(unsafe) var luaSetStatus: (String) -> Void = { _ in }                          // halo.status
 
 // Pop the function at stack slot 2 into the registry and return its ref (for on/command/bind).
 private func refFunctionArg2(_ L: OpaquePointer?) -> Int32 {
@@ -48,6 +49,10 @@ private func l_halo_bind(_ L: OpaquePointer?) -> Int32 {
 }
 private func l_halo_send(_ L: OpaquePointer?) -> Int32 {
     if let c = luaL_checklstring(L, 1, nil) { luaSendText(String(cString: c)) }
+    return 0
+}
+private func l_halo_status(_ L: OpaquePointer?) -> Int32 {
+    luaSetStatus(luaL_checklstring(L, 1, nil).map { String(cString: $0) } ?? "")
     return 0
 }
 private func l_halo_plugin(_ L: OpaquePointer?) -> Int32 {
@@ -195,6 +200,7 @@ final class LuaRuntime {
         reg("cmd",     l_halo_cmd)
         reg("timer",   l_halo_timer)
         reg("pick",    l_halo_pick)
+        reg("status",  l_halo_status)
         lua_setglobal(L, "halo")
         runPrelude()   // convenience wrappers over halo.cmd
         runInit()

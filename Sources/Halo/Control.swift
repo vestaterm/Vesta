@@ -8,7 +8,7 @@ func controlSocketPath() -> String {
     return base + "/control.sock"
 }
 
-let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser", "reload", "search", "kill", "new-window", "state", "select", "rename", "project", "notify", "run", "plugins"]
+let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser", "reload", "search", "kill", "new-window", "state", "sessions", "select", "rename", "project", "notify", "run", "plugins"]
 
 // MARK: - Socket helpers
 
@@ -128,7 +128,7 @@ final class ControlServer: @unchecked Sendable {
     @MainActor private func dispatch(_ cmd: String, _ args: [String]) -> [String: Any] {
         // App-level verbs that don't need a current window.
         switch cmd {
-        case "state":
+        case "state", "sessions":
             return stateProvider?() ?? ["ok": false, "error": "no state"]
         case "notify":
             guard !args.isEmpty else { return ["ok": false, "error": "notify: <message> required"] }
@@ -302,6 +302,21 @@ func runControlCLI(_ args: [String]) -> Int32 {
     } else if verb == "state" {
         if let d = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
            let s = String(data: d, encoding: .utf8) { print(s) }
+    } else if verb == "sessions", let projects = obj["projects"] as? [[String: Any]] {
+        // The key window's active (project,session) — marked with ▸ so `halo select` is obvious.
+        let key = (obj["windows"] as? [[String: Any]])?.first { ($0["key"] as? Bool) == true }
+        let ap = key?["activeProject"] as? Int, asn = key?["activeSession"] as? Int
+        for p in projects {
+            let pi = p["index"] as? Int ?? 0
+            let pname = p["name"] as? String ?? "?"
+            for s in (p["sessions"] as? [[String: Any]] ?? []) {
+                let si = s["index"] as? Int ?? 0
+                let name = (s["name"] as? String) ?? (s["cwd"] as? String).map { ($0 as NSString).lastPathComponent } ?? "shell"
+                let cwd = s["cwd"] as? String ?? ""
+                let mark = (pi == ap && si == asn) ? "▸" : " "
+                print("\(mark) \(pi) \(si)\t\(pname) / \(name)\t\(cwd)")
+            }
+        }
     } else if verb == "capture", let text = obj["text"] as? String {
         print(text)
     } else if verb == "open", let path = obj["path"] as? String {
@@ -340,6 +355,7 @@ func printUsage() {
       run <name>                            run a Lua command registered via halo.command
       plugins [list|sync]                   list installed Lua plugins, or git-pull + reload them
       state                                 dump all windows→projects→sessions→panes as JSON
+      sessions                              readable session list with select indices (▸ = active)
       select <project> <session>            switch the active window to a session (0-based)
       rename <name>                         rename the active session
       project new [--name X]|rename <name>|remove|color <#hex|none>   manage projects

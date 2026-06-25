@@ -20,9 +20,14 @@ if let verb = argv.first, verb == "help" || verb == "--help" || verb == "-h" {
 if let verb = argv.first, controlVerbs.contains(verb) {
     exit(runControlCLI(argv))
 }
-// Bare `halo` while an instance is already running → open a new window in it rather
-// than launching a second app instance.
-if argv.isEmpty, controlSocketAlive() {
+// A non-empty first arg that isn't a known verb → show help (don't silently launch the GUI).
+if let verb = argv.first {
+    FileHandle.standardError.write(Data("halo: unknown command '\(verb)'\n\n".utf8))
+    printUsage(); exit(2)
+}
+// Bare `halo` (no args): open a new window if an instance is already running, else
+// fall through to launch the GUI.
+if controlSocketAlive() {
     exit(runControlCLI(["new-window"]))
 }
 
@@ -248,6 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         luaClearTimers = { [weak self] in self?.luaTimers.forEach { $0.invalidate() }; self?.luaTimers.removeAll() }
         luaShowPicker = { [weak self] items, ref in self?.showPicker(items, ref) }
+        luaSetStatus = { [weak self] s in self?.windows.forEach { $0.controller.setLuaStatus(s) } }
         LuaRuntime.shared.start()   // embedded Lua: run ~/.config/halo/init.lua
 
         installKeybinds()

@@ -120,7 +120,15 @@ final class HaloWindowController: NSWindowController {
         prefixPill?.layer?.backgroundColor = t.accent.withAlphaComponent(0.12).cgColor
     }
 
-    func setStatus(_ text: String) { footer?.stringValue = text }
+    // Footer = git/normal status, plus an optional plugin status (halo.status) appended
+    // so the two don't clobber each other.
+    private var baseStatus = "▌ normal"
+    private var luaStatus = ""
+    func setStatus(_ text: String) { baseStatus = text; renderFooter() }
+    func setLuaStatus(_ s: String) { luaStatus = s; renderFooter() }
+    private func renderFooter() {
+        footer?.stringValue = luaStatus.isEmpty ? baseStatus : "\(baseStatus)   ·   \(luaStatus)"
+    }
     func setDir(_ text: String) {
         dirLabel?.attributedStringValue = dirAttributed(text)
         // Custom titlebar hides the system title, but set it anyway so Mission

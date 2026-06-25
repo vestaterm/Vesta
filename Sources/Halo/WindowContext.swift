@@ -23,6 +23,7 @@ final class WindowContext {
     private var metaCache: [ObjectIdentifier: (ports: [Int], dirty: Int)] = [:]
     // Prompt-return attention: per-session (shell pid, busy ticks).
     private var sessionBusy: [ObjectIdentifier: (shell: pid_t, busyTicks: Int)] = [:]
+    private var lastCwd: [ObjectIdentifier: String] = [:]   // for the dir-changed event
     private let attnMinTicks = 3
 
     init(theme: Theme,
@@ -99,6 +100,10 @@ final class WindowContext {
         sessionBusy = sessionBusy.filter { live.contains($0.key) }   // evict closed sessions
         for tree in sessions {
             let oid = ObjectIdentifier(tree)
+            // dir-changed: the focused pane's cwd moved (cd, etc.).
+            let cwd = tree.focusedCwd ?? ""
+            if let last = lastCwd[oid], last != cwd { luaFire("dir-changed", tree.focusedPaneID) }
+            lastCwd[oid] = cwd
             let pid = tree.focusedPID
             guard let prev = sessionBusy[oid], prev.shell != 0 else {
                 sessionBusy[oid] = (shell: pid ?? 0, busyTicks: 0)
