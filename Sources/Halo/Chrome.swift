@@ -344,9 +344,21 @@ final class HaloWindowController: NSWindowController {
         // Preserve reference so setProjects can clear+refill it
         projectsStack = stack
 
+        // Scroll the project list so many projects/sessions don't grow the window.
+        // A flipped clip view anchors content to the top (default NSClipView is bottom-up).
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.scrollerStyle = .overlay
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentView = FlippedClipView()
+        scroll.documentView = stack
+
         let footBlock = makeFooter()
 
-        v.addSubview(stack)
+        v.addSubview(scroll)
         v.addSubview(footBlock)
 
         NSLayoutConstraint.activate([
@@ -356,14 +368,19 @@ final class HaloWindowController: NSWindowController {
             edge.bottomAnchor.constraint(equalTo: v.bottomAnchor),
             edge.widthAnchor.constraint(equalToConstant: 1),
 
-            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: v.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: v.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: v.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: v.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: footBlock.topAnchor, constant: -8),
+
+            // Document (stack) fills the clip width; its height is intrinsic → scrolls when tall.
+            stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
 
             footBlock.leadingAnchor.constraint(equalTo: v.leadingAnchor),
             footBlock.trailingAnchor.constraint(equalTo: v.trailingAnchor),
             footBlock.bottomAnchor.constraint(equalTo: v.bottomAnchor),
-            footBlock.topAnchor.constraint(greaterThanOrEqualTo: stack.bottomAnchor, constant: 8),
         ])
         return v
     }
@@ -959,6 +976,12 @@ final class TaggedRow: NSView {
 /// (returns nil from hitTest) so the titlebar still drags/zooms the window normally.
 private final class TitlebarBackingView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Top-anchored clip view: default NSClipView is bottom-up, which makes a short list sit at the
+/// bottom of the scroll area and scroll the wrong way. Flipping anchors content to the top.
+private final class FlippedClipView: NSClipView {
+    override var isFlipped: Bool { true }
 }
 
 /// NSMenuItem with a stored closure — avoids @objc/#selector for inline menu actions.
