@@ -176,6 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         server.onNewWindow = { [weak self] in self?.newWindow(); NSApp.activate(ignoringOtherApps: true) }
         server.stateProvider = { [weak self] in self?.fullState() ?? ["ok": false] }
         server.start()
+        LuaRuntime.shared.start()   // embedded Lua: run ~/.config/halo/init.lua
 
         installKeybinds()
         let settings = GhosttyApp.shared.settings
@@ -273,6 +274,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let t = GhosttyApp.shared.reloadConfig()
         theme = t
         windows.forEach { $0.applyTheme(t) }
+        LuaRuntime.shared.start()   // re-run init.lua on reload
     }
 
     /// Open the native settings panel (⌘,).

@@ -7,9 +7,15 @@ let package = Package(
     targets: [
         // Real libghostty, built from ghostty source (zig 0.15.2) as an xcframework.
         .binaryTarget(name: "GhosttyKit", path: "Frameworks/GhosttyKit.xcframework"),
+        // Vendored Lua 5.4.7 (embedded scripting runtime; see Sources/CLua/PROVENANCE.txt).
+        .target(
+            name: "CLua",
+            path: "Sources/CLua",
+            cSettings: [.define("LUA_USE_MACOSX")]   // POSIX + dlopen-based require on macOS
+        ),
         .executableTarget(
             name: "halo",
-            dependencies: ["GhosttyKit", "HaloMux"],
+            dependencies: ["GhosttyKit", "HaloMux", "CLua"],
             path: "Sources/Halo",
             resources: [.copy("Resources/Fonts")],
             linkerSettings: [
