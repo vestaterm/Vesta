@@ -12,9 +12,12 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable   # Swift 6 toolchain (Package.swift needs tools 6.0)
       - name: Optional ghostty resources (themes)
         if: ${{ vars.GHOSTTY_RESOURCES_URL != '' }}
         env:
