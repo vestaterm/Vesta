@@ -106,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         key.workspace.reconcile(preferLive: true)
         for w in windows where w !== key { w.workspace.reconcile(preferLive: false) }
         renderPanels()   // active-scoped panels follow focus; new windows pick up "all" panels
+        PaneOutputTap.shared.retarget(key.workspace.activeTree.focusedPaneID)  // pane-output follows focus
     }
 
     /// Show a `halo.pick` picker overlay in the key window; call the Lua ref with the
@@ -170,13 +171,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// halo.prompt: free-text input overlay; call the Lua ref with the typed text (or free
     /// the ref on cancel).
-    func showPrompt(_ message: String, _ ref: Int32) {
+    func showPrompt(_ message: String, _ initial: String, _ ref: Int32) {
         guard let host = active?.controller.window?.contentView,
               !host.subviews.contains(where: { $0 is PickerOverlay }) else { luaUnref(ref); return }
         let dismiss = { [weak host] in host?.subviews.compactMap { $0 as? PickerOverlay }.forEach { $0.removeFromSuperview() } }
-        let overlay = PickerOverlay(theme: theme, prompt: message,
+        let overlay = PickerOverlay(theme: theme, prompt: message, initial: initial,
             onSubmit: { text in dismiss(); luaCall(ref: ref, stringArg: text); luaUnref(ref) },
             onCancel: { dismiss(); luaUnref(ref) })
+        overlay.frame = host.bounds
+        overlay.autoresizingMask = [.width, .height]
+        host.addSubview(overlay)
+    }
+
+    /// halo.confirm: yes/no overlay; call the Lua ref with a boolean (Esc/click-scrim → false).
+    func showConfirm(_ message: String, _ ref: Int32) {
+        guard let host = active?.controller.window?.contentView,
+              !host.subviews.contains(where: { $0 is PickerOverlay }) else { luaUnref(ref); return }
+        let dismiss = { [weak host] in host?.subviews.compactMap { $0 as? PickerOverlay }.forEach { $0.removeFromSuperview() } }
+        let overlay = PickerOverlay(theme: theme, confirm: message,
+            onChoose: { item in dismiss(); luaCallBool(ref: ref, item == "Yes"); luaUnref(ref) },
+            onCancel: { dismiss(); luaCallBool(ref: ref, false); luaUnref(ref) })
         overlay.frame = host.bounds
         overlay.autoresizingMask = [.width, .height]
         host.addSubview(overlay)
@@ -334,7 +348,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.luaPanelSpecs.removeAll()
             self.panelViews.values.flatMap { $0.values }.forEach { $0.removeFromSuperview() }
             self.panelViews.removeAll() }
-        luaShowPrompt = { [weak self] msg, ref in self?.showPrompt(msg, ref) }
+        luaShowPrompt = { [weak self] msg, initial, ref in self?.showPrompt(msg, initial, ref) }
+        luaShowConfirm = { [weak self] msg, ref in self?.showConfirm(msg, ref) }
         LuaRuntime.shared.start()   // run init.lua + plugins (builds plugin UI on the window)
         // config-in-Lua: fold halo.set() overrides in (Lua wins) + re-theme. The plugin UI built
         // above used the pre-Lua theme, so rebuild it against the applied theme — otherwise
@@ -357,7 +372,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Poll background sessions (all windows) for command-finished → attention ring.
         attnTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.windows.forEach { $0.pollAttention() } }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.windows.forEach { $0.pollAttention() }
+                // Catches handler-set changes (reload) and sub-pane focus; no-op if unchanged.
+                PaneOutputTap.shared.retarget(self.active?.workspace.activeTree.focusedPaneID)
+            }
         }
         NSApp.activate(ignoringOtherApps: true)
 

@@ -26,7 +26,8 @@ nonisolated(unsafe) var luaSetStatus: (String) -> Void = { _ in }               
 nonisolated(unsafe) var luaPanel: ([PanelLine], PanelOpts) -> Int = { _, _ in 0 }           // halo.panel → id
 nonisolated(unsafe) var luaClosePanel: (Int) -> Void = { _ in }                            // halo.close
 nonisolated(unsafe) var luaClearPanels: () -> Void = {}                                     // reset on reload
-nonisolated(unsafe) var luaShowPrompt: (String, Int32) -> Void = { _, _ in }               // halo.prompt
+nonisolated(unsafe) var luaShowPrompt: (String, String, Int32) -> Void = { _, _, _ in }    // halo.prompt(msg[, default], fn)
+nonisolated(unsafe) var luaShowConfirm: (String, Int32) -> Void = { _, _ in }              // halo.confirm
 nonisolated(unsafe) var luaConfigOverrides: [String: String] = [:]                         // halo.set (Lua wins)
 
 // Pop the function at stack slot 2 into the registry and return its ref (for on/command/bind).
@@ -225,10 +226,24 @@ private func l_halo_close(_ L: OpaquePointer?) -> Int32 {
 /// halo.prompt(message, fn) — ask for a line of text; fn(text) runs on Enter (one-shot).
 private func l_halo_prompt(_ L: OpaquePointer?) -> Int32 {
     let msg = luaL_checklstring(L, 1, nil).map { String(cString: $0) } ?? ""
+    // halo.prompt(msg, fn) or halo.prompt(msg, default, fn): a string at slot 2 is the default.
+    let hasDefault = lua_type(L, 2) != halo_lua_tfunction()
+    let def = hasDefault ? (lua_tolstring(L, 2, nil).map { String(cString: $0) } ?? "") : ""
+    let fnIdx: Int32 = hasDefault ? 3 : 2
+    luaL_checktype(L, fnIdx, halo_lua_tfunction())
+    lua_pushvalue(L, fnIdx)
+    let ref = luaL_ref(L, halo_lua_registryindex())
+    luaShowPrompt(msg, def, ref)
+    return 0
+}
+
+/// halo.confirm(message, fn): yes/no dialog; calls fn(true) on Yes, fn(false) on No/cancel.
+private func l_halo_confirm(_ L: OpaquePointer?) -> Int32 {
+    let msg = luaL_checklstring(L, 1, nil).map { String(cString: $0) } ?? ""
     luaL_checktype(L, 2, halo_lua_tfunction())
     lua_pushvalue(L, 2)
     let ref = luaL_ref(L, halo_lua_registryindex())
-    luaShowPrompt(msg, ref)
+    luaShowConfirm(msg, ref)
     return 0
 }
 
@@ -285,6 +300,40 @@ func luaCall(ref: Int32, stringArg: String? = nil) {
         lua_settop(L, -2)   // pop the error
     }
 }
+/// Invoke a registry-ref callback with a single boolean arg (halo.confirm).
+func luaCallBool(ref: Int32, _ b: Bool) {
+    guard let L = luaState else { return }
+    lua_rawgeti(L, halo_lua_registryindex(), lua_Integer(ref))
+    lua_pushboolean(L, b ? 1 : 0)
+    if lua_pcallk(L, 1, 0, 0, 0, nil) != 0 {
+        let err = lua_tolstring(L, -1, nil).map { String(cString: $0) } ?? "error"
+        luaNotify("lua: \(err)")
+        lua_settop(L, -2)
+    }
+}
+/// True if any plugin registered a `pane-output` handler (gates the output tap so it
+/// costs nothing when unused).
+func luaHasPaneOutputHandler() -> Bool { !(luaEvents["pane-output"]?.isEmpty ?? true) }
+
+/// Fire `pane-output` handlers with (paneID, chunk). The chunk is raw terminal bytes —
+/// pushed with lua_pushlstring (byte-safe; lua_pushstring truncates at the first NUL).
+/// Main thread only (Lua is single-threaded).
+func luaFirePaneOutput(paneID: String, chunk: Data) {
+    guard let L = luaState, let refs = luaEvents["pane-output"], !refs.isEmpty, !chunk.isEmpty else { return }
+    for ref in refs {
+        lua_rawgeti(L, halo_lua_registryindex(), lua_Integer(ref))
+        paneID.withCString { _ = lua_pushstring(L, $0) }
+        chunk.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            lua_pushlstring(L, raw.baseAddress?.assumingMemoryBound(to: CChar.self), raw.count)
+        }
+        if lua_pcallk(L, 2, 0, 0, 0, nil) != 0 {
+            let err = lua_tolstring(L, -1, nil).map { String(cString: $0) } ?? "error"
+            luaNotify("lua: \(err)")
+            lua_settop(L, -2)
+        }
+    }
+}
+
 /// Fire every handler registered for `event` via halo.on (with an optional string payload).
 func luaFire(_ event: String, _ arg: String? = nil) {
     guard luaState != nil, let refs = luaEvents[event] else { return }
@@ -335,6 +384,7 @@ final class LuaRuntime {
         reg("panel",   l_halo_panel)
         reg("close",   l_halo_close)
         reg("prompt",  l_halo_prompt)
+        reg("confirm", l_halo_confirm)
         reg("set",     l_halo_set)
         lua_setglobal(L, "halo")
         runPrelude()   // convenience wrappers over halo.cmd

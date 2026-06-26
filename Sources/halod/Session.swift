@@ -18,6 +18,9 @@ final class Session {
     /// multiple = mirroring, which is deferred — fan-out is free, size is just
     /// last-resize-wins for now (no focus arbitration).
     private(set) var clients: [Int32] = []
+    /// Passive output-only readers (GUI pane-output taps). Get the live output fan-out
+    /// but no ring replay, and are excluded from attachedCount.
+    private(set) var subscribers: [Int32] = []
     private(set) var alive = true
     var cwd: String?
     var name: String?
@@ -84,6 +87,8 @@ final class Session {
 
     func addClient(fd: Int32) { clients.append(fd) }
     func removeClient(fd: Int32) { clients.removeAll { $0 == fd } }
+    func addSubscriber(fd: Int32) { subscribers.append(fd) }
+    func removeSubscriber(fd: Int32) { subscribers.removeAll { $0 == fd } }
 
     func writeInput(_ data: Data) {
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in

@@ -1,6 +1,6 @@
 import Foundation
 
-public let muxProtocolVersion = 4
+public let muxProtocolVersion = 5
 
 public struct SessionInfo: Codable, Equatable {
     public let id: String
@@ -20,6 +20,7 @@ public enum ClientFrame: Equatable {
     case detach
     case kill
     case list
+    case subscribe(paneID: String)   // v5: passive output-only reader (GUI pane-output tap)
 }
 
 public enum ServerFrame: Equatable {
@@ -72,6 +73,8 @@ public func encode(_ f: ClientFrame) -> Data {
     case .detach: return frame(0x04, p)
     case .kill:   return frame(0x05, p)
     case .list:   return frame(0x06, p)
+    case let .subscribe(paneID):
+        putStr(paneID, into: &p); return frame(0x07, p)
     }
 }
 
@@ -139,6 +142,7 @@ public func decodeClientFrame(from buf: inout Data) -> ClientFrame? {
     case 0x04: return .detach
     case 0x05: return .kill
     case 0x06: return .list
+    case 0x07: return .subscribe(paneID: r.str())
     default:   return nil
     }
 }
@@ -171,6 +175,7 @@ public func muxProtocolSelfCheck() {
         .input(Data([0x01, 0x02, 0xff, 0x00])),
         .resize(cols: 120, rows: 40),
         .detach, .kill, .list,
+        .subscribe(paneID: "sub-1"),
     ]
     for f in clientCases {
         var buf = encode(f)

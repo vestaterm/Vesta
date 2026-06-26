@@ -7,7 +7,7 @@ import Darwin
 enum MuxClient {
     /// Connect to the daemon socket (no lazy-spawn — if the daemon is down there
     /// are no detached sessions). Returns the connected fd or nil.
-    private static func connect() -> Int32? {
+    static func connect() -> Int32? {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0); if fd < 0 { return nil }
         var addr = sockaddr_un(); addr.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(MuxPaths.daemonSocket.utf8)
@@ -22,7 +22,7 @@ enum MuxClient {
         return fd
     }
 
-    private static func send(_ fd: Int32, _ f: ClientFrame) {
+    static func send(_ fd: Int32, _ f: ClientFrame) {
         let d = encode(f)
         d.withUnsafeBytes { raw in var off = 0
             while off < raw.count { let n = write(fd, raw.baseAddress!.advanced(by: off), raw.count - off); if n <= 0 { break }; off += n } }

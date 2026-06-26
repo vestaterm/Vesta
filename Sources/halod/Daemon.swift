@@ -10,6 +10,8 @@ final class Daemon {
     private var clientBufs: [Int32: Data] = [:]   // partial inbound frames per client fd
     // Per-connection state: fd → the paneID it attached to.
     private var clientSession: [Int32: String] = [:]
+    // fd → paneID for passive output-only subscribers (GUI pane-output taps).
+    private var subscriberSession: [Int32: String] = [:]
 
     func run() {
         MuxPaths.ensureDirs()
@@ -95,6 +97,7 @@ final class Daemon {
             let frame = encode(ServerFrame.output(data))
             var stuck: [Int32] = []
             for c in s.clients where !sendFrame(c, frame) { stuck.append(c) }
+            for c in s.subscribers where !sendFrame(c, frame) { stuck.append(c) }
             for c in stuck { closeClient(c) }   // drop desynced/stuck clients after iterating
         } else if n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
             s.markDead()
@@ -107,8 +110,10 @@ final class Daemon {
             let frame = encode(ServerFrame.exited(status: status))
             var stuck: [Int32] = []
             for c in s.clients where !sendFrame(c, frame) { stuck.append(c) }
+            let subs = s.subscribers            // their session is gone → close them too
             sessions[id] = nil
             for c in stuck { closeClient(c) }   // drop stuck clients after iterating + removing session
+            for c in subs { closeClient(c) }
         }
     }
 
@@ -144,7 +149,8 @@ final class Daemon {
 
     private func closeClient(_ fd: Int32) {
         if let paneID = clientSession[fd] { sessions[paneID]?.removeClient(fd: fd) }
-        clientSession[fd] = nil; clientBufs[fd] = nil; close(fd)
+        if let paneID = subscriberSession[fd] { sessions[paneID]?.removeSubscriber(fd: fd) }
+        clientSession[fd] = nil; subscriberSession[fd] = nil; clientBufs[fd] = nil; close(fd)
     }
 
     private func handle(_ frame: ClientFrame, from fd: Int32) {
@@ -191,6 +197,17 @@ final class Daemon {
             let infos = sessions.values.map { SessionInfo(id: $0.paneID, name: $0.name, cwd: $0.cwd,
                 alive: $0.alive, attachedCount: $0.clients.count) }
             if !sendFrame(fd, encode(ServerFrame.sessions(infos))) { closeClient(fd) }
+        case let .subscribe(paneID):
+            // Passive output-only reader. Attach to an EXISTING session only — never
+            // create one (avoids racing halo-attach's spawn). No ring replay (we want
+            // new output, not history); excluded from attachedCount (list uses .clients).
+            // Always ack so the client can version-gate; if no session yet, it stays
+            // unbound and the client retries on the next focus change.
+            if let s = sessions[paneID] {
+                s.addSubscriber(fd: fd)
+                subscriberSession[fd] = paneID
+            }
+            if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion))) { closeClient(fd) }
         }
     }
 

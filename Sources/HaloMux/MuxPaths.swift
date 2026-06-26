@@ -2,7 +2,9 @@ import Foundation
 
 public enum MuxPaths {
     public static var base: String {
-        NSHomeDirectory() + "/Library/Application Support/halo"
+        // HALO_MUX_DIR isolates a secondary/test instance onto its own socket + state.
+        if let dir = ProcessInfo.processInfo.environment["HALO_MUX_DIR"], !dir.isEmpty { return dir }
+        return NSHomeDirectory() + "/Library/Application Support/halo"
     }
     public static var daemonSocket: String { base + "/halod.sock" }
     public static func sessionLog(_ paneID: String) -> String { base + "/sessions/\(paneID).log" }

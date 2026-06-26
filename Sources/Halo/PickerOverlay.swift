@@ -16,10 +16,21 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
     private var isPrompt = false   // free-text input (halo.prompt) vs list pick (halo.pick)
 
     /// Free-text prompt (halo.prompt): a field with no list; Enter submits the typed text.
-    convenience init(theme: Theme, prompt: String, onSubmit: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+    /// `initial` pre-fills the field (halo.prompt's optional default).
+    convenience init(theme: Theme, prompt: String, initial: String = "",
+                     onSubmit: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
         self.init(theme: theme, items: [], onChoose: onSubmit, onCancel: onCancel)
         isPrompt = true
         input.placeholderString = prompt
+        input.stringValue = initial
+    }
+
+    /// Yes/No confirm (halo.confirm): a two-item pick with the message as the field label.
+    /// Enter on the highlighted item chooses; Esc cancels (treated as No by the caller).
+    convenience init(theme: Theme, confirm message: String,
+                     onChoose: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+        self.init(theme: theme, items: ["Yes", "No"], onChoose: onChoose, onCancel: onCancel)
+        input.placeholderString = message
     }
 
     init(theme: Theme, items: [String], onChoose: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
