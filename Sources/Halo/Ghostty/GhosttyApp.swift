@@ -317,7 +317,11 @@ final class GhosttyApp {
         nonisolated(unsafe) let ud = userdata
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                Unmanaged<TerminalPane>.fromOpaque(ud).takeUnretainedValue().onUpdate?()
+                let pane = Unmanaged<TerminalPane>.fromOpaque(ud).takeUnretainedValue()
+                // Shell exited on its own (vs. user-initiated close, which fires
+                // session-closed from Tabs). Only when the process actually ended.
+                if !processAlive { luaFire("session-exited", pane.paneID) }
+                pane.onUpdate?()
             }
         }
     }
