@@ -5,7 +5,9 @@ import AppKit
 struct PanelLine {
     var text: String
     var colorHex: String? = nil
-    var clickRef: Int32? = nil
+    var clickRef: Int32? = nil      // click handler, or (when isInput) the submit handler
+    var isInput: Bool = false       // editable field; clickRef fires with the typed text on Enter
+    var placeholder: String? = nil
 }
 
 /// Panel-level options from `halo.panel(lines, opts)`.
@@ -53,6 +55,42 @@ final class ClickableRow: NSView {
     }
     override func mouseExited(with event: NSEvent) { layer?.backgroundColor = baseFill.cgColor }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
+/// An editable panel row: a text field that calls `onSubmit(text)` on Enter and clears.
+/// Turns a panel into a small form (a search box, a quick-note input, a command line).
+final class PanelInputRow: NSView, NSTextFieldDelegate {
+    private let field = NSTextField()
+    let onSubmit: (String) -> Void
+    init(placeholder: String, theme: Theme, onSubmit: @escaping (String) -> Void) {
+        self.onSubmit = onSubmit
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 5
+        layer?.backgroundColor = NSColor(white: 1, alpha: 0.06).cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = theme.accent.withAlphaComponent(0.4).cgColor
+        field.placeholderString = placeholder
+        field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        field.isBezeled = false; field.drawsBackground = false; field.focusRingType = .none
+        field.textColor = NSColor(white: 0.95, alpha: 1)
+        field.delegate = self
+        field.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(field)
+        NSLayoutConstraint.activate([
+            field.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            field.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
+            field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -9),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        if sel == #selector(NSResponder.insertNewline(_:)) {
+            onSubmit(field.stringValue); field.stringValue = ""; return true
+        }
+        return false
+    }
 }
 
 /// A non-modal, plugin-controlled floating panel: a titled box of lines pinned to a corner.
@@ -110,9 +148,11 @@ final class PanelOverlay: NSView {
 
     /// Clicks pass through, EXCEPT on a clickable row (so the terminal stays usable).
     override func hitTest(_ point: NSPoint) -> NSView? {
-        var v = super.hitTest(point)
+        let hit = super.hitTest(point)
+        var v = hit
         while let cur = v {
             if cur is ClickableRow { return cur }
+            if cur is PanelInputRow { return hit }   // let the text field take the click (focus to type)
             if cur === self { break }
             v = cur.superview
         }
@@ -130,7 +170,16 @@ final class PanelOverlay: NSView {
         lineStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for line in lines.prefix(60) {
             let color = line.colorHex.flatMap(PanelOverlay.hexColor) ?? NSColor(white: 0.9, alpha: 1)
-            if let ref = line.clickRef {
+            if line.isInput {
+                if let ref = line.clickRef { clickRefs.append(ref) }
+                let ref = line.clickRef
+                let row = PanelInputRow(placeholder: line.placeholder ?? line.text, theme: theme) { text in
+                    if let ref { luaCall(ref: ref, stringArg: text) }
+                }
+                lineStack.addArrangedSubview(row)
+                row.leadingAnchor.constraint(equalTo: lineStack.leadingAnchor).isActive = true
+                row.trailingAnchor.constraint(equalTo: lineStack.trailingAnchor).isActive = true
+            } else if let ref = line.clickRef {
                 clickRefs.append(ref)
                 // Button look: accent-tinted fill, accent (or custom) text.
                 let textColor = line.colorHex == nil ? theme.accent : color

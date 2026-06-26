@@ -114,18 +114,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Set((active?.workspace.projs ?? []).flatMap { $0.sessions.flatMap { $0.paneIDs } })
     }
 
-    /// Show a `halo.pick` picker overlay in the key window; call the Lua ref with the
-    /// chosen item (or just dismiss + free the ref on cancel).
-    func showPicker(_ items: [String], _ ref: Int32) {
+    /// Mount a picker overlay in the key window (or free `refs` and bail if one is already up).
+    private func presentPicker(_ make: (NSView, @escaping () -> Void) -> PickerOverlay?, freeing refs: [Int32]) {
         guard let host = active?.controller.window?.contentView,
-              !host.subviews.contains(where: { $0 is PickerOverlay }) else { luaUnref(ref); return }
-        let dismiss = { [weak host] in host?.subviews.compactMap { $0 as? PickerOverlay }.forEach { $0.removeFromSuperview() } }
-        let overlay = PickerOverlay(theme: theme, items: items,
-            onChoose: { item in dismiss(); luaCall(ref: ref, stringArg: item); luaUnref(ref) },
-            onCancel: { dismiss(); luaUnref(ref) })
+              !host.subviews.contains(where: { $0 is PickerOverlay }) else { refs.forEach { luaUnref($0) }; return }
+        let dismiss: () -> Void = { [weak host] in host?.subviews.compactMap { $0 as? PickerOverlay }.forEach { $0.removeFromSuperview() } }
+        guard let overlay = make(host, dismiss) else { return }
         overlay.frame = host.bounds
         overlay.autoresizingMask = [.width, .height]
         host.addSubview(overlay)
+    }
+
+    /// halo.pick: single-select (rich rows); call the ref with the chosen label.
+    func showPick(_ items: [PickItem], _ ref: Int32) {
+        presentPicker({ _, dismiss in
+            PickerOverlay(theme: theme, richItems: items, multiSelect: false,
+                onPick: { idx in dismiss(); if let i = idx.first { luaCall(ref: ref, stringArg: items[i].label) }; luaUnref(ref) },
+                onCancel: { dismiss(); luaUnref(ref) })
+        }, freeing: [ref])
+    }
+
+    /// halo.pickmulti: multi-select; call the ref with a table of chosen labels.
+    func showPickMulti(_ items: [PickItem], _ ref: Int32) {
+        presentPicker({ _, dismiss in
+            PickerOverlay(theme: theme, richItems: items, multiSelect: true,
+                onPick: { idx in dismiss(); luaCallStringList(ref: ref, idx.map { items[$0].label }); luaUnref(ref) },
+                onCancel: { dismiss(); luaUnref(ref) })
+        }, freeing: [ref])
+    }
+
+    /// halo.menu: single-select where each item carries its own action ref (-1 = none).
+    func showMenu(_ items: [PickItem], _ refs: [Int32]) {
+        let free = { refs.forEach { if $0 >= 0 { luaUnref($0) } } }
+        presentPicker({ _, dismiss in
+            PickerOverlay(theme: theme, richItems: items, multiSelect: false,
+                onPick: { idx in dismiss(); if let i = idx.first, refs.indices.contains(i), refs[i] >= 0 { luaCall(ref: refs[i]) }; free() },
+                onCancel: { dismiss(); free() })
+        }, freeing: refs.filter { $0 >= 0 })
     }
 
     /// halo.panel: create (id 0) or update (existing id) a plugin panel. `window = "all"`
@@ -339,7 +364,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.luaTimers.append(t)
         }
         luaClearTimers = { [weak self] in self?.luaTimers.forEach { $0.invalidate() }; self?.luaTimers.removeAll() }
-        luaShowPicker = { [weak self] items, ref in self?.showPicker(items, ref) }
+        luaShowPick = { [weak self] items, ref in self?.showPick(items, ref) }
+        luaShowPickMulti = { [weak self] items, ref in self?.showPickMulti(items, ref) }
+        luaShowMenu = { [weak self] items, refs in self?.showMenu(items, refs) }
         luaSetStatus = { [weak self] s in self?.windows.forEach { $0.controller.setLuaStatus(s) } }
         luaPanel = { [weak self] lines, opts in self?.luaPanelSet(lines, opts) ?? 0 }
         luaClosePanel = { [weak self] id in

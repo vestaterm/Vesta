@@ -21,7 +21,9 @@ nonisolated(unsafe) var luaPluginSpecs: [PluginSpec] = []             // declare
 nonisolated(unsafe) var luaControl: (String, [String]) -> [String: Any] = { _, _ in [:] }  // halo.cmd → control dispatch
 nonisolated(unsafe) var luaScheduleTimer: (Double, Int32) -> Void = { _, _ in }            // halo.timer
 nonisolated(unsafe) var luaClearTimers: () -> Void = {}                                     // reset on reload
-nonisolated(unsafe) var luaShowPicker: ([String], Int32) -> Void = { _, _ in }             // halo.pick
+nonisolated(unsafe) var luaShowPick: ([PickItem], Int32) -> Void = { _, _ in }             // halo.pick (rich)
+nonisolated(unsafe) var luaShowPickMulti: ([PickItem], Int32) -> Void = { _, _ in }        // halo.pickmulti
+nonisolated(unsafe) var luaShowMenu: ([PickItem], [Int32]) -> Void = { _, _ in }           // halo.menu
 nonisolated(unsafe) var luaSetStatus: (String) -> Void = { _ in }                          // halo.status
 nonisolated(unsafe) var luaPanel: ([PanelLine], PanelOpts) -> Int = { _, _ in 0 }           // halo.panel → id
 nonisolated(unsafe) var luaClosePanel: (Int) -> Void = { _ in }                            // halo.close
@@ -92,6 +94,18 @@ func luaNoteError(_ L: OpaquePointer?, ref: Int32?) {
 
 /// A clean run clears the failing plugin's consecutive-error streak.
 private func luaNoteSuccess(_ ref: Int32) { if let owner = luaRefOwner[ref] { luaPluginErrors[owner] = nil } }
+
+/// Invoke a callback with a Lua array (table) of strings — halo.pickmulti's result.
+func luaCallStringList(ref: Int32, _ items: [String]) {
+    guard let L = luaState else { return }
+    lua_rawgeti(L, halo_lua_registryindex(), lua_Integer(ref))
+    lua_createtable(L, Int32(items.count), 0)
+    for (i, s) in items.enumerated() {
+        s.withCString { _ = lua_pushstring(L, $0) }
+        lua_rawseti(L, -2, lua_Integer(i + 1))
+    }
+    if luaArmedPcall(L, nargs: 1, nresults: 0) != 0 { luaNoteError(L, ref: ref) } else { luaNoteSuccess(ref) }
+}
 
 /// The runaway-loop guard must abort an infinite loop (not hang) yet leave normal calls alone.
 func luaSandboxSelfCheck() {
@@ -219,22 +233,70 @@ private func l_halo_timer(_ L: OpaquePointer?) -> Int32 {
 }
 
 /// halo.pick(items, fn) — show a filterable picker; fn(chosen) runs on selection. The
+/// Read a picker item array: each element is a string OR a table {label, desc}.
+private func pickItems(_ L: OpaquePointer?, _ idx: Int32) -> [PickItem] {
+    luaL_checktype(L, idx, halo_lua_ttable())
+    let n = Int(lua_rawlen(L, idx))
+    var out: [PickItem] = []
+    guard n > 0 else { return out }
+    for i in 1...n {
+        lua_rawgeti(L, idx, lua_Integer(i))                 // element at -1
+        if lua_type(L, -1) == halo_lua_ttable() {
+            var label = "", desc: String? = nil
+            lua_getfield(L, -1, "label"); if let c = lua_tolstring(L, -1, nil) { label = String(cString: c) }; lua_settop(L, -2)
+            lua_getfield(L, -1, "desc");  desc = lua_tolstring(L, -1, nil).map { String(cString: $0) }; lua_settop(L, -2)
+            out.append(PickItem(label: label, desc: desc))
+        } else if let c = lua_tolstring(L, -1, nil) {
+            out.append(PickItem(label: String(cString: c), desc: nil))
+        }
+        lua_settop(L, -2)                                   // pop element
+    }
+    return out
+}
+
+/// halo.pick(items, fn): items are strings or {label, desc}. fn gets the chosen label.
 /// fn ref is one-shot (freed after choose/cancel via luaUnref).
 private func l_halo_pick(_ L: OpaquePointer?) -> Int32 {
-    luaL_checktype(L, 1, halo_lua_ttable())
-    let len = Int(lua_rawlen(L, 1))
-    var items: [String] = []
-    if len > 0 {
-        for i in 1...len {
-            lua_rawgeti(L, 1, lua_Integer(i))
-            if let c = lua_tolstring(L, -1, nil) { items.append(String(cString: c)) }
-            lua_settop(L, -2)
-        }
-    }
+    let items = pickItems(L, 1)
     luaL_checktype(L, 2, halo_lua_tfunction())
     lua_pushvalue(L, 2)
     let ref = luaL_ref(L, halo_lua_registryindex())
-    luaShowPicker(items, ref)
+    luaShowPick(items, ref)
+    return 0
+}
+
+/// halo.pickmulti(items, fn): multi-select (Tab to mark). fn gets a table of chosen labels.
+private func l_halo_pickmulti(_ L: OpaquePointer?) -> Int32 {
+    let items = pickItems(L, 1)
+    luaL_checktype(L, 2, halo_lua_tfunction())
+    lua_pushvalue(L, 2)
+    let ref = luaL_ref(L, halo_lua_registryindex())
+    luaShowPickMulti(items, ref)
+    return 0
+}
+
+/// halo.menu(items): each item is {text|label, desc, action=fn}. Selecting an item calls
+/// its action. Item refs are one-shot (freed when the menu closes).
+private func l_halo_menu(_ L: OpaquePointer?) -> Int32 {
+    luaL_checktype(L, 1, halo_lua_ttable())
+    let n = Int(lua_rawlen(L, 1))
+    var items: [PickItem] = [], refs: [Int32] = []
+    if n > 0 {
+        for i in 1...n {
+            lua_rawgeti(L, 1, lua_Integer(i))               // element at -1
+            var label = "", desc: String? = nil
+            lua_getfield(L, -1, "text");  if let c = lua_tolstring(L, -1, nil) { label = String(cString: c) }; lua_settop(L, -2)
+            if label.isEmpty { lua_getfield(L, -1, "label"); if let c = lua_tolstring(L, -1, nil) { label = String(cString: c) }; lua_settop(L, -2) }
+            lua_getfield(L, -1, "desc");  desc = lua_tolstring(L, -1, nil).map { String(cString: $0) }; lua_settop(L, -2)
+            lua_getfield(L, -1, "action")
+            let ref: Int32 = lua_type(L, -1) == halo_lua_tfunction()
+                ? luaL_ref(L, halo_lua_registryindex())     // pops the fn
+                : { lua_settop(L, -2); return -1 }()         // no action
+            items.append(PickItem(label: label, desc: desc)); refs.append(ref)
+            lua_settop(L, -2)                               // pop element
+        }
+    }
+    luaShowMenu(items, refs)
     return 0
 }
 
@@ -274,9 +336,19 @@ private func panelLines(_ L: OpaquePointer?, _ idx: Int32) -> [PanelLine] {
             var line = PanelLine(text: "")
             lua_getfield(L, -1, "text");  line.text = lua_tolstring(L, -1, nil).map { String(cString: $0) } ?? ""; lua_settop(L, -2)
             lua_getfield(L, -1, "color"); line.colorHex = lua_tolstring(L, -1, nil).map { String(cString: $0) }; lua_settop(L, -2)
-            lua_getfield(L, -1, "click")
-            if lua_type(L, -1) == halo_lua_tfunction() { line.clickRef = luaL_ref(L, halo_lua_registryindex()) }  // pops fn
-            else { lua_settop(L, -2) }
+            lua_getfield(L, -1, "input"); let isInput = lua_toboolean(L, -1) != 0; lua_settop(L, -2)
+            if isInput {
+                // {input=true, placeholder=, action=fn}: an editable field; action fires with the text.
+                line.isInput = true
+                lua_getfield(L, -1, "placeholder"); line.placeholder = lua_tolstring(L, -1, nil).map { String(cString: $0) }; lua_settop(L, -2)
+                lua_getfield(L, -1, "action")
+                if lua_type(L, -1) == halo_lua_tfunction() { let r = luaL_ref(L, halo_lua_registryindex()); luaTagOwner(r); line.clickRef = r }
+                else { lua_settop(L, -2) }
+            } else {
+                lua_getfield(L, -1, "click")
+                if lua_type(L, -1) == halo_lua_tfunction() { line.clickRef = luaL_ref(L, halo_lua_registryindex()) }  // pops fn
+                else { lua_settop(L, -2) }
+            }
             out.append(line)
             lua_settop(L, -2)                               // pop element table
         }
@@ -455,7 +527,9 @@ final class LuaRuntime {
         reg("plugin",  l_halo_plugin)
         reg("cmd",     l_halo_cmd)
         reg("timer",   l_halo_timer)
-        reg("pick",    l_halo_pick)
+        reg("pick",      l_halo_pick)
+        reg("pickmulti", l_halo_pickmulti)
+        reg("menu",      l_halo_menu)
         reg("status",  l_halo_status)
         reg("panel",   l_halo_panel)
         reg("close",   l_halo_close)
