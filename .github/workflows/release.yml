@@ -1,6 +1,6 @@
 name: build & release
 
-# Build Halo.app on macOS, sign with Developer ID, notarize, staple, and attach
+# Build Vesta.app on macOS, sign with Developer ID, notarize, staple, and attach
 # a DMG to a GitHub Release. Runs on a version tag (v1.2.3) or manually.
 #
 # REQUIRED SECRETS (Settings ▸ Secrets and variables ▸ Actions) — see docs/SIGNING.md:
@@ -51,7 +51,7 @@ jobs:
           CERT_PW:  ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
         run: |
           set -euo pipefail
-          KEYCHAIN=$RUNNER_TEMP/halo-signing.keychain-db
+          KEYCHAIN=$RUNNER_TEMP/vesta-signing.keychain-db
           KCPW=$(openssl rand -hex 16)
           security create-keychain -p "$KCPW" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
@@ -64,7 +64,7 @@ jobs:
           echo "SIGN_ID=$IDENT" >> "$GITHUB_ENV"
           echo "Signing identity: $IDENT"
 
-      - name: Build + sign Halo.app
+      - name: Build + sign Vesta.app
         run: SIGN_ID="$SIGN_ID" ./make-app.sh release
 
       - name: Notarize + staple
@@ -75,22 +75,22 @@ jobs:
         run: |
           set -euo pipefail
           echo "$KEY_B64" | base64 --decode > /tmp/ac_key.p8
-          ditto -c -k --keepParent Halo.app /tmp/Halo.zip
-          xcrun notarytool submit /tmp/Halo.zip \
+          ditto -c -k --keepParent Vesta.app /tmp/Vesta.zip
+          xcrun notarytool submit /tmp/Vesta.zip \
             --key /tmp/ac_key.p8 --key-id "$KEY_ID" --issuer "$ISSUER_ID" --wait
-          xcrun stapler staple Halo.app
+          xcrun stapler staple Vesta.app
 
       - name: Make DMG
         run: |
           set -euo pipefail
-          mkdir -p dist/dmg && cp -R Halo.app dist/dmg/
+          mkdir -p dist/dmg && cp -R Vesta.app dist/dmg/
           ln -s /Applications dist/dmg/Applications
-          hdiutil create -volname Halo -srcfolder dist/dmg -ov -format UDZO dist/Halo.dmg
-          xcrun stapler staple dist/Halo.dmg || true
+          hdiutil create -volname Vesta -srcfolder dist/dmg -ov -format UDZO dist/Vesta.dmg
+          xcrun stapler staple dist/Vesta.dmg || true
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Halo.dmg
+          files: dist/Vesta.dmg
           generate_release_notes: true

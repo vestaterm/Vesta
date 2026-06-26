@@ -1,12 +1,12 @@
-# Signing, notarizing & releasing Halo
+# Signing, notarizing & releasing Vesta
 
-The GitHub Actions workflow `.github/workflows/release.yml` builds `Halo.app`,
+The GitHub Actions workflow `.github/workflows/release.yml` builds `Vesta.app`,
 signs it with your **Developer ID**, **notarizes** it with Apple, staples the
 ticket, packages a DMG, and attaches it to a GitHub Release. Tag a commit
 `vX.Y.Z` (or run the workflow manually) to trigger it.
 
 You must add a few secrets/variables first — Apple won't let CI sign as you
-without them, and Halo's two large build inputs are gitignored.
+without them, and Vesta's two large build inputs are gitignored.
 
 ## 1. Build inputs (repo **Variables** — Settings ▸ Secrets and variables ▸ Actions ▸ Variables)
 
@@ -58,7 +58,7 @@ base64 -i AuthKey_XXXXX.p8 | pbcopy   # → AC_API_KEY_P8_BASE64
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-The workflow signs, notarizes, staples, builds `Halo.dmg`, and publishes a
+The workflow signs, notarizes, staples, builds `Vesta.dmg`, and publishes a
 release. The DMG opens cleanly on any Mac (no "damaged" Gatekeeper warning).
 
 ## Local signed build
@@ -69,5 +69,5 @@ release. The DMG opens cleanly on any Mac (no "damaged" Gatekeeper warning).
 SIGN_ID="Developer ID Application: Your Name (TEAMID)" ./make-app.sh release
 ```
 
-Entitlements live in `Halo.entitlements` (Hardened Runtime; not sandboxed — a
+Entitlements live in `Vesta.entitlements` (Hardened Runtime; not sandboxed — a
 terminal spawns arbitrary child processes).

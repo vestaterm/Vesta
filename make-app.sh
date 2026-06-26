@@ -1,19 +1,19 @@
 #!/bin/bash
-# Build Halo.app — a double-clickable bundle with the halo logo as its icon.
+# Build Vesta.app — a double-clickable bundle with the vesta logo as its icon.
 # The binary is self-contained (ghostty is statically linked), so the bundle is
 # just: the executable + the SPM resource bundle + an .icns + Info.plist.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 CONF="${1:-release}"            # make-app.sh [release|debug]
-APP="Halo.app"
+APP="Vesta.app"
 BINDIR=".build/$CONF"
 
 echo ">> building ($CONF)..."
 swift build -c "$CONF" >/dev/null
 
-BIN="$BINDIR/halo"
-BUNDLE=$(ls -d "$BINDIR"/Halo_halo.bundle 2>/dev/null | head -1)
+BIN="$BINDIR/vesta"
+BUNDLE=$(ls -d "$BINDIR"/Vesta_vesta.bundle 2>/dev/null | head -1)
 [ -x "$BIN" ] || { echo "no binary at $BIN"; exit 1; }
 [ -d "$BUNDLE" ] || { echo "no resource bundle next to binary"; exit 1; }
 
@@ -26,10 +26,10 @@ if [ -d AppIcon.icon ] && xcrun actool AppIcon.icon --compile "$ICONOUT" --app-i
      --output-partial-info-plist "$ICONOUT/icon.plist" >/dev/null 2>&1 && [ -f "$ICONOUT/AppIcon.icns" ]; then
   echo ">> rendered AppIcon.icon (Icon Composer)"
 else
-  echo "  WARN: actool failed; rendering icon from assets/halo-logo.svg"
-  ICONSET=$(mktemp -d)/Halo.iconset; mkdir -p "$ICONSET"
-  qlmanage -t -s 1024 -o /tmp assets/halo-logo.svg >/dev/null 2>&1
-  SRC=/tmp/halo-logo.svg.png
+  echo "  WARN: actool failed; rendering icon from assets/vesta-logo.svg"
+  ICONSET=$(mktemp -d)/Vesta.iconset; mkdir -p "$ICONSET"
+  qlmanage -t -s 1024 -o /tmp assets/vesta-logo.svg >/dev/null 2>&1
+  SRC=/tmp/vesta-logo.svg.png
   for s in 16 32 128 256 512; do
     sips -z $s $s          "$SRC" --out "$ICONSET/icon_${s}x${s}.png"      >/dev/null
     sips -z $((s*2)) $((s*2)) "$SRC" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
@@ -40,11 +40,11 @@ fi
 echo ">> assembling ${APP}..."
 rm -rf "${APP}"
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
-cp "$BIN" "${APP}/Contents/MacOS/Halo"
+cp "$BIN" "${APP}/Contents/MacOS/Vesta"
 # Mux helpers (Milestone 3): the daemon + the per-pane relay. They live beside
 # the main binary so muxHelperPath() resolves them via Bundle.main.executableURL.
-cp "$BINDIR/halod"        "${APP}/Contents/MacOS/halod"
-cp "$BINDIR/halo-attach"  "${APP}/Contents/MacOS/halo-attach"
+cp "$BINDIR/vestad"        "${APP}/Contents/MacOS/vestad"
+cp "$BINDIR/vesta-attach"  "${APP}/Contents/MacOS/vesta-attach"
 # Resource bundle as DATA in Resources (Bundle.module also searches Bundle.main.resourceURL),
 # so codesign doesn't treat it as unsigned nested code.
 cp -R "$BUNDLE" "${APP}/Contents/Resources/"
@@ -57,7 +57,7 @@ cp LICENSE "${APP}/Contents/Resources/LICENSE" 2>/dev/null || true
 cp NOTICE  "${APP}/Contents/Resources/NOTICE"  2>/dev/null || true
 
 # ghostty's resources dir (themes/, for `theme = <name>` color sync). A Finder
-# launch doesn't inherit $GHOSTTY_RESOURCES_DIR, so bundle Halo's own vendored
+# launch doesn't inherit $GHOSTTY_RESOURCES_DIR, so bundle Vesta's own vendored
 # copy (Resources/ghostty, committed to the repo). GhosttyApp points
 # GHOSTTY_RESOURCES_DIR at this bundled dir — no installed Ghostty required.
 GRES="Resources/ghostty"
@@ -74,10 +74,10 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key>            <string>Halo</string>
-  <key>CFBundleDisplayName</key>     <string>Halo</string>
-  <key>CFBundleExecutable</key>      <string>Halo</string>
-  <key>CFBundleIdentifier</key>      <string>dev.halo.terminal</string>
+  <key>CFBundleName</key>            <string>Vesta</string>
+  <key>CFBundleDisplayName</key>     <string>Vesta</string>
+  <key>CFBundleExecutable</key>      <string>Vesta</string>
+  <key>CFBundleIdentifier</key>      <string>io.github.notnaki.vesta</string>
   <key>CFBundleIconFile</key>        <string>AppIcon</string>
   <key>CFBundleIconName</key>        <string>AppIcon</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
@@ -87,7 +87,7 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
   <key>NSHighResolutionCapable</key> <true/>
   <key>NSPrincipalClass</key>        <string>NSApplication</string>
   <key>LSApplicationCategoryType</key> <string>public.app-category.developer-tools</string>
-  <!-- open a folder in Halo: "Open With", `open -a Halo <dir>`, drag-to-icon -->
+  <!-- open a folder in Vesta: "Open With", `open -a Vesta <dir>`, drag-to-icon -->
   <key>CFBundleDocumentTypes</key>
   <array>
     <dict>
@@ -97,13 +97,13 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
       <key>LSItemContentTypes</key>    <array><string>public.folder</string></array>
     </dict>
   </array>
-  <!-- Finder right-click > Services > New Halo Session Here -->
+  <!-- Finder right-click > Services > New Vesta Session Here -->
   <key>NSServices</key>
   <array>
     <dict>
-      <key>NSMenuItem</key>   <dict><key>default</key><string>New Halo Session Here</string></dict>
+      <key>NSMenuItem</key>   <dict><key>default</key><string>New Vesta Session Here</string></dict>
       <key>NSMessage</key>    <string>newSessionHere</string>
-      <key>NSPortName</key>   <string>Halo</string>
+      <key>NSPortName</key>   <string>Vesta</string>
       <key>NSSendFileTypes</key> <array><string>public.folder</string></array>
     </dict>
   </array>
@@ -114,21 +114,21 @@ PLIST
 # Sign the executable then the wrapper (no --deep — the resource bundle is data).
 # SIGN_ID set (e.g. "Developer ID Application: Name (TEAMID)") → real signing with
 # Hardened Runtime + entitlements (required for notarization). Else ad-hoc.
-ENT="$(dirname "$0")/Halo.entitlements"
+ENT="$(dirname "$0")/Vesta.entitlements"
 if [ -n "${SIGN_ID:-}" ]; then
   codesign --force --options runtime --timestamp --entitlements "$ENT" \
-    --sign "$SIGN_ID" "${APP}/Contents/MacOS/Halo"
+    --sign "$SIGN_ID" "${APP}/Contents/MacOS/Vesta"
   codesign --force --options runtime --timestamp --entitlements "$ENT" \
-    --sign "$SIGN_ID" "${APP}/Contents/MacOS/halod"
+    --sign "$SIGN_ID" "${APP}/Contents/MacOS/vestad"
   codesign --force --options runtime --timestamp --entitlements "$ENT" \
-    --sign "$SIGN_ID" "${APP}/Contents/MacOS/halo-attach"
+    --sign "$SIGN_ID" "${APP}/Contents/MacOS/vesta-attach"
   codesign --force --options runtime --timestamp --entitlements "$ENT" \
     --sign "$SIGN_ID" "${APP}"
   echo "OK: signed with Developer ID ($SIGN_ID)"
 else
-  codesign --force --sign - "${APP}/Contents/MacOS/Halo" >/dev/null 2>&1 || true
-  codesign --force --sign - "${APP}/Contents/MacOS/halod" >/dev/null 2>&1 || true
-  codesign --force --sign - "${APP}/Contents/MacOS/halo-attach" >/dev/null 2>&1 || true
+  codesign --force --sign - "${APP}/Contents/MacOS/Vesta" >/dev/null 2>&1 || true
+  codesign --force --sign - "${APP}/Contents/MacOS/vestad" >/dev/null 2>&1 || true
+  codesign --force --sign - "${APP}/Contents/MacOS/vesta-attach" >/dev/null 2>&1 || true
   codesign --force --sign - "${APP}" >/dev/null 2>&1 && echo "OK: signed (ad-hoc)" || echo "  (codesign skipped)"
 fi
 

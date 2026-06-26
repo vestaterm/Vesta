@@ -1,4 +1,4 @@
-# Halo roadmap
+# Vesta roadmap
 
 Working notes on what's being built and what's deliberately parked. Update as
 things land. (Created on the `feat/plugin-events` branch.)
@@ -20,15 +20,15 @@ Next increment across all four themes; builds on feat/plugin-events.
    ring from it, so scrollback survives a daemon restart/reboot. Log deleted on
    clean session end, kept when the daemon itself dies. Verified across a
    simulated crash+restart.
-4. **Richer UI primitives** — `halo.pick` with {label, desc} rows; `halo.menu`
-   (per-item action callbacks); `halo.pickmulti` (Tab-to-mark, returns a table);
+4. **Richer UI primitives** — `vesta.pick` with {label, desc} rows; `vesta.menu`
+   (per-item action callbacks); `vesta.pickmulti` (Tab-to-mark, returns a table);
    editable panel fields (`{input=true, placeholder=, action=fn}`).
 
 ## Shipped on feat/plugin-events
 
 All four below landed and build clean. `pane-output` was verified end-to-end via an
 isolated daemon run (subscriber received live output incl. a marker, no ring replay).
-A `HALO_MUX_DIR` env override (MuxPaths) isolates a secondary/test instance onto its
+A `VESTA_MUX_DIR` env override (MuxPaths) isolates a secondary/test instance onto its
 own socket — used for that test, kept because it's generally useful.
 
 1. **`session-exited` event** — fires when a shell exits on its own (distinct
@@ -36,9 +36,9 @@ own socket — used for that test, kept because it's generally useful.
    when `processAlive == false`. *(done)*
 
 2. **UI primitive enrichment** — additive, non-breaking:
-   - `halo.confirm(message, fn)` → `fn(true|false)`. Yes/no dialog (today only
-     free-text `halo.prompt` exists).
-   - `halo.prompt(message, default, fn)` — optional initial value.
+   - `vesta.confirm(message, fn)` → `fn(true|false)`. Yes/no dialog (today only
+     free-text `vesta.prompt` exists).
+   - `vesta.prompt(message, default, fn)` — optional initial value.
    Both reuse `PickerOverlay`. Kept minimal on purpose; add more primitives when
    a concrete plugin needs one.
 
@@ -50,8 +50,8 @@ own socket — used for that test, kept because it's generally useful.
    for correct daemon reattach. Exact divider ratios are best-effort; topology is
    guaranteed.
 
-4. **`pane-output` event** — `halo.on("pane-output", fn(paneID, chunk))`. The one
-   real architectural piece (terminal bytes flow daemon → halo-attach → libghostty,
+4. **`pane-output` event** — `vesta.on("pane-output", fn(paneID, chunk))`. The one
+   real architectural piece (terminal bytes flow daemon → vesta-attach → libghostty,
    below the GUI). Design (from Plan agent):
    - **Tap:** GUI opens a read-only mux subscriber to the daemon (reuse
      `MuxClient`); the daemon already fans output to all clients.
@@ -70,14 +70,14 @@ own socket — used for that test, kept because it's generally useful.
 
 ## Deferred (don't forget)
 
-- **Plugin registry / discovery** — `halo plugins search`, curated `registry.json`
+- **Plugin registry / discovery** — `vesta plugins search`, curated `registry.json`
   in a git repo (GitHub-as-backend, PR to submit). Install records via a side-file
   like `disabled-plugins` (keeps user config untouched). Decided design; parked
   until there's a second user. A plugin is just a git repo + `init.lua`; sharing a
   URL already works.
 - **Onboarding** — _mostly done_ (feat/plugin-onboarding): shipped
   `examples/starter/` (a runnable tour plugin) + `docs/writing-plugins.md` (full
-  API reference). Remaining: refresh the live `halo-site` docs.html to match, and
+  API reference). Remaining: refresh the live `vesta-site` docs.html to match, and
   sidebar empty states.
 - **Config per-key live updates** — libghostty has no per-key setter; we
   write-file-and-reload (`.lua-overrides.conf`). Revisit only if reload latency bites.

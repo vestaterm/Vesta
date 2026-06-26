@@ -8,8 +8,8 @@
         {
           "blend-mode" : "lighten",
           "fill" : "none",
-          "image-name" : "halo-logo.svg",
-          "name" : "halo-logo",
+          "image-name" : "vesta-logo.svg",
+          "name" : "vesta-logo",
           "position" : {
             "scale" : 2.15,
             "translation-in-points" : [

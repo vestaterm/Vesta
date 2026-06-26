@@ -4,10 +4,10 @@
 .superpowers/
 
 # built app bundle (use ./make-app.sh)
-Halo.app/
+Vesta.app/
 *.app/
 
-# local-only build/dev artifacts (root-anchored so Sources/Halo/Resources stays tracked)
+# local-only build/dev artifacts (root-anchored so Sources/Vesta/Resources stays tracked)
 /Resources/
 /mockup.html
 # make-app.sh is tracked again — the release/CI workflows build the app with it.

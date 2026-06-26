@@ -29,4 +29,4 @@ jobs:
       - name: Build
         run: swift build -c debug
       - name: Selfcheck
-        run: swift run halo selfcheck
+        run: swift run vesta selfcheck
