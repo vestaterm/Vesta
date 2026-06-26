@@ -3,6 +3,27 @@
 Working notes on what's being built and what's deliberately parked. Update as
 things land. (Created on the `feat/plugin-events` branch.)
 
+## Shipped on feat/plugin-events-2 (continuation)
+
+Next increment across all four themes; builds on feat/plugin-events.
+
+1. **All-panes pane-output** — pane-output now subscribes to every live pane
+   (was: only the focused one). One mux subscriber per pane, reconciled against
+   all sessions; output keyed by paneID so it's never mislabeled.
+2. **Plugin sandboxing** — (a) auto-disable: a plugin whose callback errors 5×
+   in a row is disabled + reloaded (origin-tracked via luaRefOwner; the user's
+   own init.lua is never auto-disabled); (b) runaway-loop guard: a lua_sethook
+   count hook aborts a callback exceeding ~50M instructions. Verified by
+   luaSandboxSelfCheck.
+3. **Scrollback to disk** — daemon mirrors each session's ring to
+   `sessions/<paneID>.log` (0600, bounded); a fresh Session seeds its replay
+   ring from it, so scrollback survives a daemon restart/reboot. Log deleted on
+   clean session end, kept when the daemon itself dies. Verified across a
+   simulated crash+restart.
+4. **Richer UI primitives** — `halo.pick` with {label, desc} rows; `halo.menu`
+   (per-item action callbacks); `halo.pickmulti` (Tab-to-mark, returns a table);
+   editable panel fields (`{input=true, placeholder=, action=fn}`).
+
 ## Shipped on feat/plugin-events
 
 All four below landed and build clean. `pane-output` was verified end-to-end via an
@@ -57,15 +78,12 @@ own socket — used for that test, kept because it's generally useful.
 - **Onboarding** — starter plugin + "write your first plugin" doc page + sidebar
   empty states. Deliberately LAST: the docs/starter should reflect the new
   `pane-output` API and enriched primitives, so writing them earlier means redoing them.
-- **Plugin auto-disable + origin tracking** — `pcall` already prevents crashes
-  (all callbacks are protected); this only tames a plugin that throws every tick.
-  Low value. Would need plugin-origin metadata on stored callback refs.
-- **Runaway/infinite-loop protection** — `lua_sethook` instruction counting.
-  Separate from pcall (which doesn't preempt) and genuinely hard. Parked.
-- **`pane-output` all-panes** — v1 is focused-only. All-panes = one subscriber per
-  live pane; dispatch already carries `paneID` so plugins are forward-compatible.
 - **Config per-key live updates** — libghostty has no per-key setter; we
   write-file-and-reload (`.lua-overrides.conf`). Revisit only if reload latency bites.
-- **Two-window-restore behavior** — never verified what reopening with two windows does.
-- **Live session restore across daemon death** — can't serialize a running process
-  or scrollback; cwd-per-session already survives (paneID reattach). Out of scope.
+- **Two-window-restore behavior** — never verified what reopening with two windows
+  does (only the first window fully restores; others cascade).
+- **Live process restore across daemon death** — scrollback now survives (on-disk
+  log), but a running process can't be serialized. Out of scope.
+
+_Done in feat/plugin-events-2: all-panes pane-output, plugin auto-disable +
+runaway-loop guard, scrollback-to-disk._
