@@ -79,11 +79,29 @@ own socket — used for that test, kept because it's generally useful.
   `examples/starter/` (a runnable tour plugin) + `docs/writing-plugins.md` (full
   API reference). Remaining: refresh the live `vesta-site` docs.html to match, and
   sidebar empty states.
-  - **First-open full-screen intro animation** _(planned — do next)_: a cinematic
-    first-launch sequence like Arc / Orion browsers. Reuse the site's pixelated
-    V-flame corruption + white→pink reveal as the motif so the app intro and the
-    landing page share one identity. Full-screen overlay shown once on first run
-    (gate on a `did-onboard` flag), skippable, respects reduced-motion.
+  - **First-open intro animation** _(shipped — `OnboardingOverlay.swift`)_: a
+    first-launch sequence reusing the landing page's pixelated V-flame corruption
+    → white reveal. A window-only "clean slate" overlay (titlebar shows only the
+    traffic lights, terminal hidden, plugin UI suppressed) → Welcome → feature tour
+    → install the `vesta` CLI → add a first project. Shown once (gated on the
+    `VestaDidOnboard` flag), skippable, respects Reduce Motion.
+
+## Shipped: self-update, notifications, About
+
+- **In-app self-update** (`Updater.swift`) — on a newer GitHub release a badge
+  appears at the sidebar bottom; click → download the notarized DMG → swap the
+  app in place (move-aside-first; admin only when the install dir isn't writable)
+  → relaunch. Bundle-only; the dev binary opens the releases page.
+- **Notifications** (`Notifier.swift`) — `vesta.notify(msg, {title, desktop})`:
+  stacking in-app toasts + a titlebar bell with history persisted to
+  `notifications.json`; desktop banner via Notification Center when backgrounded
+  (or forced with `desktop = true`).
+- **Custom About panel** (`AboutWindow.swift`) — icon, Version / Build / Commit
+  (commit links to GitHub), Docs / GitHub buttons. Version/build/commit are
+  stamped into the bundle by `make-app.sh` from the git tag + history.
+- **App icon** — Icon Composer (`AppIcon.icon`); `actool` output is pre-rendered
+  and committed under `AppIcon-prebuilt/` (the CI runner's actool can't render it),
+  shipped with `Assets.car` so Tahoe shapes it once.
 - **Config per-key live updates** — libghostty has no per-key setter; we
   write-file-and-reload (`.lua-overrides.conf`). Revisit only if reload latency bites.
 - **Two-window-restore behavior** — never verified what reopening with two windows

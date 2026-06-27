@@ -25,6 +25,11 @@ and an agent-control CLI on top.
 - **Native splits** — `⌘D` / `⌘⇧D`, click-to-focus, zoom, drag dividers.
 - **Scriptable** — the `vesta` CLI drives and reads the live UI over a Unix
   socket, so agents can orchestrate it.
+- **Notifications** — `vesta.notify` from a plugin shows a stacking in-app toast,
+  records it in a titlebar **bell** (history persists across restarts), and posts
+  a macOS Notification Center banner when Vesta is backgrounded (or when forced).
+- **Self-updating** — when a newer release exists, a badge appears at the sidebar
+  bottom; click it to download, install (in place), and relaunch — no manual DMG.
 - **Everything from your config** — colors, fonts, sidebar width, divider width
   are all `vesta-*` keys in the same ghostty config file. Empty config = sane
   defaults.
