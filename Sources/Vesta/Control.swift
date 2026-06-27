@@ -202,10 +202,16 @@ final class ControlServer: @unchecked Sendable {
             tree.zoomFocused()
             return ["ok": true]
         case "send-keys":
-            guard args.count >= 2, let pane = leaf(args) else {
+            // Submits the line by default (appends Enter), so a command actually runs;
+            // pass --no-enter to send the keystrokes without a trailing Return.
+            var rest = args
+            var enter = true
+            if let i = rest.firstIndex(of: "--no-enter") { rest.remove(at: i); enter = false }
+            guard rest.count >= 2, let pane = leaf(rest) else {
                 return ["ok": false, "error": "no pane"]
             }
-            pane.sendKeys(args[1])
+            let text = rest[1]
+            pane.sendKeys(enter && !text.hasSuffix("\n") ? text + "\n" : text)
             return ["ok": true]
         case "capture":
             guard let pane = leaf(args) else { return ["ok": false, "error": "no pane"] }
