@@ -62,7 +62,7 @@ vesta new-pane --cwd <path>      # new pane in a dir
 vesta focus <id> | vesta focus next
 vesta zoom                       # toggle zoom on the focused pane
 vesta close                      # close the focused pane
-vesta send-keys <target> <text>  # type into a pane (target = pane id or "focused")
+vesta send-keys <target> <text>  # type into a pane + run it (target = pane id or "focused"; --no-enter to skip the Return)
 vesta capture                    # dump the focused pane's screen
 vesta list                       # the focused session's panes (+ tab index/count)
 vesta tab new|next|prev|close    # tab control
