@@ -70,6 +70,11 @@ final class AboutWindowController: NSWindowController {
         grid.column(at: 1).xPlacement = .leading
         grid.rowSpacing = 5
         grid.columnSpacing = 10
+        // Pin the grid to its content width so the vertical stack's .centerX truly centers the
+        // block (otherwise the grid stretches to the widest sibling and its columns sit left).
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        let gw = grid.fittingSize.width
+        if gw > 0 { grid.widthAnchor.constraint(equalToConstant: gw).isActive = true }
 
         let docs = textButton("Docs") { [weak self] in
             if let u = URL(string: self?.docsURL ?? "") { NSWorkspace.shared.open(u) }
