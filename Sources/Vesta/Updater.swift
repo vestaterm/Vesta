@@ -36,6 +36,9 @@ final class Updater: NSObject {
     // MARK: - Check
 
     func check(silent: Bool) {
+        // A silent (background/periodic) check must not disturb an in-progress download/install
+        // or an already-staged "relaunch" state. A loud (menu) check still runs to report status.
+        if silent, working || stagedApp != nil { return }
         guard let url = URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest") else { return }
         var req = URLRequest(url: url)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
