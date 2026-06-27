@@ -116,6 +116,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ctx.onPersist = { [weak self] in self?.scheduleSave() }
         ctx.controller.onBell = { [weak self] in self?.showNotifications() }
         ctx.controller.setUnread(unread)
+        ctx.controller.onUpdate = { Updater.shared.badgeClicked() }
+        applyUpdatePhase(to: ctx.controller, Updater.shared.phase)   // reflect current state in the new window
         windows.append(ctx)
         lastKey = ctx
         // Only the first window restores/saves its frame; later ones cascade off it.
@@ -344,6 +346,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // In-app notification history (behind the titlebar bell). Ephemeral — last 50, not persisted.
     private var notes: [VestaNote] = []
     private var unread = 0
+    private var notesFile: String { (controlSocketPath() as NSString).deletingLastPathComponent + "/notifications.json" }
+
+    /// Load the persisted notification history (bell list survives restarts).
+    func loadNotes() {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: notesFile)),
+              let saved = try? JSONDecoder().decode([VestaNote].self, from: data) else { return }
+        notes = saved   // history only — unread stays 0 (already seen in a prior session)
+    }
+    private func saveNotes() {
+        guard let data = try? JSONEncoder().encode(notes) else { return }
+        try? data.write(to: URL(fileURLWithPath: notesFile), options: .atomic)
+    }
 
     /// The full notify path: record it in the in-app list (bell), show the transient toast,
     /// and post a desktop banner when backgrounded (or when the call forces it).
@@ -351,6 +365,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if onboardingActive { return }  // suppressed like other plugin UI during onboarding
         notes.append(VestaNote(title: title, message: msg, date: Date()))
         if notes.count > 50 { notes.removeFirst(notes.count - 50) }
+        saveNotes()
         showToast(msg)
         Notifier.post(title: title, body: msg, force: desktop)
         // If the dropdown is already open, drop the new note straight in (it's visible → read);
@@ -387,10 +402,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             theme: theme, notes: notes.reversed(),
             onDelete: { [weak self] id in
                 self?.notes.removeAll { $0.id == id }
+                self?.saveNotes()
                 self?.presentNotifications()
             },
             onClear: { [weak self] in
                 self?.notes.removeAll()
+                self?.saveNotes()
                 self?.presentNotifications()
             })
         panel.frame = host.bounds
@@ -579,6 +596,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         Fonts.register()  // bundle Geist/Martian Mono before building UI
+        loadNotes()       // restore persisted notification history (bell list)
         let ghostty = GhosttyApp.shared  // inits libghostty (init/config/app) — native config sync
         theme = ghostty.theme  // colors from the real ghostty config
 
@@ -681,7 +699,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for d in dirs { active?.workspace.newTab(cwd: d) }
         }
 
-        Updater.check(silent: true)  // notify if a newer GitHub release exists
+        Updater.shared.onPhase = { [weak self] phase in
+            self?.windows.forEach { self?.applyUpdatePhase(to: $0.controller, phase) }
+        }
+        Updater.shared.check(silent: true)  // surface a newer release in the sidebar badge
 
         maybeShowOnboarding()
     }
@@ -716,7 +737,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         host.addSubview(overlay)
     }
 
-    @objc func checkForUpdates() { Updater.check(silent: false) }
+    @objc func checkForUpdates() { Updater.shared.check(silent: false) }
+
+    /// Map an Updater phase → the sidebar update badge (text + whether it's clickable).
+    private func applyUpdatePhase(to controller: VestaWindowController, _ phase: Updater.Phase?) {
+        switch phase {
+        case .available(let tag):     controller.setUpdateStatus("↑ update \(tag) — install", clickable: true)
+        case .downloading(let p):     controller.setUpdateStatus("downloading… \(Int(p * 100))%", clickable: false)
+        case .installing:             controller.setUpdateStatus("installing…", clickable: false)
+        case .ready(let tag):         controller.setUpdateStatus("✓ \(tag) ready — relaunch", clickable: true)
+        case .failed:                 controller.setUpdateStatus("update failed — retry", clickable: true)
+        case nil:                     controller.setUpdateStatus(nil, clickable: false)
+        }
+    }
 
     /// Full reset: delete Vesta's config AND the settings persisted outside it
     /// (UserDefaults — sidebar width, window frame, quit-confirm), then reload so

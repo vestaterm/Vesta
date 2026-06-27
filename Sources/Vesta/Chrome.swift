@@ -789,24 +789,53 @@ final class VestaWindowController: NSWindowController {
         version.font = Fonts.inst(9.5)
         version.textColor = txt(.faint)
 
+        // Update indicator (hidden until an update is available / downloading / ready).
+        // Clickable: starts the download, or relaunches once the new version is staged.
+        let upd = UpdateBadge { [weak self] in self?.onUpdate?() }
+        upd.font = Fonts.inst(10)
+        upd.translatesAutoresizingMaskIntoConstraints = false
+        upd.isHidden = true
+        updateBadge = upd
+
+        // Vertical stack so the hidden badge takes no space (detachesHiddenViews).
+        let rows = NSStackView(views: [footer, version, upd])
+        rows.orientation = .vertical
+        rows.alignment = .leading
+        rows.spacing = 8
+        rows.translatesAutoresizingMaskIntoConstraints = false
+
         block.addSubview(topHair)
-        block.addSubview(footer)
-        block.addSubview(version)
+        block.addSubview(rows)
         NSLayoutConstraint.activate([
             topHair.leadingAnchor.constraint(equalTo: block.leadingAnchor),
             topHair.trailingAnchor.constraint(equalTo: block.trailingAnchor),
             topHair.topAnchor.constraint(equalTo: block.topAnchor),
             topHair.heightAnchor.constraint(equalToConstant: 1),
 
-            footer.leadingAnchor.constraint(equalTo: block.leadingAnchor, constant: 16),
-            footer.trailingAnchor.constraint(lessThanOrEqualTo: block.trailingAnchor, constant: -16),
-            footer.topAnchor.constraint(equalTo: topHair.bottomAnchor, constant: 12),
-
-            version.leadingAnchor.constraint(equalTo: block.leadingAnchor, constant: 16),
-            version.topAnchor.constraint(equalTo: footer.bottomAnchor, constant: 8),
-            version.bottomAnchor.constraint(equalTo: block.bottomAnchor, constant: -12),
+            rows.leadingAnchor.constraint(equalTo: block.leadingAnchor, constant: 16),
+            rows.trailingAnchor.constraint(lessThanOrEqualTo: block.trailingAnchor, constant: -12),
+            rows.topAnchor.constraint(equalTo: topHair.bottomAnchor, constant: 12),
+            rows.bottomAnchor.constraint(equalTo: block.bottomAnchor, constant: -12),
         ])
         return block
+    }
+
+    /// Set by AppDelegate → opens the update flow when the sidebar badge is clicked.
+    var onUpdate: (() -> Void)?
+    private var updateBadge: UpdateBadge?
+
+    /// Drive the sidebar update indicator. `text == nil` hides it; otherwise it shows the
+    /// status (accent) and is clickable when `clickable` (available / ready states).
+    func setUpdateStatus(_ text: String?, clickable: Bool) {
+        guard let b = updateBadge else { return }
+        if let text {
+            b.stringValue = text
+            b.textColor = theme.accent
+            b.isClickable = clickable
+            b.isHidden = false
+        } else {
+            b.isHidden = true
+        }
     }
 
     // MARK: – Titlebar accessory (toggle · folder · dir)
@@ -1067,6 +1096,23 @@ final class TaggedRow: NSView {
 /// (returns nil from hitTest) so the titlebar still drags/zooms the window normally.
 private final class TitlebarBackingView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Sidebar-footer update indicator: a label that becomes a pointing-hand link while an
+/// update is actionable (available → download, or staged → relaunch).
+private final class UpdateBadge: NSTextField {
+    var isClickable = false { didSet { window?.invalidateCursorRects(for: self) } }
+    private let handler: () -> Void
+    init(handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(frame: .zero)
+        isEditable = false; isBordered = false; drawsBackground = false; isSelectable = false
+        lineBreakMode = .byTruncatingTail
+        addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(fire)))
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func resetCursorRects() { if isClickable { addCursorRect(bounds, cursor: .pointingHand) } }
+    @objc private func fire() { if isClickable { handler() } }
 }
 
 /// Top-anchored clip view: default NSClipView is bottom-up, which makes a short list sit at the

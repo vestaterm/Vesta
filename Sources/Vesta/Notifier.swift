@@ -1,9 +1,9 @@
 import AppKit
 import UserNotifications
 
-/// One in-app + desktop notification.
-struct VestaNote: Identifiable {
-    let id = UUID()
+/// One in-app + desktop notification. Codable so the bell list persists across restarts.
+struct VestaNote: Identifiable, Codable {
+    var id = UUID()
     let title: String?
     let message: String
     let date: Date
