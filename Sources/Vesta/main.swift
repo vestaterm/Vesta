@@ -6,16 +6,32 @@ if argv.first == "selfcheck" {
     // Pure-logic checks only. PaneTree/Chrome spawn real ghostty surfaces,
     // which need a live app + run loop — exercised by actually launching the app.
     // workspaceSelfCheck tests the Proj/SidebarProject data model without ghostty.
-    _ = ghosttyConfigSelfCheck(); controlSelfCheck(); gitSelfCheck(); portsSelfCheck(); workspaceSelfCheck(); worktreeSelfCheck(); browserSelfCheck(); prefixKeytableSelfCheck(); sessionNameSelfCheck(); muxProtocolSelfCheck(); muxPathsSelfCheck(); luaSandboxSelfCheck()
+    _ = ghosttyConfigSelfCheck()
+    controlSelfCheck()
+    gitSelfCheck()
+    portsSelfCheck()
+    workspaceSelfCheck()
+    worktreeSelfCheck()
+    browserSelfCheck()
+    prefixKeytableSelfCheck()
+    sessionNameSelfCheck()
+    muxProtocolSelfCheck()
+    muxPathsSelfCheck()
+    luaSandboxSelfCheck()
     // chromeSelfCheck creates AppKit objects (VestaWindowController → VestaConfig.shared →
     // GhosttyApp.shared). GhosttyApp.shared calls NSApp.isActive; NSApp is nil until
     // NSApplication.shared is first touched. Touch it here so GhosttyApp.shared doesn't crash.
     _ = NSApplication.shared
-    MainActor.assumeIsolated { chromeSelfCheck(); prefixSpecSelfCheck() }
-    print("all self-checks ok"); exit(0)
+    MainActor.assumeIsolated {
+        chromeSelfCheck()
+        prefixSpecSelfCheck()
+    }
+    print("all self-checks ok")
+    exit(0)
 }
 if let verb = argv.first, verb == "help" || verb == "--help" || verb == "-h" {
-    printUsage(); exit(0)
+    printUsage()
+    exit(0)
 }
 if let verb = argv.first, controlVerbs.contains(verb) {
     exit(runControlCLI(argv))
@@ -23,7 +39,8 @@ if let verb = argv.first, controlVerbs.contains(verb) {
 // A non-empty first arg that isn't a known verb → show help (don't silently launch the GUI).
 if let verb = argv.first {
     FileHandle.standardError.write(Data("vesta: unknown command '\(verb)'\n\n".utf8))
-    printUsage(); exit(2)
+    printUsage()
+    exit(2)
 }
 // Bare `vesta` (no args): open a new window if an instance is already running, else
 // fall through to launch the GUI.
@@ -52,12 +69,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // we rebuild windows at launch; `savePending` coalesces rapid changes.
     private var restoring = false
     private var savePending = false
-    private var luaTimers: [Timer] = []   // vesta.timer schedules; cleared on reload
+    private var luaTimers: [Timer] = []  // vesta.timer schedules; cleared on reload
     // vesta.panel state is window-agnostic: specs are the source of truth; overlays are
     // rendered into windows per scope (active-only follows focus; all → every window).
-    private struct PanelSpec { var lines: [PanelLine]; var opts: PanelOpts }
-    private var luaPanelSpecs: [Int: PanelSpec] = [:]                  // id → spec (cleared on reload)
-    private var panelViews: [Int: [ObjectIdentifier: PanelOverlay]] = [:]   // id → window → overlay
+    private struct PanelSpec {
+        var lines: [PanelLine]
+        var opts: PanelOpts
+    }
+    private var luaPanelSpecs: [Int: PanelSpec] = [:]  // id → spec (cleared on reload)
+    private var panelViews: [Int: [ObjectIdentifier: PanelOverlay]] = [:]  // id → window → overlay
     private var luaPanelCounter = 0
 
     /// Create, show, and track a new window. ⌘N / first launch.
@@ -66,20 +86,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let prev = active?.controller.window ?? windows.last?.controller.window
         // Wire the cross-window broadcast once: any pool change refreshes every window's
         // sidebar, reconciles which window shows each session live vs frozen, and persists.
-        store.broadcast = { [weak self] in guard let self else { return }
-                            self.windows.forEach { $0.refresh() }; self.reconcileDisplay(); self.scheduleSave() }
-        let ctx = WindowContext(theme: theme, store: store,
-            onBecomeKey: { [weak self] c in guard let self else { return }
-                                            self.lastKey = c
-                                            self.reconcileDisplay() },   // live follows focus
-            onClose:     { [weak self] c in
-                                            guard let self else { return }
-                                            // Sessions live in the shared store, so closing a window
-                                            // never loses them — just drop the view and persist.
-                                            self.windows.removeAll { $0 === c }
-                                            if self.lastKey === c { self.lastKey = self.windows.last }
-                                            self.scheduleSave() })
+        store.broadcast = { [weak self] in
+            guard let self else { return }
+            self.windows.forEach { $0.refresh() }
+            self.reconcileDisplay()
+            self.scheduleSave()
+        }
+        let ctx = WindowContext(
+            theme: theme, store: store,
+            onBecomeKey: { [weak self] c in
+                guard let self else { return }
+                self.lastKey = c
+                self.reconcileDisplay()
+            },  // live follows focus
+            onClose: { [weak self] c in
+                guard let self else { return }
+                // Sessions live in the shared store, so closing a window
+                // never loses them — just drop the view and persist.
+                self.windows.removeAll { $0 === c }
+                if self.lastKey === c { self.lastKey = self.windows.last }
+                self.scheduleSave()
+            })
         ctx.onPersist = { [weak self] in self?.scheduleSave() }
+        ctx.controller.onBell = { [weak self] in self?.showNotifications() }
+        ctx.controller.setUnread(unread)
         windows.append(ctx)
         lastKey = ctx
         // Only the first window restores/saves its frame; later ones cascade off it.
@@ -88,13 +118,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             win.setFrameOrigin(NSPoint(x: prev.frame.minX + 26, y: prev.frame.minY - 26))
         }
         ctx.start()
-        renderPanels()   // a new window immediately shows "all"-scoped panels
+        renderPanels()  // a new window immediately shows "all"-scoped panels
         return ctx
     }
 
     // ⌘N opens a real second window. Both share the one session pool/sidebar; each
     // views its own active session (different sessions show live in each window).
-    @objc func newWindowMenu() { newWindow(); NSApp.activate(ignoringOtherApps: true) }
+    @objc func newWindowMenu() {
+        newWindow()
+        NSApp.activate(ignoringOtherApps: true)
+    }
 
     /// Decide, across all windows, which shows each session live vs. a frozen snapshot.
     /// A session's terminal is one NSView → one window. The KEY window always shows its
@@ -105,8 +138,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let key = active else { return }
         key.workspace.reconcile(preferLive: true)
         for w in windows where w !== key { w.workspace.reconcile(preferLive: false) }
-        renderPanels()   // active-scoped panels follow focus; new windows pick up "all" panels
-        PaneOutputTap.shared.reconcile(allLivePaneIDs())   // pane-output taps every live pane
+        renderPanels()  // active-scoped panels follow focus; new windows pick up "all" panels
+        PaneOutputTap.shared.reconcile(allLivePaneIDs())  // pane-output taps every live pane
     }
 
     /// Every live pane's mux id, across all projects/sessions (pane-output subscribes to all).
@@ -115,11 +148,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Mount a picker overlay in the key window (or free `refs` and bail if one is already up).
-    private func presentPicker(_ make: (NSView, @escaping () -> Void) -> PickerOverlay?, freeing refs: [Int32]) {
+    private func presentPicker(
+        _ make: (NSView, @escaping () -> Void) -> PickerOverlay?, freeing refs: [Int32]
+    ) {
         guard !onboardingActive,
-              let host = active?.controller.window?.contentView,
-              !host.subviews.contains(where: { $0 is PickerOverlay || $0 is ConfirmOverlay }) else { refs.forEach { luaUnref($0) }; return }
-        let dismiss: () -> Void = { [weak host] in host?.subviews.compactMap { $0 as? PickerOverlay }.forEach { $0.removeFromSuperview() } }
+            let host = active?.controller.window?.contentView,
+            !host.subviews.contains(where: { $0 is PickerOverlay || $0 is ConfirmOverlay })
+        else {
+            refs.forEach { luaUnref($0) }
+            return
+        }
+        let dismiss: () -> Void = { [weak host] in
+            host?.subviews.compactMap { $0 as? PickerOverlay }.forEach { $0.removeFromSuperview() }
+        }
         guard let overlay = make(host, dismiss) else { return }
         overlay.frame = host.bounds
         overlay.autoresizingMask = [.width, .height]
@@ -128,30 +169,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// vesta.pick: single-select (rich rows); call the ref with the chosen label.
     func showPick(_ items: [PickItem], _ ref: Int32, _ opts: PickOpts) {
-        presentPicker({ _, dismiss in
-            PickerOverlay(theme: theme, richItems: items, multiSelect: false, opts: opts,
-                onPick: { idx in dismiss(); if let i = idx.first { luaCall(ref: ref, stringArg: items[i].label) }; luaUnref(ref) },
-                onCancel: { dismiss(); luaUnref(ref) })
-        }, freeing: [ref])
+        presentPicker(
+            { _, dismiss in
+                PickerOverlay(
+                    theme: theme, richItems: items, multiSelect: false, opts: opts,
+                    onPick: { idx in
+                        dismiss()
+                        if let i = idx.first { luaCall(ref: ref, stringArg: items[i].label) }
+                        luaUnref(ref)
+                    },
+                    onCancel: {
+                        dismiss()
+                        luaUnref(ref)
+                    })
+            }, freeing: [ref])
     }
 
     /// vesta.pickmulti: multi-select; call the ref with a table of chosen labels.
     func showPickMulti(_ items: [PickItem], _ ref: Int32, _ opts: PickOpts) {
-        presentPicker({ _, dismiss in
-            PickerOverlay(theme: theme, richItems: items, multiSelect: true, opts: opts,
-                onPick: { idx in dismiss(); luaCallStringList(ref: ref, idx.map { items[$0].label }); luaUnref(ref) },
-                onCancel: { dismiss(); luaUnref(ref) })
-        }, freeing: [ref])
+        presentPicker(
+            { _, dismiss in
+                PickerOverlay(
+                    theme: theme, richItems: items, multiSelect: true, opts: opts,
+                    onPick: { idx in
+                        dismiss()
+                        luaCallStringList(ref: ref, idx.map { items[$0].label })
+                        luaUnref(ref)
+                    },
+                    onCancel: {
+                        dismiss()
+                        luaUnref(ref)
+                    })
+            }, freeing: [ref])
     }
 
     /// vesta.menu: single-select where each item carries its own action ref (-1 = none).
     func showMenu(_ items: [PickItem], _ refs: [Int32], _ opts: PickOpts) {
         let free = { refs.forEach { if $0 >= 0 { luaUnref($0) } } }
-        presentPicker({ _, dismiss in
-            PickerOverlay(theme: theme, richItems: items, multiSelect: false, opts: opts,
-                onPick: { idx in dismiss(); if let i = idx.first, refs.indices.contains(i), refs[i] >= 0 { luaCall(ref: refs[i]) }; free() },
-                onCancel: { dismiss(); free() })
-        }, freeing: refs.filter { $0 >= 0 })
+        presentPicker(
+            { _, dismiss in
+                PickerOverlay(
+                    theme: theme, richItems: items, multiSelect: false, opts: opts,
+                    onPick: { idx in
+                        dismiss()
+                        if let i = idx.first, refs.indices.contains(i), refs[i] >= 0 {
+                            luaCall(ref: refs[i])
+                        }
+                        free()
+                    },
+                    onCancel: {
+                        dismiss()
+                        free()
+                    })
+            }, freeing: refs.filter { $0 >= 0 })
     }
 
     /// vesta.panel: create (id 0) or update (existing id) a plugin panel. `window = "all"`
@@ -159,13 +229,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Returns the panel id. Corner/scope are fixed at creation.
     func luaPanelSet(_ lines: [PanelLine], _ opts: PanelOpts) -> Int {
         let id: Int
-        if opts.id > 0 { id = opts.id } else { luaPanelCounter += 1; id = luaPanelCounter }
+        if opts.id > 0 {
+            id = opts.id
+        } else {
+            luaPanelCounter += 1
+            id = luaPanelCounter
+        }
         // Free the click refs of the spec we're replacing (the new lines carry fresh refs).
         let oldRefs = luaPanelSpecs[id]?.lines.compactMap(\.clickRef) ?? []
-        var opts = opts; opts.id = id
+        var opts = opts
+        opts.id = id
         luaPanelSpecs[id] = PanelSpec(lines: lines, opts: opts)
         renderPanels()
-        oldRefs.forEach { luaUnref($0) }   // after re-render, so live overlays no longer hold them
+        oldRefs.forEach { luaUnref($0) }  // after re-render, so live overlays no longer hold them
         return id
     }
 
@@ -174,7 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// no longer targets (e.g. an active-scoped panel when focus moves). Also prunes overlays
     /// for closed windows. Called on panel set/update and whenever the active window changes.
     func renderPanels() {
-        if onboardingActive {   // suppress all plugin panels for the duration of onboarding
+        if onboardingActive {  // suppress all plugin panels for the duration of onboarding
             panelViews.values.flatMap { $0.values }.forEach { $0.removeFromSuperview() }
             panelViews.removeAll()
             return
@@ -182,23 +258,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let live = Set(windows.map(ObjectIdentifier.init))
         for id in Array(panelViews.keys) {
             for (wid, ov) in panelViews[id] ?? [:] where !live.contains(wid) {
-                ov.removeFromSuperview(); panelViews[id]?[wid] = nil
+                ov.removeFromSuperview()
+                panelViews[id]?[wid] = nil
             }
         }
         for (id, spec) in luaPanelSpecs {
             let targets = spec.opts.allWindows ? windows : [active].compactMap { $0 }
             let targetIDs = Set(targets.map(ObjectIdentifier.init))
             for (wid, ov) in panelViews[id] ?? [:] where !targetIDs.contains(wid) {
-                ov.removeFromSuperview(); panelViews[id]?[wid] = nil    // moved away (active panel)
+                ov.removeFromSuperview()
+                panelViews[id]?[wid] = nil  // moved away (active panel)
             }
             for win in targets {
                 let wid = ObjectIdentifier(win)
                 guard let host = win.controller.window?.contentView else { continue }
                 if let ov = panelViews[id]?[wid] {
-                    _ = ov.update(title: spec.opts.title, lines: spec.lines)   // refs managed at spec level
+                    _ = ov.update(title: spec.opts.title, lines: spec.lines)  // refs managed at spec level
                 } else {
                     let ov = PanelOverlay(theme: theme, lines: spec.lines, opts: spec.opts)
-                    host.addSubview(ov); ov.pin(into: host)
+                    host.addSubview(ov)
+                    ov.pin(into: host)
                     panelViews[id, default: [:]][wid] = ov
                 }
             }
@@ -209,12 +288,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the ref on cancel).
     func showPrompt(_ message: String, _ initial: String, _ ref: Int32) {
         guard !onboardingActive,
-              let host = active?.controller.window?.contentView,
-              !host.subviews.contains(where: { $0 is PickerOverlay }) else { luaUnref(ref); return }
-        let dismiss = { [weak host] in host?.subviews.compactMap { $0 as? PickerOverlay }.forEach { $0.removeFromSuperview() } }
-        let overlay = PickerOverlay(theme: theme, prompt: message, initial: initial,
-            onSubmit: { text in dismiss(); luaCall(ref: ref, stringArg: text); luaUnref(ref) },
-            onCancel: { dismiss(); luaUnref(ref) })
+            let host = active?.controller.window?.contentView,
+            !host.subviews.contains(where: { $0 is PickerOverlay })
+        else {
+            luaUnref(ref)
+            return
+        }
+        let dismiss = { [weak host] in
+            host?.subviews.compactMap { $0 as? PickerOverlay }.forEach { $0.removeFromSuperview() }
+        }
+        let overlay = PickerOverlay(
+            theme: theme, prompt: message, initial: initial,
+            onSubmit: { text in
+                dismiss()
+                luaCall(ref: ref, stringArg: text)
+                luaUnref(ref)
+            },
+            onCancel: {
+                dismiss()
+                luaUnref(ref)
+            })
         overlay.frame = host.bounds
         overlay.autoresizingMask = [.width, .height]
         host.addSubview(overlay)
@@ -223,25 +316,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// vesta.confirm: compact yes/no dialog; call the Lua ref with a boolean (Esc/scrim → false).
     func showConfirm(_ message: String, _ ref: Int32) {
         guard !onboardingActive,
-              let host = active?.controller.window?.contentView,
-              !host.subviews.contains(where: { $0 is PickerOverlay || $0 is ConfirmOverlay }) else { luaUnref(ref); return }
-        let dismiss: () -> Void = { [weak host] in host?.subviews.compactMap { $0 as? ConfirmOverlay }.forEach { $0.removeFromSuperview() } }
+            let host = active?.controller.window?.contentView,
+            !host.subviews.contains(where: { $0 is PickerOverlay || $0 is ConfirmOverlay })
+        else {
+            luaUnref(ref)
+            return
+        }
+        let dismiss: () -> Void = { [weak host] in
+            host?.subviews.compactMap { $0 as? ConfirmOverlay }.forEach { $0.removeFromSuperview() }
+        }
         let overlay = ConfirmOverlay(theme: theme, message: message) { yes in
-            dismiss(); luaCallBool(ref: ref, yes); luaUnref(ref)
+            dismiss()
+            luaCallBool(ref: ref, yes)
+            luaUnref(ref)
         }
         overlay.frame = host.bounds
         overlay.autoresizingMask = [.width, .height]
         host.addSubview(overlay)
     }
 
+    // In-app notification history (behind the titlebar bell). Ephemeral — last 50, not persisted.
+    private var notes: [VestaNote] = []
+    private var unread = 0
+
+    /// The full notify path: record it in the in-app list (bell), show the transient toast,
+    /// and post a desktop banner when backgrounded (or when the call forces it).
+    func handleNotify(_ msg: String, title: String?, desktop: Bool) {
+        if onboardingActive { return }  // suppressed like other plugin UI during onboarding
+        notes.append(VestaNote(title: title, message: msg, date: Date()))
+        if notes.count > 50 { notes.removeFirst(notes.count - 50) }
+        showToast(msg)
+        Notifier.post(title: title, body: msg, force: desktop)
+        // If the dropdown is already open, drop the new note straight in (it's visible → read);
+        // otherwise bump the unread badge on the bell.
+        let host = active?.controller.window?.contentView
+        if host?.subviews.contains(where: { $0 is NotificationsPanel }) == true {
+            unread = 0
+            presentNotifications()
+        } else {
+            unread += 1
+        }
+        windows.forEach { $0.controller.setUnread(unread) }
+    }
+
+    /// Toggle the notifications dropdown under the bell. Opening marks everything read.
+    func showNotifications() {
+        guard let host = active?.controller.window?.contentView else { return }
+        if host.subviews.contains(where: { $0 is NotificationsPanel }) {
+            host.subviews.compactMap { $0 as? NotificationsPanel }.forEach {
+                $0.removeFromSuperview()
+            }
+            return  // bell pressed while open → close
+        }
+        unread = 0
+        windows.forEach { $0.controller.setUnread(0) }
+        presentNotifications()
+    }
+
+    /// (Re)render the panel on the active window — called on open and after delete/clear.
+    private func presentNotifications() {
+        guard let host = active?.controller.window?.contentView else { return }
+        host.subviews.compactMap { $0 as? NotificationsPanel }.forEach { $0.removeFromSuperview() }
+        let panel = NotificationsPanel(
+            theme: theme, notes: notes.reversed(),
+            onDelete: { [weak self] id in
+                self?.notes.removeAll { $0.id == id }
+                self?.presentNotifications()
+            },
+            onClear: { [weak self] in
+                self?.notes.removeAll()
+                self?.presentNotifications()
+            })
+        panel.frame = host.bounds
+        panel.autoresizingMask = [.width, .height]
+        host.addSubview(panel)
+    }
+
+    // Live transient toasts, newest first. They stack: the newest is on top showing its text,
+    // older ones peek out behind it (no readable text — a full list would be unusable). Capped.
+    private var toasts: [NSView] = []
+    private var toastTop: [ObjectIdentifier: NSLayoutConstraint] = [:]
+    private let toastPeek: CGFloat = 4
+    private let toastMax = 3
+
     /// Show `msg` as a transient toast banner in the key window (what `vesta.notify` calls).
     /// In-app so it's visible even under `swift run` (macOS notifications need a signed
     /// bundle). Falls back to stderr when there's no window. Uses the theme accent — no
-    /// hardcoded colors.
+    /// hardcoded colors. Simultaneous toasts stack (newest on top) rather than replacing.
     func showToast(_ msg: String) {
-        if onboardingActive { return }   // no plugin toasts over onboarding
+        if onboardingActive { return }  // no plugin toasts over onboarding
         guard let host = active?.controller.window?.contentView else {
-            FileHandle.standardError.write(Data("[vesta.lua] \(msg)\n".utf8)); return
+            FileHandle.standardError.write(Data("[vesta.lua] \(msg)\n".utf8))
+            return
         }
         let label = NSTextField(labelWithString: msg)
         label.font = .systemFont(ofSize: 13, weight: .medium)
@@ -257,22 +423,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         banner.layer?.borderColor = theme.accent.withAlphaComponent(0.55).cgColor
         banner.translatesAutoresizingMaskIntoConstraints = false
         banner.addSubview(label)
-        host.addSubview(banner)
+        host.addSubview(banner, positioned: .above, relativeTo: nil)  // newest on top of the stack
+        let top = banner.topAnchor.constraint(equalTo: host.topAnchor, constant: 46)
         NSLayoutConstraint.activate([
             label.topAnchor.constraint(equalTo: banner.topAnchor, constant: 11),
             label.bottomAnchor.constraint(equalTo: banner.bottomAnchor, constant: -11),
             label.leadingAnchor.constraint(equalTo: banner.leadingAnchor, constant: 15),
             label.trailingAnchor.constraint(equalTo: banner.trailingAnchor, constant: -15),
-            banner.topAnchor.constraint(equalTo: host.topAnchor, constant: 46),
             banner.centerXAnchor.constraint(equalTo: host.centerXAnchor),
             banner.widthAnchor.constraint(lessThanOrEqualTo: host.widthAnchor, multiplier: 0.7),
+            top,
         ])
-        banner.alphaValue = 0
-        NSAnimationContext.runAnimationGroup { ctx in ctx.duration = 0.18; banner.animator().alphaValue = 1 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.8) {
-            NSAnimationContext.runAnimationGroup({ ctx in ctx.duration = 0.32; banner.animator().alphaValue = 0 },
-                completionHandler: { banner.removeFromSuperview() })
+        toasts.insert(banner, at: 0)
+        toastTop[ObjectIdentifier(banner)] = top
+        while toasts.count > toastMax {  // drop the oldest beyond the cap
+            let old = toasts.removeLast()
+            toastTop[ObjectIdentifier(old)] = nil
+            old.removeFromSuperview()
         }
+        banner.alphaValue = 0
+        // Pass 1 (instant): place ONLY the new card at its final slot, leaving the others where
+        // they are — so it appears in place (not sliding from the (0,0) layout origin) and the
+        // existing cards don't snap.
+        top.constant = 46 + CGFloat(toasts.count - 1) * toastPeek
+        host.layoutSubtreeIfNeeded()
+        // Pass 2 (animated): restack the existing cards into their new slots + dim, and fade the
+        // newest in. The new card's constant is already final, so it only fades — no jump.
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            ctx.allowsImplicitAnimation = true
+            layoutToasts(host)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.8) { [weak self] in
+            self?.dismissToast(banner)
+        }
+    }
+
+    /// Position the toast stack: the newest is the front card (full text), sitting lowest;
+    /// each older one is nudged UP behind it so only its top edge peeks out, and dimmed.
+    private func layoutToasts(_ host: NSView) {
+        let last = toasts.count - 1
+        for (i, b) in toasts.enumerated() {
+            toastTop[ObjectIdentifier(b)]?.constant = 46 + CGFloat(last - i) * toastPeek
+        }
+        host.layoutSubtreeIfNeeded()
+        for (i, b) in toasts.enumerated() {
+            b.alphaValue = (i == 0) ? 1 : max(0.25, 0.9 - CGFloat(i) * 0.16)
+        }
+    }
+
+    private func dismissToast(_ banner: NSView) {
+        guard toasts.contains(where: { $0 === banner }) else { return }  // already removed
+        NSAnimationContext.runAnimationGroup(
+            { ctx in
+                ctx.duration = 0.32
+                banner.animator().alphaValue = 0
+            },
+            completionHandler: { [weak self] in
+                guard let self else { return }
+                banner.removeFromSuperview()
+                self.toasts.removeAll { $0 === banner }
+                self.toastTop[ObjectIdentifier(banner)] = nil
+                if let host = self.toasts.first?.superview {
+                    NSAnimationContext.runAnimationGroup { ctx in
+                        ctx.duration = 0.18
+                        ctx.allowsImplicitAnimation = true
+                        self.layoutToasts(host)
+                    }
+                }
+            })
     }
 
     /// Full structured state for `vesta state`: the shared project/session pool plus every
@@ -281,23 +500,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func fullState() -> [String: Any] {
         let projects = store.projs.enumerated().map { (pi, p) -> [String: Any] in
             let sessions = p.sessions.enumerated().map { (si, t) -> [String: Any] in
-                var d: [String: Any] = ["index": si, "panes": t.paneIDs.count, "paneIDs": t.paneIDs]
+                var d: [String: Any] = [
+                    "index": si, "panes": t.paneIDs.count, "paneIDs": t.paneIDs,
+                ]
                 if let n = t.name { d["name"] = n }
                 if let c = t.focusedCwd { d["cwd"] = c }
                 return d
             }
-            var d: [String: Any] = ["index": pi, "name": p.name, "path": p.path,
-                                    "expanded": p.expanded, "sessions": sessions]
+            var d: [String: Any] = [
+                "index": pi, "name": p.name, "path": p.path,
+                "expanded": p.expanded, "sessions": sessions,
+            ]
             if let c = p.color { d["color"] = hexString(c) }
             return d
         }
         let wins = windows.enumerated().map { (wi, w) -> [String: Any] in
-            ["index": wi, "key": w === active, "activeProject": w.workspace.activeP,
-             "activeSession": w.workspace.activeS, "hostsLive": w.workspace.hostsLive]
+            [
+                "index": wi, "key": w === active, "activeProject": w.workspace.activeP,
+                "activeSession": w.workspace.activeS, "hostsLive": w.workspace.hostsLive,
+            ]
         }
         return ["ok": true, "projects": projects, "windows": wins]
     }
-
 
     // MARK: - Window-state persistence
 
@@ -311,12 +535,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func restoreWindows() {
         restoring = true
         defer { restoring = false }
-        let ctx = newWindow()                  // builds the shared workspace (sharedWS)
+        let ctx = newWindow()  // builds the shared workspace (sharedWS)
         // One shared workspace → restore from the first saved entry. (Legacy files may
         // hold several windows; we collapse to the single shared sidebar.)
         if let data = try? Data(contentsOf: URL(fileURLWithPath: Self.windowsFile)),
-           let saved = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-           let first = saved.first {
+            let saved = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+            let first = saved.first
+        {
             ctx.workspace.hydrate(from: first)
             ctx.refresh()
         }
@@ -338,28 +563,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// window-close already wrote the file, so skipping here is safe.
     func saveWindows() {
         guard let ws = (active ?? windows.first)?.workspace,
-              let data = try? JSONSerialization.data(withJSONObject: [ws.serialize()], options: [.prettyPrinted]) else { return }
+            let data = try? JSONSerialization.data(
+                withJSONObject: [ws.serialize()], options: [.prettyPrinted])
+        else { return }
         try? data.write(to: URL(fileURLWithPath: Self.windowsFile), options: .atomic)
     }
 
     func applicationWillTerminate(_ note: Notification) { saveWindows() }
 
     func applicationDidFinishLaunching(_ note: Notification) {
-        Fonts.register()                             // bundle Geist/Martian Mono before building UI
-        let ghostty = GhosttyApp.shared             // inits libghostty (init/config/app) — native config sync
-        theme = ghostty.theme                        // colors from the real ghostty config
+        Fonts.register()  // bundle Geist/Martian Mono before building UI
+        let ghostty = GhosttyApp.shared  // inits libghostty (init/config/app) — native config sync
+        theme = ghostty.theme  // colors from the real ghostty config
 
-        NSApp.mainMenu = makeMainMenu(target: self)   // bundle-less binary: build the menu bar
-        restoreWindows()                              // saved windows (or one fresh window)
+        NSApp.mainMenu = makeMainMenu(target: self)  // bundle-less binary: build the menu bar
+        restoreWindows()  // saved windows (or one fresh window)
 
         server = ControlServer(workspaceProvider: { [weak self] in self?.active?.workspace })
         server.onReload = { [weak self] in self?.reloadConfig() }
-        luaReloadHook = { [weak self] in self?.reloadConfig() }   // sandbox auto-disable → full reload
-        server.onNewWindow = { [weak self] in self?.newWindow(); NSApp.activate(ignoringOtherApps: true) }
+        luaReloadHook = { [weak self] in self?.reloadConfig() }  // sandbox auto-disable → full reload
+        server.onNewWindow = { [weak self] in
+            self?.newWindow()
+            NSApp.activate(ignoringOtherApps: true)
+        }
         server.stateProvider = { [weak self] in self?.fullState() ?? ["ok": false] }
         server.start()
         // Lua bridge handlers (vesta.notify / active / send), then run init.lua.
-        luaNotify = { [weak self] msg in self?.showToast(msg) }
+        luaNotifyRich = { [weak self] msg, title, desktop in
+            self?.handleNotify(msg, title: title, desktop: desktop)
+        }
+        Notifier.requestAuth()
         luaActiveInfo = { [weak self] in
             guard let t = self?.active?.workspace.activeTree else { return nil }
             return (t.focusedCwd ?? "", t.focusedTitle, t.focusedPaneID ?? "")
@@ -372,36 +605,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self?.luaTimers.append(t)
         }
-        luaClearTimers = { [weak self] in self?.luaTimers.forEach { $0.invalidate() }; self?.luaTimers.removeAll() }
+        luaClearTimers = { [weak self] in
+            self?.luaTimers.forEach { $0.invalidate() }
+            self?.luaTimers.removeAll()
+        }
         luaShowPick = { [weak self] items, ref, opts in self?.showPick(items, ref, opts) }
         luaShowPickMulti = { [weak self] items, ref, opts in self?.showPickMulti(items, ref, opts) }
         luaShowMenu = { [weak self] items, refs, opts in self?.showMenu(items, refs, opts) }
         luaSetStatus = { [weak self] s in
-            guard let self, !self.onboardingActive else { return }   // no plugin status during onboarding
-            self.windows.forEach { $0.controller.setLuaStatus(s) } }
+            guard let self, !self.onboardingActive else { return }  // no plugin status during onboarding
+            self.windows.forEach { $0.controller.setLuaStatus(s) }
+        }
         luaPanel = { [weak self] lines, opts in self?.luaPanelSet(lines, opts) ?? 0 }
         luaClosePanel = { [weak self] id in
             guard let self else { return }
             self.luaPanelSpecs[id]?.lines.compactMap(\.clickRef).forEach { luaUnref($0) }
             self.luaPanelSpecs[id] = nil
             (self.panelViews[id] ?? [:]).values.forEach { $0.removeFromSuperview() }
-            self.panelViews[id] = nil }
+            self.panelViews[id] = nil
+        }
         luaClearPanels = { [weak self] in
             guard let self else { return }
-            self.luaPanelSpecs.values.flatMap { $0.lines }.compactMap(\.clickRef).forEach { luaUnref($0) }
+            self.luaPanelSpecs.values.flatMap { $0.lines }.compactMap(\.clickRef).forEach {
+                luaUnref($0)
+            }
             self.luaPanelSpecs.removeAll()
             self.panelViews.values.flatMap { $0.values }.forEach { $0.removeFromSuperview() }
-            self.panelViews.removeAll() }
+            self.panelViews.removeAll()
+        }
         luaShowPrompt = { [weak self] msg, initial, ref in self?.showPrompt(msg, initial, ref) }
         luaShowConfirm = { [weak self] msg, ref in self?.showConfirm(msg, ref) }
-        LuaRuntime.shared.start()   // run init.lua + plugins (builds plugin UI on the window)
+        LuaRuntime.shared.start()  // run init.lua + plugins (builds plugin UI on the window)
         // config-in-Lua: fold vesta.set() overrides in (Lua wins) + re-theme. The plugin UI built
         // above used the pre-Lua theme, so rebuild it against the applied theme — otherwise
         // load-time panels/buttons keep the old accent until a manual reload.
         if !luaConfigOverrides.isEmpty {
             theme = GhosttyApp.shared.reloadConfig()
             windows.forEach { $0.applyTheme(theme) }
-            LuaRuntime.shared.start()   // rebuild plugin UI with the applied theme
+            LuaRuntime.shared.start()  // rebuild plugin UI with the applied theme
         }
 
         installKeybinds()
@@ -429,11 +670,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // app was launched to open (open -a Vesta <dir> / Open With).
         NSApp.servicesProvider = self
         if !pendingOpenDirs.isEmpty {
-            let dirs = pendingOpenDirs; pendingOpenDirs = []
+            let dirs = pendingOpenDirs
+            pendingOpenDirs = []
             for d in dirs { active?.workspace.newTab(cwd: d) }
         }
 
-        Updater.check(silent: true)   // notify if a newer GitHub release exists
+        Updater.check(silent: true)  // notify if a newer GitHub release exists
 
         maybeShowOnboarding()
     }
@@ -445,18 +687,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Gated on a plain bool (not a version), so app updates never re-trigger it.
     private func maybeShowOnboarding() {
         guard !UserDefaults.standard.bool(forKey: "VestaDidOnboard"),
-              let host = active?.controller.window?.contentView,
-              !host.subviews.contains(where: { $0 is OnboardingOverlay }) else { return }
+            let host = active?.controller.window?.contentView,
+            !host.subviews.contains(where: { $0 is OnboardingOverlay })
+        else { return }
         onboardingActive = true
-        renderPanels()                                  // tears down any plugin panels already up
-        windows.forEach { $0.controller.setLuaStatus(""); $0.controller.setChromeHidden(true) }
-        let overlay = OnboardingOverlay(theme: theme,
+        renderPanels()  // tears down any plugin panels already up
+        windows.forEach {
+            $0.controller.setLuaStatus("")
+            $0.controller.setChromeHidden(true)
+        }
+        let overlay = OnboardingOverlay(
+            theme: theme,
             addProject: { [weak self] path in self?.active?.workspace.newProject(at: path) },
             onFinish: { [weak self] in
                 guard let self else { return }
                 self.onboardingActive = false
                 self.windows.forEach { $0.controller.setChromeHidden(false) }
-                self.reloadConfig() })
+                self.reloadConfig()
+            })
         overlay.frame = host.bounds
         overlay.autoresizingMask = [.width, .height]
         host.addSubview(overlay)
@@ -474,7 +722,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             d.removeObject(forKey: k)
         }
         reloadConfig()
-        active?.controller.setSidebarWidth(CGFloat(VestaConfig.shared.sidebarWidth))   // live default
+        active?.controller.setSidebarWidth(CGFloat(VestaConfig.shared.sidebarWidth))  // live default
     }
 
     // Closing the window does NOT quit Vesta — the app keeps running (menu bar
@@ -483,10 +731,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Dock-click / reactivation with no visible window → bring a window back
     /// (or open a fresh one if they were all closed).
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool)
+        -> Bool
+    {
         if !flag {
-            if let win = windows.first?.controller.window { win.makeKeyAndOrderFront(nil) }
-            else { newWindow() }
+            if let win = windows.first?.controller.window {
+                win.makeKeyAndOrderFront(nil)
+            } else {
+                newWindow()
+            }
             NSApp.activate(ignoringOtherApps: true)
         }
         return true
@@ -518,7 +771,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .applicationName: "Vesta",
             .applicationVersion: "0.1.0",
             .credits: NSAttributedString(
-                string: "A native macOS terminal for running AI coding agents in parallel, built on libghostty.",
+                string:
+                    "A native macOS terminal for running AI coding agents in parallel, built on libghostty.",
                 attributes: [.font: NSFont.systemFont(ofSize: 11)]),
         ])
     }
@@ -528,14 +782,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Re-read the config and re-apply colors/theme/terminal settings live — no
     /// relaunch. Pushes a fresh ghostty config to every surface and re-themes chrome.
     @objc func reloadConfig() {
-        LuaRuntime.shared.start()                  // re-run init.lua first → repopulate vesta.set overrides
-        let t = GhosttyApp.shared.reloadConfig()   // re-read file + merge Lua overrides (Lua wins)
+        LuaRuntime.shared.start()  // re-run init.lua first → repopulate vesta.set overrides
+        let t = GhosttyApp.shared.reloadConfig()  // re-read file + merge Lua overrides (Lua wins)
         theme = t
         windows.forEach { $0.applyTheme(t) }
         // Re-parse the prefix from the merged settings (Lua may have set vesta-prefix).
         let s = GhosttyApp.shared.settings
         prefix = parsePrefixSpec(s["vesta-prefix"] ?? "ctrl+b")
-        let binds = (s["vesta-prefix-bind"] ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let binds = (s["vesta-prefix-bind"] ?? "").split(separator: ",").map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }.filter { !$0.isEmpty }
         prefixTable = parsePrefixKeytable(binds)
     }
 
@@ -561,15 +817,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fm = FileManager.default
         let vesta = vestaConfigPath()
         if fm.fileExists(atPath: vesta) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: vesta)); return
+            NSWorkspace.shared.open(URL(fileURLWithPath: vesta))
+            return
         }
         if let ghostty = ghosttyConfigPath() {
-            NSWorkspace.shared.open(URL(fileURLWithPath: ghostty)); return
+            NSWorkspace.shared.open(URL(fileURLWithPath: ghostty))
+            return
         }
         // Neither exists — create a starter Vesta config and open it.
-        try? fm.createDirectory(atPath: (vesta as NSString).deletingLastPathComponent,
-                                withIntermediateDirectories: true)
-        let starter = "# Vesta config — ghostty keys + vesta-* keys.\n"
+        try? fm.createDirectory(
+            atPath: (vesta as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true)
+        let starter =
+            "# Vesta config — ghostty keys + vesta-* keys.\n"
             + "# e.g. theme = ..., vesta-accent = #7dcfb6, vesta-sidebar-width = 240\n"
         try? starter.write(toFile: vesta, atomically: true, encoding: .utf8)
         NSWorkspace.shared.open(URL(fileURLWithPath: vesta))
@@ -579,26 +839,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// independently. After this, Vesta loads its own config (ghostty's stays put).
     @objc func importGhosttyConfig() {
         let fm = FileManager.default
-        guard let src = ghosttyConfigPath(), let text = try? String(contentsOfFile: src, encoding: .utf8) else {
+        guard let src = ghosttyConfigPath(),
+            let text = try? String(contentsOfFile: src, encoding: .utf8)
+        else {
             let a = NSAlert()
             a.messageText = "No ghostty config found"
             a.informativeText = "Couldn't find ~/.config/ghostty/config to import from."
-            a.runModal(); return
+            a.runModal()
+            return
         }
         let dst = vestaConfigPath()
         if fm.fileExists(atPath: dst) {
             let a = NSAlert()
             a.messageText = "Replace Vesta config?"
             a.informativeText = "This overwrites \(dst) with your ghostty config."
-            a.addButton(withTitle: "Replace"); a.addButton(withTitle: "Cancel")
+            a.addButton(withTitle: "Replace")
+            a.addButton(withTitle: "Cancel")
             guard a.runModal() == .alertFirstButtonReturn else { return }
         }
-        try? fm.createDirectory(atPath: (dst as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try? fm.createDirectory(
+            atPath: (dst as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         // Import only the SETTINGS: parse the key=value pairs and rewrite them under
         // a Vesta header, dropping ghostty's template comments/boilerplate. So the
         // file reads as Vesta's own, not a ghostty config.
         let pairs = parseGhosttyConfig(text)
-        let header = "# Vesta config — your own copy. Any ghostty key works, plus vesta-* keys.\n"
+        let header =
+            "# Vesta config — your own copy. Any ghostty key works, plus vesta-* keys.\n"
             + "# Imported from your ghostty settings; edit freely (ghostty's config is untouched).\n\n"
         let body = pairs.map { "\($0.0) = \($0.1)" }.joined(separator: "\n") + "\n"
         do {
@@ -606,10 +872,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let a = NSAlert()
             a.messageText = "Imported \(pairs.count) settings"
             a.informativeText = "Saved to your Vesta config. Apply now?"
-            a.addButton(withTitle: "Reload"); a.addButton(withTitle: "Later")
+            a.addButton(withTitle: "Reload")
+            a.addButton(withTitle: "Later")
             if a.runModal() == .alertFirstButtonReturn { reloadConfig() }
         } catch {
-            let a = NSAlert(); a.messageText = "Import failed"; a.informativeText = error.localizedDescription; a.runModal()
+            let a = NSAlert()
+            a.messageText = "Import failed"
+            a.informativeText = error.localizedDescription
+            a.runModal()
         }
     }
 
@@ -617,22 +887,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let a = NSAlert()
         a.messageText = "Vesta Help"
         a.informativeText = """
-        Keys
-          ⌘D / ⌘⇧D   split vertical / horizontal
-          ⌘W / ⌘⇧W   close pane / session
-          ⌘T          new session        ⌘B  toggle sidebar
-          ⌘]          focus next pane     ⌘{ / ⌘}  prev / next session
-          ⌘1–9        select session      ⌘⇧↵  open browser pane
+            Keys
+              ⌘D / ⌘⇧D   split vertical / horizontal
+              ⌘W / ⌘⇧W   close pane / session
+              ⌘T          new session        ⌘B  toggle sidebar
+              ⌘]          focus next pane     ⌘{ / ⌘}  prev / next session
+              ⌘1–9        select session      ⌘⇧↵  open browser pane
 
-        Sidebar
-          Right-click a project: rename, recolor, remove, new worktree session.
+            Sidebar
+              Right-click a project: rename, recolor, remove, new worktree session.
 
-        CLI
-          Run `vesta help` in any terminal for the agent-control API
-          (split, send-keys, capture, worktree, browser, …).
+            CLI
+              Run `vesta help` in any terminal for the agent-control API
+              (split, send-keys, capture, worktree, browser, …).
 
-        Settings live in your ghostty config — Vesta ▸ Settings… (⌘,).
-        """
+            Settings live in your ghostty config — Vesta ▸ Settings… (⌘,).
+            """
         a.runModal()
     }
 
@@ -653,8 +923,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Finder right-click ▸ Services ▸ "New Vesta Session Here" (registered via Info.plist).
-    @objc func newSessionHere(_ pboard: NSPasteboard, userData: String?,
-                              error: AutoreleasingUnsafeMutablePointer<NSString>?) {
+    @objc func newSessionHere(
+        _ pboard: NSPasteboard, userData: String?,
+        error: AutoreleasingUnsafeMutablePointer<NSString>?
+    ) {
         let urls = pboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
         openPaths(urls.filter { $0.isFileURL }.map { $0.path })
         NSApp.activate(ignoringOtherApps: true)
@@ -668,7 +940,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             FileManager.default.fileExists(atPath: p, isDirectory: &isDir)
             return isDir.boolValue ? p : (p as NSString).deletingLastPathComponent
         }
-        guard let ws = active?.workspace else { pendingOpenDirs += dirs; return }
+        guard let ws = active?.workspace else {
+            pendingOpenDirs += dirs
+            return
+        }
         for d in dirs { ws.newTab(cwd: d) }
     }
 
@@ -679,17 +954,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // ── Prefix mode (runs before the ⌘ keybinds) ──────────────────────
             if let prefix = self.prefix {
                 let mods = e.modifierFlags.intersection([.command, .control, .option, .shift])
-                let isEscape = (e.keyCode == 53)   // Escape
+                let isEscape = (e.keyCode == 53)  // Escape
                 if self.prefixState.armed {
                     // Resolve the NEXT key. Arrows → tokens; else the typed char.
                     let key = Self.prefixKeyToken(e)
-                    if let action = self.prefixState.handle(key: key, isEscape: isEscape, table: self.prefixTable) {
+                    if let action = self.prefixState.handle(
+                        key: key, isEscape: isEscape, table: self.prefixTable)
+                    {
                         self.dispatchPrefix(action)
                     }
-                    return nil   // swallow the key whether it fired, cancelled, or was Escape
+                    return nil  // swallow the key whether it fired, cancelled, or was Escape
                 }
                 // Not yet armed: is THIS the prefix chord?
-                if mods == prefix.mods, (e.charactersIgnoringModifiers ?? "").lowercased() == prefix.key {
+                if mods == prefix.mods,
+                    (e.charactersIgnoringModifiers ?? "").lowercased() == prefix.key
+                {
                     self.prefixState.arm()
                     return nil
                 }
@@ -699,14 +978,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !luaBinds.isEmpty {
                 let mods = e.modifierFlags.intersection([.command, .control, .option, .shift])
                 let key = (e.charactersIgnoringModifiers ?? "").lowercased()
-                for b in luaBinds where parsePrefixSpec(b.spec).map({ $0.mods == mods && $0.key == key }) == true {
-                    luaCall(ref: b.ref); return nil
+                for b in luaBinds
+                where parsePrefixSpec(b.spec).map({ $0.mods == mods && $0.key == key }) == true {
+                    luaCall(ref: b.ref)
+                    return nil
                 }
             }
             guard e.modifierFlags.contains(.command) else { return e }
             let shift = e.modifierFlags.contains(.shift)
             // ⌘N: new window (doesn't need a key window).
-            if !shift, e.charactersIgnoringModifiers == "n" { self.newWindow(); return nil }
+            if !shift, e.charactersIgnoringModifiers == "n" {
+                self.newWindow()
+                return nil
+            }
             // Everything else acts on the key window.
             guard let ctx = self.active else { return e }
             let ws = ctx.workspace
@@ -714,7 +998,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // (not "d") — without this, every ⌘⇧<letter> chord silently falls through.
             switch e.charactersIgnoringModifiers?.lowercased() {
             // Split panes (unchanged)
-            case "d":  ws.activeTree.splitFocused(shift ? .horizontal : .vertical, cwd: ws.activeTree.focusedCwd); return nil
+            case "d":
+                ws.activeTree.splitFocused(
+                    shift ? .horizontal : .vertical, cwd: ws.activeTree.focusedCwd)
+                return nil
             // ⌘W: pane → session → window (cascade). ⌘⇧W: close session.
             // With vesta-persist on (M3), closing a pane/session only tears down the ghostty
             // surface → the vesta-attach relay EOFs and detaches; the shell keeps running
@@ -723,28 +1010,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if shift {
                     ws.closeSession(ws.activeP, ws.activeS)
                 } else if ws.activeTree.paneCount > 1 {
-                    ws.activeTree.closeFocused()                  // 1) close the pane
+                    ws.activeTree.closeFocused()  // 1) close the pane
                 } else if ws.totalSessions > 1 {
-                    ws.closeSession(ws.activeP, ws.activeS)        // 2) close the session
+                    ws.closeSession(ws.activeP, ws.activeS)  // 2) close the session
                 } else {
-                    ctx.controller.window?.performClose(nil)      // 3) last one → close the window
+                    ctx.controller.window?.performClose(nil)  // 3) last one → close the window
                 }
                 return nil
             // ⌘F: in-terminal search (⌃⌘F is full screen — let that fall through)
             case "f" where !e.modifierFlags.contains(.control):
-                ws.activeTree.focused?.startSearch(); return nil
+                ws.activeTree.focused?.startSearch()
+                return nil
             // ⌘B: toggle sidebar
-            case "b":  ctx.controller.toggleSidebar(); return nil
+            case "b":
+                ctx.controller.toggleSidebar()
+                return nil
             // ⌘]/⌘[: focus next/prev pane within the active session
-            case "]":  ws.activeTree.focusNext(); return nil
-            case "[":  ws.activeTree.focusPrev(); return nil
+            case "]":
+                ws.activeTree.focusNext()
+                return nil
+            case "[":
+                ws.activeTree.focusPrev()
+                return nil
             // ⌘T: new session in the active project (cwd = ~)
-            case "t":  ws.newSession(ws.activeP); return nil
+            case "t":
+                ws.newSession(ws.activeP)
+                return nil
             // ⌘}/⌘{: cycle sessions within the active project
-            case "}":  ws.nextSession(); return nil
-            case "{":  ws.prevSession(); return nil
+            case "}":
+                ws.nextSession()
+                return nil
+            case "{":
+                ws.prevSession()
+                return nil
             // ⌘1–9: select session n in the active project
-            case "1","2","3","4","5","6","7","8","9":
+            case "1", "2", "3", "4", "5", "6", "7", "8", "9":
                 if let n = Int(e.charactersIgnoringModifiers ?? "") {
                     ws.selectSessionInActiveProject(n)
                 }
@@ -752,10 +1052,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // ⌘⇧Return: open browser at the focused session's first detected port, else about:blank
             case "\r" where shift:
                 let tree = ws.activeTree
-                let url = ctx.detectedPort(tree).map { URL(string: "http://localhost:\($0)")! } ?? URL(string: "about:blank")!
+                let url =
+                    ctx.detectedPort(tree).map { URL(string: "http://localhost:\($0)")! } ?? URL(
+                        string: "about:blank")!
                 tree.openBrowser(url: url)
                 return nil
-            default:   return e
+            default: return e
             }
         }
     }
@@ -779,19 +1081,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let ctx = active else { return }
         let ws = ctx.workspace
         switch action {
-        case .splitVertical:   _ = ws.activeTree.splitFocused(.vertical, cwd: ws.activeTree.focusedCwd)
-        case .splitHorizontal: _ = ws.activeTree.splitFocused(.horizontal, cwd: ws.activeTree.focusedCwd)
-        case .focusLeft, .focusUp:    ws.activeTree.focusPrev()
+        case .splitVertical:
+            _ = ws.activeTree.splitFocused(.vertical, cwd: ws.activeTree.focusedCwd)
+        case .splitHorizontal:
+            _ = ws.activeTree.splitFocused(.horizontal, cwd: ws.activeTree.focusedCwd)
+        case .focusLeft, .focusUp: ws.activeTree.focusPrev()
         case .focusRight, .focusDown: ws.activeTree.focusNext()
-        case .zoom:        ws.activeTree.zoomFocused()
-        case .newSession:  ws.newSession(ws.activeP)
+        case .zoom: ws.activeTree.zoomFocused()
+        case .newSession: ws.newSession(ws.activeP)
         case .nextSession: ws.nextSession()
         case .prevSession: ws.prevSession()
-        case .rename:      promptRenameActiveSession()
+        case .rename: promptRenameActiveSession()
         // Detach: close the pane → relay EOFs → shell lives on under vestad.
         case .detach: ws.activeTree.closeFocused()
         // Kill: terminate the shell under vestad, then close the pane locally.
-        case .kill:   ws.activeTree.killFocusedSession()
+        case .kill: ws.activeTree.killFocusedSession()
         }
     }
 
@@ -817,17 +1121,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// projects are appended as collapsed + empty (lazy).
 @MainActor
 func loadProjects(_ settings: [String: String], into workspace: Workspace) {
-    let raw = settings["vesta-projects"]?
+    let raw =
+        settings["vesta-projects"]?
         .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } ?? []
     let home = NSHomeDirectory()
     for raw in raw {
         let path = (raw as NSString).expandingTildeInPath
-        guard path != home else { continue }   // don't duplicate the home project
+        guard path != home else { continue }  // don't duplicate the home project
         let name = (path as NSString).lastPathComponent
         workspace.appendProject(name: name, path: path)
     }
 }
-
 
 func abbreviateHome(_ path: String) -> String {
     let home = NSHomeDirectory()

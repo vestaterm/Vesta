@@ -79,7 +79,7 @@ return { version = "1.0.0", priority = 0 }
 
 | Call | Description |
 |------|-------------|
-| `vesta.notify(msg)` | Transient toast. |
+| `vesta.notify(msg [, opts])` | In-app toast + entry in the bell list. `opts = { title, desktop }`: a desktop (Notification Center) banner fires when Vesta is backgrounded; `desktop = true` forces one even when focused. Desktop banners need the bundled `Vesta.app`. |
 | `vesta.status(text)` | Set the chrome status text. |
 | `vesta.prompt(message [, default], fn)` | Free-text input; `fn(text)`. |
 | `vesta.confirm(message, fn)` | Yes/No; `fn(true\|false)`. |

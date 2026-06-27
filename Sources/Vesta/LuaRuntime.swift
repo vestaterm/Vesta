@@ -8,7 +8,11 @@ import CLua
 // with no captured state, hence the file-level storage. nonisolated(unsafe) because the
 // C callbacks are nonisolated; we uphold main-thread-only by construction.
 nonisolated(unsafe) var luaState: OpaquePointer?
-nonisolated(unsafe) var luaNotify: (String) -> Void = { FileHandle.standardError.write(Data("[vesta.lua] \($0)\n".utf8)) }
+nonisolated(unsafe) var luaNotify: (String) -> Void = { luaNotifyRich($0, nil, false) }
+/// Full notify path used by `vesta.notify`: (message, title, forceDesktop). The plain
+/// `luaNotify(String)` (internal errors etc.) routes through here with no title / no force.
+nonisolated(unsafe) var luaNotifyRich: (String, String?, Bool) -> Void = { msg, _, _ in
+    FileHandle.standardError.write(Data("[vesta.lua] \(msg)\n".utf8)) }
 nonisolated(unsafe) var luaCommands: [String: Int32] = [:]            // name → registry ref
 nonisolated(unsafe) var luaEvents: [String: [Int32]] = [:]           // event → [registry refs]
 nonisolated(unsafe) var luaBinds: [(spec: String, ref: Int32)] = []  // "cmd+shift+p" → registry ref
@@ -133,7 +137,16 @@ private func refFunctionArg2(_ L: OpaquePointer?) -> Int32 {
 }
 
 private func l_vesta_notify(_ L: OpaquePointer?) -> Int32 {
-    if let c = luaL_checklstring(L, 1, nil) { luaNotify(String(cString: c)) }
+    guard let c = luaL_checklstring(L, 1, nil) else { return 0 }
+    let msg = String(cString: c)
+    // Optional 2nd arg: { desktop = true, title = "…" }. desktop forces a Notification Center
+    // banner even when Vesta is focused; otherwise desktop banners only show when backgrounded.
+    var title: String? = nil, desktop = false
+    if lua_type(L, 2) == vesta_lua_ttable() {
+        lua_getfield(L, 2, "title");   title = lua_tolstring(L, -1, nil).map { String(cString: $0) }; lua_settop(L, -2)
+        lua_getfield(L, 2, "desktop"); desktop = lua_toboolean(L, -1) != 0; lua_settop(L, -2)
+    }
+    luaNotifyRich(msg, title, desktop)
     return 0
 }
 private func l_vesta_command(_ L: OpaquePointer?) -> Int32 {

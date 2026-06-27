@@ -48,6 +48,10 @@ final class VestaWindowController: NSWindowController {
     private var footer: NSTextField!
     private var dirLabel: NSTextField!
     private weak var titlebarAccessory: NSView?   // host of toggle/folder/path/pill — hidden during onboarding
+    private weak var bellAccessory: NSView?        // trailing host of the bell — hidden during onboarding
+    private var bellButton: NSButton!
+    private var bellDot: NSView!                  // unread indicator overlaid on the bell
+    var onBell: (() -> Void)?                      // set by AppDelegate → opens the notifications panel
 
     // Prefix-mode "armed" indicator (shown in the titlebar while waiting for the
     // next key). Color comes from theme.accent — never hardcoded.
@@ -148,10 +152,15 @@ final class VestaWindowController: NSWindowController {
         // Front so it covers the material wherever it sits; then lift the accessory + traffic
         // lights back above it so they stay visible and clickable.
         bar.addSubview(backing, positioned: .above, relativeTo: nil)
-        var node: NSView? = toggleButton
-        while let n = node, n.superview !== bar { node = n.superview }
-        if let accChild = node, accChild.superview === bar {
-            bar.addSubview(accChild, positioned: .above, relativeTo: backing)
+        // Lift each accessory's clip view (leading: toggle/folder/path; trailing: bell) back
+        // above the backing so they stay visible — walk up from a known child to the bar.
+        let anchors: [NSButton?] = [toggleButton, bellButton]
+        for anchor in anchors {
+            var node: NSView? = anchor
+            while let n = node, n.superview !== bar { node = n.superview }
+            if let accChild = node, accChild.superview === bar {
+                bar.addSubview(accChild, positioned: .above, relativeTo: backing)
+            }
         }
         for type: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
             if let b = window?.standardWindowButton(type), b.superview === bar {
@@ -202,6 +211,8 @@ final class VestaWindowController: NSWindowController {
         prefixPill?.textColor = t.accent
         prefixPill?.layer?.borderColor = t.accent.cgColor
         prefixPill?.layer?.backgroundColor = t.accent.withAlphaComponent(0.12).cgColor
+        bellButton?.contentTintColor = txt(.faint)            // re-theme the bell + unread dot
+        bellDot?.layer?.backgroundColor = t.accent.cgColor
     }
 
     // Footer = git/normal status, plus an optional plugin status (vesta.status) appended
@@ -889,11 +900,66 @@ final class VestaWindowController: NSWindowController {
         acc.view = host
         titlebarAccessory = host
         window?.addTitlebarAccessoryViewController(acc)
+        buildBellAccessory()
+    }
+
+    /// The notifications bell, in its OWN trailing titlebar accessory so it pins to the
+    /// window's rightmost edge (the leading accessory above holds the toggle/folder/path).
+    private func buildBellAccessory() {
+        let acc = NSTitlebarAccessoryViewController()
+        acc.layoutAttribute = .trailing
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
+
+        let bell = NSButton()
+        bell.translatesAutoresizingMaskIntoConstraints = false
+        bell.isBordered = false
+        bell.bezelStyle = .regularSquare
+        bell.title = ""
+        bell.imagePosition = .imageOnly
+        bell.image = NSImage(systemSymbolName: "bell", accessibilityDescription: "Notifications")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .regular))
+        bell.contentTintColor = txt(.faint)
+        bell.toolTip = "Notifications"
+        bell.target = self
+        bell.action = #selector(bellAction)
+        bellButton = bell
+
+        let dot = NSView()
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = 3.5
+        dot.layer?.backgroundColor = theme.accent.cgColor
+        dot.isHidden = true
+        bellDot = dot
+
+        host.addSubview(bell); host.addSubview(dot)
+        NSLayoutConstraint.activate([
+            bell.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -12),
+            bell.centerYAnchor.constraint(equalTo: host.centerYAnchor),
+            bell.widthAnchor.constraint(equalToConstant: 20),
+            bell.heightAnchor.constraint(equalToConstant: 20),
+            bell.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 2),
+            dot.trailingAnchor.constraint(equalTo: bell.trailingAnchor, constant: 1),
+            dot.topAnchor.constraint(equalTo: bell.topAnchor, constant: 1),
+            dot.widthAnchor.constraint(equalToConstant: 7),
+            dot.heightAnchor.constraint(equalToConstant: 7),
+        ])
+        acc.view = host
+        bellAccessory = host
+        window?.addTitlebarAccessoryViewController(acc)
     }
 
     /// Onboarding "clean slate": hide every titlebar accessory (sidebar toggle, folder,
     /// path, prefix pill) so only the traffic lights remain. Restored when onboarding ends.
-    func setChromeHidden(_ hidden: Bool) { titlebarAccessory?.isHidden = hidden }
+    func setChromeHidden(_ hidden: Bool) {
+        titlebarAccessory?.isHidden = hidden
+        bellAccessory?.isHidden = hidden
+    }
+
+    @objc private func bellAction() { onBell?() }
+
+    /// Reflect the unread-notification count on the bell (dot shown when > 0).
+    func setUnread(_ n: Int) { bellDot?.isHidden = (n == 0) }
 
     /// "name / path" → name bold (full), "/" faint, path dim. 11.5px.
     private func dirAttributed(_ raw: String) -> NSAttributedString {

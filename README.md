@@ -68,6 +68,7 @@ vesta list                       # the focused session's panes (+ tab index/coun
 vesta tab new|next|prev|close    # tab control
 vesta sessions                   # list daemon-held sessions (incl. detached)
 vesta kill <id>                  # end a session's shell (by paneID)
+vesta notify [--desktop] [--title <t>] <msg>   # toast + bell; desktop banner when backgrounded (--desktop forces)
 ```
 
 ## Multiplexer & sessions
