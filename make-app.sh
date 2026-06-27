@@ -24,22 +24,26 @@ BUNDLE=$(ls -d "$BINDIR"/Vesta_vesta.bundle 2>/dev/null | head -1)
 [ -x "$BIN" ] || { echo "no binary at $BIN"; exit 1; }
 [ -d "$BUNDLE" ] || { echo "no resource bundle next to binary"; exit 1; }
 
-echo ">> building app icon..."
+echo ">> compiling app icon..."
 ICONOUT=$(mktemp -d)
-# Build the .icns from a full-bleed, TRANSPARENT-corner PNG (assets/AppIcon-1024.png,
-# rendered from the SVG with alpha preserved). We deliberately avoid:
-#   • actool/Icon Composer — bakes the macOS-26 liquid-glass treatment + an inset, and is
-#     flaky on CI runners; and
-#   • qlmanage — flattens the SVG's transparent margins to WHITE (the white-border bug).
-# sips/iconutil preserve the PNG's alpha, so the corners stay transparent like a normal icon.
-ICONSRC="assets/AppIcon-1024.png"
-[ -f "$ICONSRC" ] || { echo "no icon at $ICONSRC"; exit 1; }
-ICONSET=$(mktemp -d)/Vesta.iconset; mkdir -p "$ICONSET"
-for s in 16 32 128 256 512; do
-  sips -z $s $s             "$ICONSRC" --out "$ICONSET/icon_${s}x${s}.png"     >/dev/null
-  sips -z $((s*2)) $((s*2)) "$ICONSRC" --out "$ICONSET/icon_${s}x${s}@2x.png"  >/dev/null
-done
-iconutil -c icns "$ICONSET" -o "$ICONOUT/AppIcon.icns"
+# Use the Icon Composer document (AppIcon.icon) directly: actool renders the macOS-26
+# liquid-glass treatment to AppIcon.icns + Assets.car. Shipping Assets.car (with
+# CFBundleIconName) lets Tahoe shape the icon ONCE — a pre-rounded .icns would get a
+# second system squircle + shadow (a "box shadow" plate). Fall back to the SVG only if
+# actool is unavailable.
+if [ -d AppIcon.icon ] && xcrun actool AppIcon.icon --compile "$ICONOUT" --app-icon AppIcon \
+     --platform macosx --minimum-deployment-target 26.0 \
+     --output-partial-info-plist "$ICONOUT/icon.plist" >/dev/null 2>&1 && [ -f "$ICONOUT/AppIcon.icns" ]; then
+  echo ">> rendered AppIcon.icon (Icon Composer)"
+else
+  echo "  WARN: actool failed; rendering icon from assets/AppIcon-1024.png"
+  ICONSET=$(mktemp -d)/Vesta.iconset; mkdir -p "$ICONSET"
+  for s in 16 32 128 256 512; do
+    sips -z $s $s             assets/AppIcon-1024.png --out "$ICONSET/icon_${s}x${s}.png"     >/dev/null
+    sips -z $((s*2)) $((s*2)) assets/AppIcon-1024.png --out "$ICONSET/icon_${s}x${s}@2x.png"  >/dev/null
+  done
+  iconutil -c icns "$ICONSET" -o "$ICONOUT/AppIcon.icns"
+fi
 
 echo ">> assembling ${APP}..."
 rm -rf "${APP}"
@@ -53,11 +57,9 @@ cp "$BINDIR/vesta-attach"  "${APP}/Contents/MacOS/vesta-attach"
 # so codesign doesn't treat it as unsigned nested code.
 cp -R "$BUNDLE" "${APP}/Contents/Resources/"
 cp "$ICONOUT/AppIcon.icns" "${APP}/Contents/Resources/AppIcon.icns"
-# NOTE: we deliberately do NOT ship Assets.car. On macOS 26 (Tahoe) Finder would
-# prefer its liquid-glass icon variant (via CFBundleIconName), but the Icon
-# Composer source composes the whole logo with a lighten/translucent blend that
-# renders washed-out with a white border. The flat AppIcon.icns (the dark tile +
-# white flame) is the intended look, so we use only that (CFBundleIconFile).
+# Assets.car carries the Tahoe liquid-glass icon (read via CFBundleIconName). Shipping it
+# lets the system render + shape the icon natively (one squircle, no double-plate).
+[ -f "$ICONOUT/Assets.car" ] && cp "$ICONOUT/Assets.car" "${APP}/Contents/Resources/Assets.car"
 # Legal: ship the license + third-party attribution inside the bundle.
 cp LICENSE "${APP}/Contents/Resources/LICENSE" 2>/dev/null || true
 cp NOTICE  "${APP}/Contents/Resources/NOTICE"  2>/dev/null || true
@@ -85,6 +87,7 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>      <string>Vesta</string>
   <key>CFBundleIdentifier</key>      <string>io.github.notnaki.vesta</string>
   <key>CFBundleIconFile</key>        <string>AppIcon</string>
+  <key>CFBundleIconName</key>        <string>AppIcon</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleShortVersionString</key> <string>__VERSION__</string>
   <key>CFBundleVersion</key>         <string>1</string>
