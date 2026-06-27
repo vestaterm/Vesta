@@ -56,9 +56,11 @@ cp "$BINDIR/vesta-attach"  "${APP}/Contents/MacOS/vesta-attach"
 # so codesign doesn't treat it as unsigned nested code.
 cp -R "$BUNDLE" "${APP}/Contents/Resources/"
 cp "$ICONOUT/AppIcon.icns" "${APP}/Contents/Resources/AppIcon.icns"
-# Assets.car carries the high-res / liquid-glass icon variants (Tahoe reads it
-# via CFBundleIconName); harmless on older systems that use the .icns.
-[ -f "$ICONOUT/Assets.car" ] && cp "$ICONOUT/Assets.car" "${APP}/Contents/Resources/Assets.car"
+# NOTE: we deliberately do NOT ship Assets.car. On macOS 26 (Tahoe) Finder would
+# prefer its liquid-glass icon variant (via CFBundleIconName), but the Icon
+# Composer source composes the whole logo with a lighten/translucent blend that
+# renders washed-out with a white border. The flat AppIcon.icns (the dark tile +
+# white flame) is the intended look, so we use only that (CFBundleIconFile).
 # Legal: ship the license + third-party attribution inside the bundle.
 cp LICENSE "${APP}/Contents/Resources/LICENSE" 2>/dev/null || true
 cp NOTICE  "${APP}/Contents/Resources/NOTICE"  2>/dev/null || true
@@ -86,7 +88,6 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>      <string>Vesta</string>
   <key>CFBundleIdentifier</key>      <string>io.github.notnaki.vesta</string>
   <key>CFBundleIconFile</key>        <string>AppIcon</string>
-  <key>CFBundleIconName</key>        <string>AppIcon</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleShortVersionString</key> <string>__VERSION__</string>
   <key>CFBundleVersion</key>         <string>1</string>
