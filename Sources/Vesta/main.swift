@@ -772,15 +772,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu actions
 
+    private var aboutWC: AboutWindowController?
     @objc func showAbout() {
-        NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "Vesta",
-            .applicationVersion: Updater.currentVersion,   // from the bundle, not hardcoded
-            .credits: NSAttributedString(
-                string:
-                    "A native macOS terminal for running AI coding agents in parallel, built on libghostty.",
-                attributes: [.font: NSFont.systemFont(ofSize: 11)]),
-        ])
+        if aboutWC == nil { aboutWC = AboutWindowController(theme: theme) }
+        aboutWC?.showWindow(nil)
+        aboutWC?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private var settingsWC: SettingsWindowController?

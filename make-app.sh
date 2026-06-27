@@ -15,6 +15,9 @@ BINDIR=".build/$CONF"
 VERSION="${VESTA_VERSION:-}"
 [ -z "$VERSION" ] && VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
 case "$VERSION" in [0-9]*) ;; *) VERSION="0.1.0" ;; esac
+# Build number (CFBundleVersion) = commit count; commit hash for the About panel.
+BUILD="${VESTA_BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
+COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo '')"
 
 echo ">> building ($CONF)..."
 swift build -c "$CONF" >/dev/null
@@ -90,7 +93,8 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIconName</key>        <string>AppIcon</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleShortVersionString</key> <string>__VERSION__</string>
-  <key>CFBundleVersion</key>         <string>1</string>
+  <key>CFBundleVersion</key>         <string>__BUILD__</string>
+  <key>VestaGitCommit</key>          <string>__COMMIT__</string>
   <key>LSMinimumSystemVersion</key>  <string>13.0</string>
   <key>NSHighResolutionCapable</key> <true/>
   <key>NSPrincipalClass</key>        <string>NSApplication</string>
@@ -118,8 +122,8 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
-sed -i '' "s/__VERSION__/$VERSION/" "${APP}/Contents/Info.plist"
-echo ">> bundle version $VERSION"
+sed -i '' -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" -e "s/__COMMIT__/$COMMIT/" "${APP}/Contents/Info.plist"
+echo ">> bundle version $VERSION (build $BUILD, commit ${COMMIT:-none})"
 
 # Sign the executable then the wrapper (no --deep — the resource bundle is data).
 # SIGN_ID set (e.g. "Developer ID Application: Name (TEAMID)") → real signing with
