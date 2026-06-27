@@ -9,6 +9,13 @@ CONF="${1:-release}"            # make-app.sh [release|debug]
 APP="Vesta.app"
 BINDIR=".build/$CONF"
 
+# Bundle version (CFBundleShortVersionString) — what the in-app updater compares against
+# the latest GitHub release. Prefer VESTA_VERSION (CI passes the tag), else the latest git
+# tag, else a dev fallback. Must look like a version (digits…), else fall back.
+VERSION="${VESTA_VERSION:-}"
+[ -z "$VERSION" ] && VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+case "$VERSION" in [0-9]*) ;; *) VERSION="0.1.0" ;; esac
+
 echo ">> building ($CONF)..."
 swift build -c "$CONF" >/dev/null
 
@@ -81,7 +88,7 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIconFile</key>        <string>AppIcon</string>
   <key>CFBundleIconName</key>        <string>AppIcon</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
-  <key>CFBundleShortVersionString</key> <string>0.1.0</string>
+  <key>CFBundleShortVersionString</key> <string>__VERSION__</string>
   <key>CFBundleVersion</key>         <string>1</string>
   <key>LSMinimumSystemVersion</key>  <string>13.0</string>
   <key>NSHighResolutionCapable</key> <true/>
@@ -110,6 +117,8 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+sed -i '' "s/__VERSION__/$VERSION/" "${APP}/Contents/Info.plist"
+echo ">> bundle version $VERSION"
 
 # Sign the executable then the wrapper (no --deep — the resource bundle is data).
 # SIGN_ID set (e.g. "Developer ID Application: Name (TEAMID)") → real signing with
