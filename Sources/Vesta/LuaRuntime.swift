@@ -385,6 +385,12 @@ private func panelLines(_ L: OpaquePointer?, _ idx: Int32) -> [PanelLine] {
                 if lua_type(L, -1) == vesta_lua_tfunction() { line.clickRef = luaL_ref(L, vesta_lua_registryindex()) }  // pops fn
                 else { lua_settop(L, -2) }
             }
+            // {svg="<svg…>"} or {image="/path"} renders as an image; optional h = display height.
+            lua_getfield(L, -1, "svg");   line.svg = lua_tolstring(L, -1, nil).map { String(cString: $0) }; lua_settop(L, -2)
+            lua_getfield(L, -1, "image"); line.imagePath = lua_tolstring(L, -1, nil).map { String(cString: $0) }; lua_settop(L, -2)
+            lua_getfield(L, -1, "h");     line.imageHeight = CGFloat(lua_tonumberx(L, -1, nil)); lua_settop(L, -2)
+            lua_getfield(L, -1, "prefix"); line.prefix = lua_tolstring(L, -1, nil).map { String(cString: $0) } ?? ""; lua_settop(L, -2)
+            lua_getfield(L, -1, "prefixColor"); line.prefixColorHex = lua_tolstring(L, -1, nil).map { String(cString: $0) }; lua_settop(L, -2)
             out.append(line)
             lua_settop(L, -2)                               // pop element table
         }
@@ -405,6 +411,7 @@ private func l_vesta_panel(_ L: OpaquePointer?) -> Int32 {
         o.allWindows = (str("window") == "all")   // "all" → every window; default "active"
         lua_getfield(L, 2, "id");    o.id = Int(lua_tointegerx(L, -1, nil)); lua_settop(L, -2)
         lua_getfield(L, 2, "width"); o.width = lua_tonumberx(L, -1, nil);    lua_settop(L, -2)
+        lua_getfield(L, 2, "height"); o.height = lua_tonumberx(L, -1, nil);  lua_settop(L, -2)
     }
     lua_pushinteger(L, lua_Integer(luaPanel(lines, o)))
     return 1

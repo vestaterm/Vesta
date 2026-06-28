@@ -286,7 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     let ov = PanelOverlay(theme: theme, lines: spec.lines, opts: spec.opts)
                     host.addSubview(ov)
-                    ov.pin(into: host)
+                    ov.place(into: host)
                     panelViews[id, default: [:]][wid] = ov
                 }
             }
