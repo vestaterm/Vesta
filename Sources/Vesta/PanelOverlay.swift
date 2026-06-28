@@ -122,7 +122,6 @@ final class PanelOverlay: NSView {
     enum Corner: String { case topright, topleft, bottomright, bottomleft }
 
     private let theme: Theme
-    let corner: Corner
     let panelTitle: String
     private let titleLabel = NSTextField(labelWithString: "")
     private let minButton = NSButton()
@@ -136,7 +135,9 @@ final class PanelOverlay: NSView {
     private var topC: NSLayoutConstraint?
     private let grid: CGFloat = 20
     private let margin: CGFloat = 16
-    private let peek: CGFloat = 30   // sliver left visible when edge-minimized
+    private let peek: CGFloat = 30      // sliver left visible when edge-minimized
+    private let titleBarH: CGFloat = 30 // draggable title-bar band (also the cursor region)
+    private var topInset: CGFloat { margin + 28 }   // keep panels clear of the window titlebar
 
     // corner-anchored placement (stays glued to its corner on resize)
     private var anchor: Corner
@@ -157,7 +158,6 @@ final class PanelOverlay: NSView {
 
     init(theme: Theme, lines: [PanelLine], opts: PanelOpts) {
         self.theme = theme
-        self.corner = Corner(rawValue: opts.corner) ?? .topright
         self.anchor = Corner(rawValue: opts.corner) ?? .topright
         self.panelTitle = opts.title
         self.maxHeight = CGFloat(opts.height)
@@ -247,7 +247,7 @@ final class PanelOverlay: NSView {
         if hit === minButton { return minButton }
         if minimized { return self }
         // Title bar drags + focuses the card.
-        if local.y <= 30 { return self }
+        if local.y <= titleBarH { return self }
         // Body: hand off to the real subview so scroll views get wheel events and clickable
         // rows get their clicks; only empty areas fall back to self (focus on click).
         return hit ?? self
@@ -303,7 +303,7 @@ final class PanelOverlay: NSView {
     private func reposition() {
         guard let host = host, !dragging else { return }   // never fight an in-progress drag
         let s = fittingSize, hb = host.bounds
-        let top: CGFloat = margin + 28   // never under the window titlebar
+        let top = topInset
         var (nx, ny) = normalXY()
         nx = min(max(nx, 0), max(0, hb.width - s.width))
         ny = min(max(ny, top), max(top, hb.height - s.height))
@@ -325,7 +325,7 @@ final class PanelOverlay: NSView {
         if minimized { return }     // restore + focus handled on mouseUp
         // drag only when grabbed by the title bar; elsewhere the click just focuses on mouseUp.
         let local = convert(event.locationInWindow, from: nil)
-        dragging = local.y <= 30
+        dragging = local.y <= titleBarH
         if dragging {
             NSCursor.closedHand.set()
             dragStart = event.locationInWindow
@@ -345,7 +345,7 @@ final class PanelOverlay: NSView {
     override func cursorUpdate(with event: NSEvent) {
         if dragging { NSCursor.closedHand.set(); return }
         let local = convert(event.locationInWindow, from: nil)
-        if local.x >= 0, local.x <= bounds.width, local.y >= 0, local.y <= 30 { NSCursor.openHand.set() }
+        if local.x >= 0, local.x <= bounds.width, local.y >= 0, local.y <= titleBarH { NSCursor.openHand.set() }
         else { NSCursor.arrow.set() }
     }
 
@@ -355,7 +355,7 @@ final class PanelOverlay: NSView {
         let p = event.locationInWindow
         // window coords: +x right, +y up; topC grows downward → invert dy.
         let s = fittingSize, hb = host.bounds
-        let top = margin + 28   // stay clear of the window titlebar / traffic lights
+        let top = topInset
         let x = min(max(dragOrigin.x + (p.x - dragStart.x), 0), max(0, hb.width - s.width))
         let y = min(max(dragOrigin.y - (p.y - dragStart.y), top), max(top, hb.height - s.height))
         setXY(x, y)   // clamp live so it can't be dragged off-window / under the titlebar
@@ -463,7 +463,6 @@ final class PanelOverlay: NSView {
         titleLabel.isHidden = title.isEmpty
         lineStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for line in lines.prefix(200) {
-            let color = line.colorHex.flatMap(PanelOverlay.hexColor) ?? NSColor(white: 0.9, alpha: 1)
             if line.svg != nil || line.imagePath != nil {
                 let img = line.svg.flatMap { NSImage(data: Data($0.utf8)) }
                     ?? line.imagePath.flatMap { NSImage(contentsOfFile: $0) }

@@ -98,14 +98,26 @@ scrolls past a generous max. Override per call: `{ width = 600 }` (fixed width),
 
 **Panels.** `lines` is an array; each line is one of:
 - a string, or `{ text = , color = "#rrggbb" }` — a label,
-- `{ text = , color = , click = fn }` — a clickable button,
+- `{ text = , color = , click = fn }` — a clickable list row,
 - `{ input = true, placeholder = , action = fn }` — an editable field;
-  `action(text)` fires on Enter.
+  `action(text)` fires on Enter,
+- `{ svg = "<svg…>", h = 240 }` or `{ image = "/path.png", h = 240 }` — render an
+  image (inline SVG markup is rasterized; `h` is an optional display height),
+- any line may also set `prefix = "│ ● "` + `prefixColor = "#rrggbb"` — a colored
+  leading run before `text` (e.g. a graph gutter with a white subject). Rows are
+  packed tight so a `│`/`●` prefix column connects into a continuous line.
 
 `opts = { title, corner = "topright"|"topleft"|"bottomright"|"bottomleft",
-bg = "#rrggbb", width, id, window = "active"|"all" }`. Pass a previous `id` to
-update a panel in place. `window = "all"` renders it in every window; the default
-follows the active window.
+bg = "#rrggbb", width, height, id, window = "active"|"all" }`. `height = N` makes
+the panel's content scroll inside a fixed height. Pass a previous `id` to update a
+panel in place. `window = "all"` renders it in every window; the default follows
+the active window.
+
+Panels are **floating cards the user can rearrange**: drag the title bar to move
+(snaps to a 20px grid + the four corners), click anywhere on a card to bring it to
+front, and click the `–` to edge-minimize it (docks to the nearest edge leaving a
+grab tab; click to restore). Each panel's position + minimized state persist per
+**title** across launches, so give panels you want remembered a stable `title`.
 
 ### Events
 

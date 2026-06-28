@@ -264,6 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panelViews.removeAll()
             return
         }
+        var created = false
         let live = Set(windows.map(ObjectIdentifier.init))
         for id in Array(panelViews.keys) {
             for (wid, ov) in panelViews[id] ?? [:] where !live.contains(wid) {
@@ -288,6 +289,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     host.addSubview(ov)
                     ov.place(into: host)
                     panelViews[id, default: [:]][wid] = ov
+                    created = true
+                }
+            }
+        }
+        // Restore persisted stacking only when a panel was just created (not on every timer
+        // re-render, which would churn the z-order): re-add each window's panels back-to-front
+        // by their saved z, so the last-fronted card ends up on top across launches.
+        if created {
+            for win in windows {
+                guard let host = win.controller.window?.contentView else { continue }
+                let panels = host.subviews.compactMap { $0 as? PanelOverlay }
+                for ov in panels.sorted(by: { ov1, ov2 in
+                    (PanelStore.get(ov1.panelTitle)?.z ?? 0) < (PanelStore.get(ov2.panelTitle)?.z ?? 0)
+                }) {
+                    host.addSubview(ov, positioned: .above, relativeTo: nil)
                 }
             }
         }
