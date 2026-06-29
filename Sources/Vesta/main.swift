@@ -617,6 +617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ~/Desktop) would otherwise linger and serve a later RELEASE build — which makes
         // macOS re-prompt for Desktop access on every command. Release builds never do this:
         // there the daemon must outlive quit so sessions survive.
+        // Edge: also kills a vestad a concurrent RELEASE app is using (single-instance) — fine for a dev build.
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
         p.arguments = ["-x", "vestad"]
