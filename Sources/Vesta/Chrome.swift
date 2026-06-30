@@ -79,6 +79,8 @@ final class VestaWindowController: NSWindowController {
         // Restore the dragged sidebar width if saved, else the config default.
         let savedWidth = UserDefaults.standard.double(forKey: "VestaSidebarWidth")
         self.openWidth = savedWidth > 0 ? CGFloat(savedWidth) : CGFloat(VestaConfig.shared.sidebarWidth)
+        // Restore collapsed/open state across launches (defaults to open).
+        self.sidebarOpen = UserDefaults.standard.object(forKey: "VestaSidebarOpen") as? Bool ?? true
         self.onSelectSession = onSelectSession
         self.onCloseSession  = onCloseSession
         self.onNewSession    = onNewSession
@@ -286,7 +288,7 @@ final class VestaWindowController: NSWindowController {
         root.addSubview(sidebar)
         root.addSubview(content)
 
-        sidebarWidth = sidebar.widthAnchor.constraint(equalToConstant: openWidth)
+        sidebarWidth = sidebar.widthAnchor.constraint(equalToConstant: sidebarOpen ? openWidth : 0)
         NSLayoutConstraint.activate([
             sidebar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             sidebar.topAnchor.constraint(equalTo: root.topAnchor),
@@ -326,6 +328,10 @@ final class VestaWindowController: NSWindowController {
         sidebarWidth.constant = clamped
         openWidth = clamped
         UserDefaults.standard.set(Double(clamped), forKey: "VestaSidebarWidth")
+        // Any visible width means the sidebar is open — keep the toggle state (and the
+        // persisted bit) in sync so ⌘B isn't a dead press after resizing while collapsed.
+        sidebarOpen = true
+        UserDefaults.standard.set(true, forKey: "VestaSidebarOpen")
         sidebar.superview?.layoutSubtreeIfNeeded()
         updateToggleTint()
     }
@@ -1033,11 +1039,16 @@ final class VestaWindowController: NSWindowController {
 
     func toggleSidebar() {
         sidebarOpen.toggle()
+        UserDefaults.standard.set(sidebarOpen, forKey: "VestaSidebarOpen")   // remember across launches
+        // Set the model constant DIRECTLY (authoritative), then animate only the layout pass.
+        // Driving the constant through .animator() changes it incrementally over the duration, so
+        // a competing layout — e.g. setProjects() firing while an agent streams output — interrupts
+        // the animation and freezes the constant partway, parking the sidebar half-collapsed.
+        // Use openWidth (updated by drag) so ⌘B restores to whatever drag set.
+        sidebarWidth.constant = sidebarOpen ? openWidth : 0
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.18
             ctx.allowsImplicitAnimation = true
-            // Use openWidth (updated by drag) so ⌘B restores to whatever drag set.
-            sidebarWidth.animator().constant = sidebarOpen ? openWidth : 0
             sidebar.superview?.layoutSubtreeIfNeeded()
         }
         updateToggleTint()

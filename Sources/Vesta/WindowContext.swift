@@ -58,6 +58,7 @@ final class WindowContext {
                                             let panel = NSOpenPanel()
                                             panel.canChooseDirectories = true
                                             panel.canChooseFiles = false
+                                            panel.canCreateDirectories = true
                                             panel.allowsMultipleSelection = false
                                             panel.prompt = "Add Project"
                                             panel.message = "Choose a folder for the new project"
@@ -77,6 +78,7 @@ final class WindowContext {
                                             let panel = NSOpenPanel()
                                             panel.canChooseDirectories = true
                                             panel.canChooseFiles = false
+                                            panel.canCreateDirectories = true
                                             panel.allowsMultipleSelection = false
                                             panel.prompt = "Set Folder"
                                             panel.message = "Default folder for new sessions in this project"

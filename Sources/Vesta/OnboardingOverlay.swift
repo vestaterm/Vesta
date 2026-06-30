@@ -279,6 +279,7 @@ final class OnboardingOverlay: NSView {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
+        panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Add project"
         panel.message = "Choose a folder to open as your first project"
