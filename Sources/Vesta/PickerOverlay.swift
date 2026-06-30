@@ -14,6 +14,12 @@ struct PickOpts {
 
 private final class FlippedClipView: NSClipView { override var isFlipped: Bool { true } }
 
+/// A picker list row that reports clicks (click-to-select).
+private final class PickRowView: NSView {
+    var onClick: (() -> Void)?
+    override func mouseDown(with event: NSEvent) { onClick?() }
+}
+
 /// A generic picker overlay (the UI behind `vesta.pick`, `vesta.menu`, `vesta.pickmulti`,
 /// `vesta.prompt`, `vesta.confirm`). A dim scrim over the window with a search field + filtered
 /// list; type to filter (case-insensitive substring on the label), ↑/↓ to move, Enter to
@@ -32,6 +38,7 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
     private let input = NSTextField()
     private let listStack = NSStackView()
     private let opts: PickOpts
+    private weak var panelView: NSView?      // the floating card; scrim-clicks outside it cancel
 
     /// Designated init: index-based selection over `items`.
     private init(theme: Theme, items: [PickItem], multiSelect: Bool, isPrompt: Bool,
@@ -75,7 +82,13 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.black.withAlphaComponent(0.35).setFill(); dirtyRect.fill()
     }
-    override func mouseDown(with event: NSEvent) { onCancel() }   // click scrim → cancel
+    override func mouseDown(with event: NSEvent) {
+        // Cancel only when clicking the dim scrim OUTSIDE the card; clicks on the card
+        // (and its rows) are handled by the rows themselves, not treated as dismiss.
+        let p = convert(event.locationInWindow, from: nil)
+        if let panel = panelView, panel.frame.contains(p) { return }
+        onCancel()
+    }
 
     private func build() {
         wantsLayer = true
@@ -89,6 +102,7 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
         panel.layer?.borderWidth = 1
         panel.layer?.borderColor = theme.accent.withAlphaComponent(0.5).cgColor
         addSubview(panel)
+        panelView = panel
 
         input.placeholderString = multiSelect ? "Filter… (Tab to mark, Enter to confirm)" : "Filter…"
         input.delegate = self
@@ -185,7 +199,8 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
             row.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
             row.lineBreakMode = .byTruncatingTail
             row.translatesAutoresizingMaskIntoConstraints = false
-            let pad = NSView()
+            let pad = PickRowView()
+            pad.onClick = { [weak self] in self?.chooseShown(i) }
             pad.translatesAutoresizingMaskIntoConstraints = false
             pad.wantsLayer = true
             pad.layer?.backgroundColor = (i == cursor ? theme.accent.withAlphaComponent(0.30) : .clear).cgColor
@@ -226,6 +241,19 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
         case #selector(NSResponder.cancelOperation(_:)):
             onCancel(); return true
         default: return false
+        }
+    }
+
+    /// Click-select a visible row: single-select confirms it, multi-select toggles its mark.
+    private func chooseShown(_ shownIdx: Int) {
+        guard shown.indices.contains(shownIdx), !isPrompt else { return }
+        cursor = shownIdx
+        if multiSelect {
+            let it = shown[shownIdx]
+            if marked.contains(it) { marked.remove(it) } else { marked.insert(it) }
+            rebuildRows()
+        } else {
+            onIndices([shown[shownIdx]])
         }
     }
 

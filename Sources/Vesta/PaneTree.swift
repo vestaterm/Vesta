@@ -182,6 +182,9 @@ final class PaneTree {
     private func installClickFocus() {
         NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] e in
             guard let self, let win = self.root.window, e.window === win else { return e }
+            // A modal picker/confirm overlay owns its clicks — don't refocus the pane
+            // underneath it (that steals first-responder from the picker's field editor).
+            if win.contentView?.subviews.contains(where: { $0 is PickerOverlay || $0 is ConfirmOverlay }) == true { return e }
             let pt = self.root.convert(e.locationInWindow, from: nil)
             for l in self.leaves where l.convert(l.bounds, to: self.root).contains(pt) {
                 if l.id != self.focusedId { self.focusedId = l.id; self.restyle() }
