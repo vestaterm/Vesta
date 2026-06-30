@@ -6,6 +6,17 @@
 
 <p align="center">A native macOS terminal for running AI coding agents in parallel —<br>built on real <a href="https://ghostty.org">libghostty</a>, driven by a scriptable CLI.</p>
 
+<p align="center">
+  <a href="https://github.com/vestaterm/Vesta/releases/latest"><b>Download</b></a> ·
+  <a href="https://vestaterm.github.io/vesta-site/">Website</a> ·
+  <a href="https://vestaterm.github.io/vesta-site/docs.html">Docs</a> ·
+  <a href="https://vestaterm.github.io/vesta-site/assets/vesta-demo.mp4">▶&nbsp;Watch&nbsp;the&nbsp;tour</a>
+</p>
+
+<p align="center">
+  <img src="assets/hero.png" width="840" alt="Two Claude Code agents running side by side in Vesta, with the project sidebar showing 'halo · 2 panes'">
+</p>
+
 ---
 
 Vesta is a Swift/AppKit terminal that links **GhosttyKit.xcframework** (it is not

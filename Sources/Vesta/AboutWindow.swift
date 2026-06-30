@@ -6,8 +6,8 @@ import AppKit
 /// Easter egg: click the icon to cycle through flame color + corruption variants.
 @MainActor
 final class AboutWindowController: NSWindowController {
-    private let repo = "https://github.com/notnaki/Vesta"
-    private let docsURL = "https://notnaki.github.io/vesta-site/docs.html"
+    private let repo = "https://github.com/vestaterm/Vesta"
+    private let docsURL = "https://vestaterm.github.io/vesta-site/docs.html"
     private let theme: Theme
     private var iconView: NSImageView!
     private var iconVariants: [(name: String, image: NSImage)] = []

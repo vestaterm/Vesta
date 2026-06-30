@@ -7,7 +7,7 @@ import AppKit
 @MainActor
 final class Updater: NSObject {
     static let shared = Updater()
-    static let repo = "notnaki/Vesta"
+    static let repo = "vestaterm/Vesta"
 
     static var currentVersion: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.1.0"
