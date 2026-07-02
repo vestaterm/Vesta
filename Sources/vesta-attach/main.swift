@@ -41,11 +41,7 @@ let paneID = args[1]
 func socketAlive(_ path: String) -> Bool {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0); if fd < 0 { return false }
     defer { close(fd) }
-    var addr = sockaddr_un(); addr.sun_family = sa_family_t(AF_UNIX)
-    let bytes = Array(path.utf8)
-    withUnsafeMutableBytes(of: &addr.sun_path) { raw in
-        for i in 0..<min(bytes.count, raw.count - 1) { raw[i] = bytes[i] }
-    }
+    var addr = makeSockaddrUn(path)
     let len = socklen_t(MemoryLayout<sockaddr_un>.size)
     return withUnsafePointer(to: &addr) {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) == 0 }
@@ -84,11 +80,7 @@ if !socketAlive(MuxPaths.daemonSocket) { spawnDaemon() }
 // ── connect ──────────────────────────────────────────────────────────────────
 let sock = socket(AF_UNIX, SOCK_STREAM, 0)
 guard sock >= 0 else { exit(1) }
-var addr = sockaddr_un(); addr.sun_family = sa_family_t(AF_UNIX)
-let pbytes = Array(MuxPaths.daemonSocket.utf8)
-withUnsafeMutableBytes(of: &addr.sun_path) { raw in
-    for i in 0..<min(pbytes.count, raw.count - 1) { raw[i] = pbytes[i] }
-}
+var addr = makeSockaddrUn(MuxPaths.daemonSocket)
 let slen = socklen_t(MemoryLayout<sockaddr_un>.size)
 let connected = withUnsafePointer(to: &addr) {
     $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(sock, $0, slen) }
@@ -114,11 +106,26 @@ func currentWinsize() -> (Int, Int) {
     }
     return (80, 24)
 }
-func send(_ f: ClientFrame) {
+/// Write one whole frame to the daemon socket. Returns false on unrecoverable
+/// write error — the frame stream is desynced then, so the caller must tear
+/// down (same as daemon EOF) rather than keep pumping garbage.
+@discardableResult
+func send(_ f: ClientFrame) -> Bool {
     let d = encode(f)
-    d.withUnsafeBytes { raw in
+    return d.withUnsafeBytes { raw in
         var off = 0
-        while off < raw.count { let n = write(sock, raw.baseAddress!.advanced(by: off), raw.count - off); if n <= 0 { break }; off += n }
+        while off < raw.count {
+            let n = write(sock, raw.baseAddress!.advanced(by: off), raw.count - off)
+            if n > 0 { off += n; continue }
+            if n < 0 && errno == EINTR { continue }
+            if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {   // sock is non-blocking
+                var pfd = pollfd(fd: sock, events: Int16(POLLOUT), revents: 0)
+                if poll(&pfd, 1, 5000) <= 0 { return false }   // daemon stuck → desynced
+                continue
+            }
+            return false   // EPIPE/other → daemon gone
+        }
+        return true
     }
 }
 
@@ -148,7 +155,11 @@ let (cols0, rows0) = currentWinsize()
 // Our cwd is what libghostty set via config.working_directory (the project/session dir).
 // The daemon chdirs the shell here when it first creates this session.
 let spawnCwd = FileManager.default.currentDirectoryPath
-send(.hello(paneID: paneID, cols: cols0, rows: rows0, cwd: spawnCwd))
+if !send(.hello(paneID: paneID, cols: cols0, rows: rows0, cwd: spawnCwd)) {
+    if ptyRaw { tcsetattr(STDIN_FILENO, TCSAFLUSH, &savedTermios) }
+    writeErr("vesta-attach: lost daemon connection during hello\n")
+    close(sock); exit(1)
+}
 
 // ── SIGWINCH → resize ────────────────────────────────────────────────────────
 // C signal handlers can't capture Swift state; stash the socket fd globally.
@@ -176,7 +187,7 @@ outer: while true {
         var tmp = [UInt8](repeating: 0, count: 65536)
         let k = read(STDIN_FILENO, &tmp, tmp.count)
         if k == 0 { break }           // EOF on stdin (pane closed) → detach
-        if k > 0 { send(.input(Data(tmp[0..<k]))) }
+        if k > 0, !send(.input(Data(tmp[0..<k]))) { break }   // write failed → teardown, like daemon EOF
     }
     // daemon → stdout (decode server frames; write output bytes).
     if __darwin_fd_isset(sock, &rset) != 0 {
@@ -193,9 +204,14 @@ outer: while true {
                 break outer        // shell exited → relay ends
             case let .helloAck(version):
                 // Version gate: refuse a skewed daemon rather than misparse its frames
-                // (critical for remote attach). The shell stays alive under the daemon.
+                // (critical for remote attach). Never kill the old daemon — it only
+                // lingers because it still owns live shells (it idle-exits otherwise).
+                // \r\n because the PTY is in raw mode here (OPOST off).
                 if version != muxProtocolVersion {
-                    writeErr("vesta-attach: daemon protocol v\(version) != client v\(muxProtocolVersion); update Vesta\n")
+                    writeErr("vesta-attach: a Vesta update left your sessions running under an older daemon\r\n" +
+                             "(daemon protocol v\(version), this Vesta speaks v\(muxProtocolVersion)).\r\n" +
+                             "Those sessions are still alive and will reattach with the old daemon.\r\n" +
+                             "End them (exit their shells, or `vesta kill <id>`) to let the new daemon take over.\r\n")
                     break outer
                 }
             case .sessions:

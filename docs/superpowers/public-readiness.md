@@ -16,10 +16,11 @@ shippable; everything else is refinement.
 ## 2. Blockers — must fix before any public release
 
 ### Legal foundation (no right to distribute as-is)
-- [ ] Add a root `LICENSE` file (MIT, matching ghostty's intent).
-- [ ] Bundle a `NOTICE`/attribution file: ghostty MIT (Copyright 2024 Mitchell
-      Hashimoto, Ghostty contributors), libpng, wuffs, simdutf — all statically linked.
-- [ ] Add OFL 1.1 attribution for Geist Mono + Martian Mono alongside the bundled fonts.
+- [x] ~~Add a root `LICENSE` file~~ — done: MIT `LICENSE` at repo root.
+- [x] ~~Bundle a `NOTICE`/attribution file~~ — done: root `NOTICE` covers ghostty MIT
+      (Copyright 2024 Mitchell Hashimoto, Ghostty contributors), libpng, wuffs, simdutf.
+- [x] ~~Add OFL 1.1 attribution for Geist Mono + Martian Mono~~ — done: `NOTICE` carries
+      OFL 1.1 attribution for Geist Mono, Martian Mono, and Redaction.
 - [ ] Resolve the "Halo" name + bundle ID — `dev.halo.terminal` implies a domain you
       may not own, and "HALO" is a Microsoft trademark in the software class. Trademark
       clearance + a bundle ID you own (e.g. `com.yourdomain.halo`).
@@ -31,14 +32,18 @@ shippable; everything else is refinement.
       It's gitignored; today an external `swift build` fails immediately.
 
 ### Security (the control socket is an unauthenticated local backdoor)
-- [ ] `chmod(path, 0o600)` immediately after `bind()` in Control.swift. Any local
-      process can `send-keys` (inject `rm -rf ~`) and `capture --scrollback`.
+- [x] ~~`chmod(path, 0o600)` immediately after `bind()` in Control.swift~~ — done:
+      Control.swift chmods the socket to 0o600 right after bind.
 
 ### Stability
-- [ ] Fix the `closeSurface`/action-callback use-after-free (`takeUnretainedValue()`
-      across a `DispatchQueue.main.async` hop reaches a freed pane on Cmd-W).
-- [ ] Replace `fatalError()` on `ghostty_config_new`/`ghostty_app_new` failure with an
-      `NSAlert` + empty-config fallback.
+- [x] ~~Fix the `closeSurface`/action-callback use-after-free~~ — done: every callback
+      copies C strings synchronously, then checks a lock-guarded live-pane registry
+      (`TerminalPane.isLive`) on the main actor before `takeUnretainedValue()`, so a
+      pane freed by Cmd-W is never resolved after the async hop.
+- [x] ~~Replace `fatalError()` on `ghostty_config_new`/`ghostty_app_new` failure~~ —
+      done: config-load failure falls back to a bare default config (app still
+      launches); if `ghostty_app_new` (or even an empty config) fails, a critical
+      `NSAlert` explains the failure and the app terminates cleanly instead of crashing.
 
 ## 3. Important — before or shortly after launch
 

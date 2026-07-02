@@ -35,7 +35,16 @@ final class GhosttyApp {
         // Build the configuration from the user's real ghostty config files
         // (native config sync). A bad config file doesn't fail this — libghostty
         // keeps defaults for unparseable keys — so the only failure is allocation.
-        guard let cfg = GhosttyApp.loadConfig() else {
+        // If loading fails anyway, fall back to a bare default config so the app
+        // still launches (defaults everywhere beats not starting at all).
+        let cfg: ghostty_config_t
+        if let loaded = GhosttyApp.loadConfig() {
+            cfg = loaded
+        } else if let empty = ghostty_config_new() {
+            ghostty_config_finalize(empty)
+            cfg = empty
+        } else {
+            // Even an empty config couldn't be allocated — nothing to run with.
             GhosttyApp.die("Couldn't initialize the terminal configuration.")
         }
         self.config = cfg
@@ -87,13 +96,18 @@ final class GhosttyApp {
         if let dir = ghosttyResourcesDir() { setenv("GHOSTTY_RESOURCES_DIR", dir, 1) }
     }
 
-    /// Show a fatal-error alert (instead of a silent crash) and exit cleanly.
+    /// Show a fatal-error alert (instead of a silent crash) and terminate cleanly.
     private static func die(_ message: String) -> Never {
         let a = NSAlert()
         a.messageText = "Vesta can't start"
         a.informativeText = message + "\n\nCheck your config (Vesta ▸ Settings…) and try again."
         a.alertStyle = .critical
         a.runModal()
+        // Terminate through AppKit. Drop the delegate first so the normal
+        // quit-confirm ("Quit Vesta?") can't appear on — or veto — a fatal
+        // startup exit; fall back to exit(1) if terminate returns (no run loop).
+        NSApp?.delegate = nil
+        NSApp?.terminate(nil)
         exit(1)
     }
 

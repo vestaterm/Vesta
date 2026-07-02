@@ -12,22 +12,15 @@ let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", 
 
 // MARK: - Socket helpers
 
-private func makeSockaddr(_ path: String) -> sockaddr_un {
-    var addr = sockaddr_un()
-    addr.sun_family = sa_family_t(AF_UNIX)
-    let bytes = Array(path.utf8)
-    withUnsafeMutableBytes(of: &addr.sun_path) { raw in
-        let n = min(bytes.count, raw.count - 1)
-        for i in 0..<n { raw[i] = bytes[i] }
-    }
-    return addr
-}
-
-private func readLine(_ fd: Int32) -> String {
+/// Read up to a newline; nil if the line exceeds `limit` (don't let a client
+/// that never sends \n grow our memory forever). Server requests are tiny; the
+/// CLI reads replies with a bigger limit (capture --scrollback can be large).
+private func readLine(_ fd: Int32, limit: Int = 1 << 20) -> String? {
     var data = Data()
     var byte: UInt8 = 0
     while read(fd, &byte, 1) == 1 {
         if byte == UInt8(ascii: "\n") { break }
+        if data.count >= limit { return nil }
         data.append(byte)
     }
     return String(data: data, encoding: .utf8) ?? ""
@@ -73,7 +66,7 @@ final class ControlServer: @unchecked Sendable {
         unlink(path)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return }
-        var addr = makeSockaddr(path)
+        var addr = makeSockaddrUn(path)
         let len = socklen_t(MemoryLayout<sockaddr_un>.size)
         let bound = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, len) }
@@ -92,7 +85,10 @@ final class ControlServer: @unchecked Sendable {
     }
 
     private func handle(_ conn: Int32) {
-        let line = readLine(conn)
+        guard let line = readLine(conn) else {   // overflowed the 1 MiB cap
+            writeLine(conn, encode(["ok": false, "error": "line too long"]))
+            return   // caller closes the connection
+        }
         guard let data = line.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let cmd = obj["cmd"] as? String else {
@@ -176,8 +172,8 @@ final class ControlServer: @unchecked Sendable {
             return ["ok": true]
         case "kill":
             guard let id = args.first else { return ["ok": false, "error": "kill: <id> required"] }
-            MuxClient.kill(paneID: id)
-            return ["ok": true, "killed": id]
+            return MuxClient.kill(paneID: id) ? ["ok": true, "killed": id]
+                                              : ["ok": false, "error": "kill: daemon unreachable or no ack"]
         default: break
         }
         guard let workspace = workspaceProvider() else { return ["ok": false, "error": "no window"] }
@@ -296,7 +292,7 @@ final class ControlServer: @unchecked Sendable {
 func controlSocketAlive() -> Bool {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0); if fd < 0 { return false }
     defer { close(fd) }
-    var addr = makeSockaddr(controlSocketPath())
+    var addr = makeSockaddrUn(controlSocketPath())
     let len = socklen_t(MemoryLayout<sockaddr_un>.size)
     return withUnsafePointer(to: &addr) {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) == 0 }
@@ -316,7 +312,7 @@ func runControlCLI(_ args: [String]) -> Int32 {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { FileHandle.standardError.write(Data("vesta: app not running\n".utf8)); return 1 }
     defer { close(fd) }
-    var addr = makeSockaddr(controlSocketPath())
+    var addr = makeSockaddrUn(controlSocketPath())
     let len = socklen_t(MemoryLayout<sockaddr_un>.size)
     let connected = withUnsafePointer(to: &addr) {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) }
@@ -327,8 +323,8 @@ func runControlCLI(_ args: [String]) -> Int32 {
     }
 
     writeLine(fd, encode(["cmd": verb, "args": rest]))
-    let line = readLine(fd)
-    guard let data = line.data(using: .utf8),
+    guard let line = readLine(fd, limit: 64 << 20),   // replies can be big (capture --scrollback)
+          let data = line.data(using: .utf8),
           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
         FileHandle.standardError.write(Data("vesta: bad reply\n".utf8))
         return 1

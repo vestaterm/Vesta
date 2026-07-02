@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 
 public enum MuxPaths {
     public static var base: String {
@@ -20,6 +23,18 @@ public enum MuxPaths {
     }
 }
 
+/// Build a sockaddr_un for a unix socket path (shared by every socket call site;
+/// the path is copied into sun_path, truncated if needed, always NUL-terminated).
+public func makeSockaddrUn(_ path: String) -> sockaddr_un {
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let bytes = Array(path.utf8)
+    withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+        for i in 0..<min(bytes.count, raw.count - 1) { raw[i] = bytes[i] }
+    }
+    return addr
+}
+
 public func muxPathsSelfCheck() {
     let b = MuxPaths.base
     assert(b.hasSuffix("/Library/Application Support/vesta"), "base path")
@@ -27,5 +42,17 @@ public func muxPathsSelfCheck() {
     assert(MuxPaths.sessionLog("abc") == b + "/sessions/abc.log", "session log path")
     // sessionLog keeps the paneID verbatim (it's a UUID string; no escaping needed).
     assert(MuxPaths.sessionLog("11111111-2222").hasSuffix("/sessions/11111111-2222.log"), "log uses paneID verbatim")
+    // sockaddr helper: family set, path copied verbatim + NUL-terminated, long paths truncated.
+    let sa = makeSockaddrUn("/tmp/x.sock")
+    assert(sa.sun_family == sa_family_t(AF_UNIX), "sockaddr family")
+    withUnsafeBytes(of: sa.sun_path) { raw in
+        let want = Array("/tmp/x.sock".utf8)
+        for (i, b) in want.enumerated() { assert(raw[i] == b, "sun_path byte \(i)") }
+        assert(raw[want.count] == 0, "sun_path NUL-terminated")
+    }
+    let long = makeSockaddrUn(String(repeating: "a", count: 300))
+    withUnsafeBytes(of: long.sun_path) { raw in
+        assert(raw[raw.count - 1] == 0, "oversized path truncated, trailing NUL kept")
+    }
     print("muxPathsSelfCheck ok")
 }

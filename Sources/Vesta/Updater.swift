@@ -136,6 +136,10 @@ final class Updater: NSObject {
         let appInDmg = mnt.appendingPathComponent("Vesta.app")
         guard fm.fileExists(atPath: appInDmg.path),
               run("/usr/bin/ditto", [appInDmg.path, staged.path]) else { return false }
+        // Reject corrupted downloads before swapping: `codesign --verify` checks the bundle's
+        // file hashes even for ad-hoc signatures. Skip only if codesign itself is missing.
+        if fm.fileExists(atPath: "/usr/bin/codesign"),
+           !run("/usr/bin/codesign", ["--verify", "--deep", staged.path]) { return false }
 
         let old = target.path + ".old-\(getpid())"
         func q(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
