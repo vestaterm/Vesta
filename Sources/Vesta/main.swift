@@ -581,6 +581,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: Self.windowsFile)) else { return }
         let (version, saved) = parseWindowsFile(data)
         guard let first = saved.first else { return }
+        // Upgrade courtesy: keep the legacy (pre-versioning) file once, so a downgraded
+        // build — which reads the v1 dict as "no saved windows" and overwrites it — can
+        // be recovered manually from windows.json.v0.
+        if version == 0 {
+            try? data.write(to: URL(fileURLWithPath: Self.windowsFile + ".v0"), options: .atomic)
+        }
         // Entry 0 (the key window at save time) is authoritative for the shared pool.
         ctx.workspace.hydrate(from: first)
         if let fd = first["frame"] as? String { ctx.controller.window?.setFrame(from: fd) }
