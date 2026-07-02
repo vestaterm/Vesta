@@ -20,6 +20,7 @@ if argv.first == "selfcheck" {
     browserSelfCheck()
     prefixKeytableSelfCheck()
     sessionNameSelfCheck()
+    dormantLayoutSelfCheck()
     focusOwnerSelfCheck()
     muxProtocolSelfCheck()
     muxPathsSelfCheck()
@@ -95,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Create, show, and track a new window. ⌘N / first launch.
     @discardableResult
-    func newWindow() -> WindowContext {
+    func newWindow(hydrateFrom: [String: Any]? = nil) -> WindowContext {
         let prev = active?.controller.window ?? windows.last?.controller.window
         // Wire the cross-window broadcast once: any pool change refreshes every window's
         // sidebar, reconciles which window shows each session live vs frozen, and persists.
@@ -106,7 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.scheduleSave()
         }
         let ctx = WindowContext(
-            theme: theme, store: store,
+            theme: theme, store: store, hydrateFrom: hydrateFrom,
             onBecomeKey: { [weak self] c in
                 guard let self else { return }
                 self.lastKey = c
@@ -639,18 +640,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func restoreWindows() {
         restoring = true
         defer { restoring = false }
-        let ctx = newWindow()  // builds the shared workspace (sharedWS)
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Self.windowsFile)) else { return }
-        let (version, saved) = parseWindowsFile(data)
-        guard let first = saved.first else { return }
+        // Parse windows.json BEFORE creating the first window, so the saved state can be
+        // handed into the Workspace at init — otherwise the first window seeds a throwaway
+        // home session (real surface + daemon login shell) that hydrate discards, leaking
+        // the shell under vestad every launch.
+        let data = try? Data(contentsOf: URL(fileURLWithPath: Self.windowsFile))
+        let parsed = data.map { parseWindowsFile($0) }
+        let first = parsed?.windows.first
+        let ctx = newWindow(hydrateFrom: first)  // hydrates inside init when `first` is present
+        guard let data, let parsed, let first else { return }
+        let (version, saved) = parsed
         // Upgrade courtesy: keep the legacy (pre-versioning) file once, so a downgraded
         // build — which reads the v1 dict as "no saved windows" and overwrites it — can
         // be recovered manually from windows.json.v0.
         if version == 0 {
             try? data.write(to: URL(fileURLWithPath: Self.windowsFile + ".v0"), options: .atomic)
         }
-        // Entry 0 (the key window at save time) is authoritative for the shared pool.
-        ctx.workspace.hydrate(from: first)
+        // Entry 0 (the key window at save time) is authoritative for the shared pool — already
+        // hydrated inside newWindow(hydrateFrom:) above.
         if let fd = first["frame"] as? String { ctx.controller.window?.setFrame(from: fd) }
         ctx.refresh()
         // v1+: recreate the other windows as views over the SAME pool — only their

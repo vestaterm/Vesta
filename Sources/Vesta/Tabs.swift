@@ -79,7 +79,7 @@ final class Workspace {
     var onNewProject:     (() -> Void)?
     var onChange:         (() -> Void)?
 
-    init(theme: Theme, store: SessionStore) {
+    init(theme: Theme, store: SessionStore, hydrateFrom: [String: Any]? = nil) {
         self.store = store
         self.theme = theme
         container.wantsLayer = true
@@ -93,6 +93,16 @@ final class Workspace {
             body.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             body.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
+
+        // Restore path: build straight from the saved window entry instead of seeding a
+        // throwaway home session (a real surface + relay + daemon login shell that hydrate
+        // would immediately discard, leaking the shell under vestad every launch). hydrate
+        // populates projs (dormant) + calls showActive.
+        if projs.isEmpty, let win = hydrateFrom,
+           (win["projects"] as? [[String: Any]])?.isEmpty == false {
+            hydrate(from: win)
+            return
+        }
 
         if projs.isEmpty {
             // First window for an empty pool: seed the home project at ~ with one session.
@@ -504,15 +514,19 @@ final class Workspace {
             let expanded = pd["expanded"] as? Bool ?? true
             var proj = Proj(id: id, name: name, path: path, sessions: [], expanded: expanded, color: color)
             for entry in (pd["sessions"] as? [Any] ?? []) {
+                // Every restored session is built DORMANT (persisted layout only). The one
+                // the window will display materializes at showActive() below; the rest stay
+                // data until first activation — no surfaces, no daemon attach at launch.
                 // Preferred: a saved split layout (topology + per-leaf paneID/cwd).
                 if let d = entry as? [String: Any],
                    let layout = d["layout"] as? [String: Any],
                    layout["a"] != nil || layout["paneID"] != nil || layout["browser"] != nil {
-                    proj.sessions.append(makeTree(layout: fixDirs(layout, fallback: path),
-                                                  name: d["name"] as? String))
+                    proj.sessions.append(makeDormant(layout: fixDirs(layout, fallback: path),
+                                                     name: d["name"] as? String))
                     continue
                 }
-                // Fallback: flat cwd/paneID (pre-layout snapshot) or legacy string entry.
+                // Fallback: flat cwd/paneID (pre-layout snapshot) or legacy string entry →
+                // a single-leaf dormant layout (serializeLayout echoes it back identically).
                 let cwd: String, pid: String, nm: String?
                 if let d = entry as? [String: Any] {
                     cwd = d["cwd"] as? String ?? path
@@ -521,8 +535,8 @@ final class Workspace {
                 } else if let s = entry as? String {   // legacy windows.json (pre-M2)
                     cwd = s; pid = UUID().uuidString; nm = nil
                 } else { continue }
-                proj.sessions.append(makeTree(cwd: usableDir(cwd, fallback: path),
-                                              paneID: pid, name: nm))
+                proj.sessions.append(makeDormant(
+                    layout: ["paneID": pid, "cwd": usableDir(cwd, fallback: path)], name: nm))
             }
             projs.append(proj)
         }
@@ -584,9 +598,11 @@ final class Workspace {
         wire(PaneTree(theme: theme, cwd: cwd, paneID: paneID, name: name))
     }
 
-    /// Rebuild a session from a persisted split layout (windows.json topology).
-    private func makeTree(layout: [String: Any], name: String? = nil) -> PaneTree {
-        wire(PaneTree(theme: theme, layout: layout, name: name))
+    /// A DORMANT session: keeps its persisted layout as data, builds ghostty surfaces only
+    /// on first activation (mountLive → rootView → materialize). This is the launch-time win —
+    /// hydrate makes every non-active session dormant.
+    private func makeDormant(layout: [String: Any], name: String? = nil) -> PaneTree {
+        wire(PaneTree(theme: theme, dormant: layout, name: name))
     }
 
     private func wire(_ tree: PaneTree) -> PaneTree {
@@ -617,6 +633,8 @@ final class Workspace {
 
     /// True if THIS window currently hosts the live terminal for its active session
     /// (vs. another window holding the rootView, in which case we show a frozen snapshot).
+    /// NOTE: touches rootView, which MATERIALIZES a dormant tree — fine for the active
+    /// session (it's about to display anyway); never call this in a loop over all sessions.
     var hostsLive: Bool { activeTree.rootView.superview === body }
 
     /// Put our active session's live rootView into our body (stealing it from any other
@@ -656,8 +674,16 @@ final class Workspace {
     /// Decide this window's display: the focused (preferLive) window — or the sole viewer
     /// of an unowned session — shows live; a window whose session is live elsewhere freezes.
     func reconcile(preferLive: Bool) {
-        if preferLive || activeTree.rootView.superview == nil { mountLive() }
-        else if !hostsLive { showFrozen() }
+        // ponytail: skip the remount when our live root is already mounted here — a
+        // replay-storm of broadcasts (scrollback replay retitling every pane) would otherwise
+        // remount + re-first-respond the terminal on every tick. Mirrors the hostsLive guard.
+        if preferLive {
+            if !hostsLive { mountLive() }
+        } else if activeTree.rootView.superview == nil {
+            mountLive()
+        } else if !hostsLive {
+            showFrozen()
+        }
         // else: already hosting live here → leave it
     }
 
