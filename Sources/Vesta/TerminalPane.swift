@@ -96,7 +96,7 @@ import GhosttyKit
         // blinking and burning CPU at once. Only the pane that actually becomes
         // first responder (in a key window) should be focused; becomeFirstResponder
         // and windowKeyChanged turn it on truthfully.
-        if let surface { ghostty_surface_set_focus(surface, false) }
+        setSurfaceFocus(false)
 
         // Tracking area so we receive mouseMoved/entered/exited.
         updateTrackingAreas()
@@ -352,18 +352,57 @@ import GhosttyKit
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { false }
 
+    // MARK: - Single focus owner
+
+    /// The one pane whose ghostty surface currently holds focus (or nil).
+    ///
+    /// libghostty has no "unfocus everyone" call, so the "at most one focused
+    /// surface" invariant used to depend on AppKit reliably pairing every
+    /// becomeFirstResponder with a resignFirstResponder on the pane it displaced.
+    /// A ⌘D split breaks that pairing: splitAndAttach calls removeFromSuperview on
+    /// the focused pane to re-parent it under a new NSSplitView, which drops it as
+    /// the window's first responder WITHOUT firing resignFirstResponder — then the
+    /// new pane becomes first responder, so the old surface never gets
+    /// set_focus(false) and keeps blinking. Routing every focus change through this
+    /// single owner makes the invariant hold structurally: gaining focus first
+    /// drops whoever held it. weak so a closed pane clears itself.
+    @MainActor private(set) weak static var currentlyFocused: TerminalPane?
+
+    /// Set this surface's ghostty focus while maintaining the single-owner
+    /// invariant: taking focus first drops the previous owner. Every set_focus
+    /// call in Vesta goes through here.
+    func setSurfaceFocus(_ focused: Bool) {
+        guard let surface else { return }
+        let prev = TerminalPane.currentlyFocused
+        let h = TerminalPane.focusHandoff(current: prev?.id, incoming: id, focused: focused)
+        if h.dropPrevious, let prev, prev !== self { prev.setSurfaceFocus(false) }
+        // owner id can only resolve to self, prev, or none.
+        TerminalPane.currentlyFocused = h.owner == nil ? nil : (h.owner == id ? self : prev)
+        ghostty_surface_set_focus(surface, focused)
+    }
+
+    /// Pure single-owner handoff decision (unit-checkable without a live surface):
+    /// given the current owner's pane id (nil = none) and a request from pane
+    /// `incoming` to set `focused`, return the new owner id and whether the
+    /// previous owner must be dropped (set_focus(false)) first.
+    nonisolated static func focusHandoff(current: Int?, incoming: Int, focused: Bool)
+        -> (owner: Int?, dropPrevious: Bool) {
+        if focused { return (incoming, current != nil && current != incoming) }
+        return (current == incoming ? nil : current, false)
+    }
+
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
         // Focus the surface only when the window is actually key. A pane made
         // first responder in a background window must not blink; windowKeyChanged
         // turns it on when (and if) the window becomes key.
-        if ok, let surface { ghostty_surface_set_focus(surface, window?.isKeyWindow ?? false) }
+        if ok { setSurfaceFocus(window?.isKeyWindow ?? false) }
         return ok
     }
 
     override func resignFirstResponder() -> Bool {
         let ok = super.resignFirstResponder()
-        if ok, let surface { ghostty_surface_set_focus(surface, false) }
+        if ok { setSurfaceFocus(false) }
         return ok
     }
 
@@ -373,8 +412,8 @@ import GhosttyKit
     /// hollow, non-blinking cursor. Only the first-responder pane reacts; every
     /// other surface is already unfocused and stays that way.
     func windowKeyChanged(_ isKey: Bool) {
-        guard let surface, window?.firstResponder === self else { return }
-        ghostty_surface_set_focus(surface, isKey)
+        guard window?.firstResponder === self else { return }
+        setSurfaceFocus(isKey)
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -721,6 +760,26 @@ import GhosttyKit
             ghostty_surface_preedit(surface, nil, 0)
         }
     }
+}
+
+/// Pure-logic check of the single focus-owner handoff (no live surface needed).
+func focusOwnerSelfCheck() {
+    // No owner yet: pane 1 takes focus → owns; nothing to drop.
+    var r = TerminalPane.focusHandoff(current: nil, incoming: 1, focused: true)
+    assert(r.owner == 1 && !r.dropPrevious, "first focus takes ownership")
+    // The split bug: pane 2 takes focus while 1 owns → 2 owns, 1 MUST be dropped.
+    r = TerminalPane.focusHandoff(current: 1, incoming: 2, focused: true)
+    assert(r.owner == 2 && r.dropPrevious, "new focus drops previous owner")
+    // Re-focusing the current owner drops no one.
+    r = TerminalPane.focusHandoff(current: 2, incoming: 2, focused: true)
+    assert(r.owner == 2 && !r.dropPrevious, "re-focus keeps ownership")
+    // The owner resigning clears ownership.
+    r = TerminalPane.focusHandoff(current: 2, incoming: 2, focused: false)
+    assert(r.owner == nil && !r.dropPrevious, "owner resign clears owner")
+    // A non-owner resigning leaves the owner intact.
+    r = TerminalPane.focusHandoff(current: 2, incoming: 5, focused: false)
+    assert(r.owner == 2 && !r.dropPrevious, "non-owner resign keeps owner")
+    print("focusOwnerSelfCheck OK")
 }
 
 /// Calls `body` with a C string for `value`, or NULL if `value` is nil. The
