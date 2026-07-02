@@ -14,6 +14,7 @@ if argv.first == "selfcheck" {
     gitSelfCheck()
     portsSelfCheck()
     workspaceSelfCheck()
+    windowsFormatSelfCheck()
     worktreeSelfCheck()
     browserSelfCheck()
     prefixKeytableSelfCheck()
@@ -124,7 +125,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyUpdatePhase(to: ctx.controller, Updater.shared.phase)   // reflect current state in the new window
         windows.append(ctx)
         lastKey = ctx
-        // Only the first window restores/saves its frame; later ones cascade off it.
+        // Only the first window autosaves its frame; later ones cascade off it by default
+        // (restoreWindows overrides with the per-entry frame saved in windows.json).
         if let prev, let win = ctx.controller.window {
             win.setFrameAutosaveName("")
             win.setFrameOrigin(NSPoint(x: prev.frame.minX + 26, y: prev.frame.minY - 26))
@@ -579,14 +581,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         restoring = true
         defer { restoring = false }
         let ctx = newWindow()  // builds the shared workspace (sharedWS)
-        // One shared workspace → restore from the first saved entry. (Legacy files may
-        // hold several windows; we collapse to the single shared sidebar.)
-        if let data = try? Data(contentsOf: URL(fileURLWithPath: Self.windowsFile)),
-            let saved = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-            let first = saved.first
-        {
-            ctx.workspace.hydrate(from: first)
-            ctx.refresh()
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Self.windowsFile)) else { return }
+        let (version, saved) = parseWindowsFile(data)
+        guard let first = saved.first else { return }
+        // Upgrade courtesy: keep the legacy (pre-versioning) file once, so a downgraded
+        // build — which reads the v1 dict as "no saved windows" and overwrites it — can
+        // be recovered manually from windows.json.v0.
+        if version == 0 {
+            try? data.write(to: URL(fileURLWithPath: Self.windowsFile + ".v0"), options: .atomic)
+        }
+        // Entry 0 (the key window at save time) is authoritative for the shared pool.
+        ctx.workspace.hydrate(from: first)
+        if let fd = first["frame"] as? String { ctx.controller.window?.setFrame(from: fd) }
+        ctx.refresh()
+        // v1+: recreate the other windows as views over the SAME pool — only their
+        // selection + frame are per-window (sessions live once, in the shared store).
+        // Legacy (version 0) files collapse to one window, as before.
+        guard version >= 1 else { return }
+        for entry in saved.dropFirst() {
+            let extra = newWindow()
+            extra.workspace.selectSession(entry["activeProject"] as? Int ?? 0,
+                                          entry["activeSession"] as? Int ?? 0)
+            if let fd = entry["frame"] as? String { extra.controller.window?.setFrame(from: fd) }
+            extra.refresh()
+        }
+        if windows.count > 1 {
+            ctx.controller.window?.makeKeyAndOrderFront(nil)  // entry 0 was frontmost at save
+            lastKey = ctx
+            reconcileDisplay()
         }
     }
 
@@ -601,13 +623,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Persist the shared session pool (one entry). Serialized via any live window's
-    /// Workspace (they share the store's projs). If no window is open, the last save on
-    /// window-close already wrote the file, so skipping here is safe.
+    /// Persist every window (versioned format), key window first so restore can re-front
+    /// it. Each entry is that window's Workspace.serialize() + its frame. If no window is
+    /// open, the last save on window-close already wrote the file, so skipping here is safe.
     func saveWindows() {
-        guard let ws = (active ?? windows.first)?.workspace,
-            let data = try? JSONSerialization.data(
-                withJSONObject: [ws.serialize()], options: [.prettyPrinted])
+        guard !windows.isEmpty else { return }
+        let key = active
+        // ponytail: every entry repeats the shared project pool (Workspace.serialize
+        // includes it; entry 0 is authoritative on restore). Split pool vs. per-window
+        // state in a v2 format if the duplication ever matters.
+        let ordered = [key].compactMap { $0 } + windows.filter { $0 !== key }
+        let entries = ordered.map { w -> [String: Any] in
+            var e = w.workspace.serialize()
+            if let fd = w.controller.window?.frameDescriptor { e["frame"] = fd }
+            return e
+        }
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: ["version": windowsFormatVersion, "windows": entries],
+            options: [.prettyPrinted])
         else { return }
         try? data.write(to: URL(fileURLWithPath: Self.windowsFile), options: .atomic)
     }

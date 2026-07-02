@@ -244,5 +244,23 @@ func ghosttyConfigSelfCheck() -> String {
     assert(hc.accent == ghosttyColor("#889b94"), "vesta-accent parsed")
     assert(hc.sidebarWidth == 260, "vesta-sidebar-width parsed")
     assert(VestaConfig([:]).sidebarWidth == 224, "vesta defaults preserved")
+
+    // Malformed / edge lines must be skipped or normalized, never crash.
+    let junk = """
+    # comment
+    bare-word-no-equals
+       # indented comment
+    = orphaned value
+    empty-value =
+    spaced key = a = b
+    """
+    let jp = parseGhosttyConfig(junk)
+    assert(jp.count == 2, "only the two well-formed lines survive")
+    assert(!jp.contains { $0.0 == "bare-word-no-equals" }, "line without '=' skipped")
+    assert(!jp.contains { $0.0.isEmpty }, "empty key skipped")
+    assert(jp.contains { $0 == ("empty-value", "") }, "empty value allowed")
+    assert(jp.contains { $0 == ("spaced key", "a = b") }, "value keeps embedded '='")
+    assert(parseGhosttyConfig("").isEmpty, "empty input → no pairs")
+    assert(ghosttyColor("#12345") == nil && ghosttyColor("zzzzzz") == nil, "bad hex → nil")
     return "ghosttyConfigSelfCheck OK"
 }

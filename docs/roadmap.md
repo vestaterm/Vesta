@@ -104,8 +104,9 @@ own socket — used for that test, kept because it's generally useful.
   shipped with `Assets.car` so Tahoe shapes it once.
 - **Config per-key live updates** — libghostty has no per-key setter; we
   write-file-and-reload (`.lua-overrides.conf`). Revisit only if reload latency bites.
-- **Two-window-restore behavior** — never verified what reopening with two windows
-  does (only the first window fully restores; others cascade).
+- **Two-window-restore behavior** — windows.json is now versioned (`"version": 1`,
+  key window first) and every window restores: entry 0 hydrates the shared session
+  pool; the rest reopen as views over it with their own selection + frame.
 - **Live process restore across daemon death** — scrollback now survives (on-disk
   log), but a running process can't be serialized. Out of scope.
 

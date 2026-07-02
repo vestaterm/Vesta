@@ -778,3 +778,55 @@ func workspaceSelfCheck() {
 
     print("workspaceSelfCheck OK")
 }
+
+// MARK: - windows.json format (versioned)
+
+/// windows.json format version. v1 = `{"version": 1, "windows": [entry…]}` with the
+/// key window's entry first; each entry is Workspace.serialize() + optional "frame"
+/// (NSWindow frameDescriptor). Pre-versioning files are a bare top-level array.
+let windowsFormatVersion = 1
+
+/// Decode windows.json bytes into (version, window entries). Pure — no I/O — so the
+/// selfcheck can exercise it. An unversioned top-level array is the legacy format →
+/// version 0. Corrupt/garbage JSON → (0, []): the caller falls back to a fresh window.
+/// Future format bumps branch HERE (migrate old shapes into the current one).
+func parseWindowsFile(_ data: Data) -> (version: Int, windows: [[String: Any]]) {
+    guard let json = try? JSONSerialization.jsonObject(with: data) else { return (0, []) }
+    if let legacy = json as? [[String: Any]] { return (0, legacy) }   // pre-versioning format
+    guard let dict = json as? [String: Any],
+          let wins = dict["windows"] as? [[String: Any]] else { return (0, []) }
+    return (dict["version"] as? Int ?? windowsFormatVersion, wins)
+}
+
+/// Format-level checks for windows.json (hydrate itself needs live PaneTrees/ghostty,
+/// so the selfcheck stops at the parse seam — see workspaceSelfCheck for entry reading).
+func windowsFormatSelfCheck() {
+    // Current (v1) format: version + entries round-trip, frame string survives.
+    let entry: [String: Any] = [
+        "projects": [["id": "home", "name": "home", "path": "/tmp",
+                      "sessions": [["cwd": "/tmp", "paneID": "P1"]]]],
+        "activeProject": 0, "activeSession": 0, "frame": "10 10 800 600 0 0 1920 1080 ",
+    ]
+    let v1 = try! JSONSerialization.data(
+        withJSONObject: ["version": windowsFormatVersion, "windows": [entry, entry]])
+    let r1 = parseWindowsFile(v1)
+    assert(r1.version == windowsFormatVersion && r1.windows.count == 2, "v1 file parses")
+    assert((r1.windows[0]["projects"] as? [[String: Any]])?.count == 1, "v1 entry content intact")
+    assert(r1.windows[1]["frame"] as? String == "10 10 800 600 0 0 1920 1080 ", "frame survives")
+    // Legacy: bare top-level array, cwd-only string sessions (pre-M2) → version 0.
+    let legacy = Data(
+        #"[{"projects": [{"id": "home", "name": "home", "path": "/tmp", "sessions": ["/tmp", "/x"]}]}]"#
+            .utf8)
+    let r0 = parseWindowsFile(legacy)
+    assert(r0.version == 0 && r0.windows.count == 1, "legacy array → version 0")
+    let sess = ((r0.windows[0]["projects"] as? [[String: Any]])?.first?["sessions"] as? [Any]) ?? []
+    assert(sess.first as? String == "/tmp", "legacy cwd-only session entries preserved")
+    // Corrupted / garbage input must not crash and must fall back to (0, []).
+    assert(parseWindowsFile(Data("not json {{{".utf8)).windows.isEmpty, "garbage → empty")
+    assert(parseWindowsFile(Data()).windows.isEmpty, "empty file → empty")
+    assert(parseWindowsFile(Data("42".utf8)).windows.isEmpty, "scalar json → empty")
+    assert(parseWindowsFile(Data(#"{"version": 1}"#.utf8)).windows.isEmpty, "no windows key → empty")
+    assert(parseWindowsFile(Data(#"{"windows": [{}]}"#.utf8)).version == windowsFormatVersion,
+           "missing version in dict form → treated as current")
+    print("windowsFormatSelfCheck OK")
+}
