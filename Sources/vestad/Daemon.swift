@@ -263,6 +263,7 @@ final class Daemon {
                         var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
                         let pr = poll(&pfd, 1, 5000)   // wait up to 5s for writable
                         if pr > 0 { continue }          // drained → retry write
+                        if pr < 0 && errno == EINTR { continue }   // signal → retry
                         return false                    // timeout or poll error → drop
                     }
                 }

@@ -1,6 +1,9 @@
 import AppKit
 import VestaMux
 
+// A write to a dead control/mux socket must surface as EPIPE, not kill the app.
+signal(SIGPIPE, SIG_IGN)
+
 let argv = Array(CommandLine.arguments.dropFirst())
 if argv.first == "selfcheck" {
     // Pure-logic checks only. PaneTree/Chrome spawn real ghostty surfaces,

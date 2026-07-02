@@ -120,8 +120,10 @@ func send(_ f: ClientFrame) -> Bool {
             if n < 0 && errno == EINTR { continue }
             if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {   // sock is non-blocking
                 var pfd = pollfd(fd: sock, events: Int16(POLLOUT), revents: 0)
-                if poll(&pfd, 1, 5000) <= 0 { return false }   // daemon stuck → desynced
-                continue
+                let pr = poll(&pfd, 1, 5000)
+                if pr > 0 { continue }                         // writable → retry write
+                if pr < 0 && errno == EINTR { continue }       // signal (SIGWINCH) → retry
+                return false                                   // daemon stuck → desynced
             }
             return false   // EPIPE/other → daemon gone
         }
@@ -144,8 +146,10 @@ func writeOut(_ data: Data) {
             if n < 0 && errno == EINTR { continue }
             if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
                 var pfd = pollfd(fd: STDOUT_FILENO, events: Int16(POLLOUT), revents: 0)
-                if poll(&pfd, 1, 5000) <= 0 { break }   // stuck reader → drop this chunk
-                continue
+                let pr = poll(&pfd, 1, 5000)
+                if pr > 0 { continue }                         // writable → retry write
+                if pr < 0 && errno == EINTR { continue }       // signal (SIGWINCH) → retry
+                break                                   // stuck reader → drop this chunk
             }
             break   // EPIPE/other → reader gone; stop writing (shell stays under daemon)
         }
