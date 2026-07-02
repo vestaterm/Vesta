@@ -55,5 +55,13 @@ let package = Package(
             dependencies: ["VestaMux"],
             path: "Sources/vesta-attach"
         ),
+        // Pure-logic tests only (mux protocol). App-target logic (windows.json format,
+        // ghostty config parsing) is covered by `vesta selfcheck` instead — a test target
+        // depending on the vesta executable would have to link GhosttyKit + AppKit.
+        .testTarget(
+            name: "VestaTests",
+            dependencies: ["VestaMux"],
+            path: "Tests/VestaTests"
+        ),
     ]
 )
