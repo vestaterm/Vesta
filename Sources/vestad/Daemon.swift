@@ -43,9 +43,11 @@ final class Daemon {
         // lockFD intentionally stays open for the process lifetime (releases on exit).
         let lockFD = open(MuxPaths.base + "/vestad.lock", O_CREAT | O_RDWR, 0o600)
         guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { exit(0) }
+        setCloseOnExec(lockFD)   // held for the process lifetime — must not leak into forked shells
         let path = MuxPaths.daemonSocket
         unlink(path)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        setCloseOnExec(fd)   // listen socket must not leak into forked shells
         var addr = makeSockaddrUn(path)
         let len = socklen_t(MemoryLayout<sockaddr_un>.size)
         let bound = withUnsafePointer(to: &addr) {
@@ -101,6 +103,7 @@ final class Daemon {
     private func acceptClient() {
         let c = accept(listenFD, nil, nil)
         if c < 0 { return }
+        setCloseOnExec(c)   // client/subscriber fds must not leak into forked shells
         _ = fcntl(c, F_SETFL, fcntl(c, F_GETFL, 0) | O_NONBLOCK)
         clientBufs[c] = Data()
         lastActivity = Date()

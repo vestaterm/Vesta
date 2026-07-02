@@ -76,6 +76,11 @@ final class Session {
             _exit(127)
         }
         self.pid = child; self.masterFD = master
+        // Parent side only. The child's slave stdio (fds 0/1/2, dup2'd by forkpty) is a
+        // separate process and is NOT touched — but this master MUST be close-on-exec so the
+        // NEXT session's forked shell doesn't inherit it (the root cause of the fd blow-up:
+        // every new shell was inheriting every existing session's master fd).
+        setCloseOnExec(masterFD)
         _ = fcntl(masterFD, F_SETFL, fcntl(masterFD, F_GETFL, 0) | O_NONBLOCK)
         seedRingAndOpenLog()
     }
@@ -90,6 +95,7 @@ final class Session {
             logBytes = data.count
         }
         logFD = open(path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
+        setCloseOnExec(logFD)   // scrollback log must not leak into forked shells
     }
 
     /// Append raw PTY output to the ring (and the on-disk log), trimming past the cap.
@@ -118,6 +124,7 @@ final class Session {
         try? ring.write(to: URL(fileURLWithPath: path))
         chmod(path, 0o600)   // write(to:) may use default perms; re-assert owner-only
         logFD = open(path, O_WRONLY | O_APPEND, 0o600)
+        setCloseOnExec(logFD)   // scrollback log must not leak into forked shells
         logBytes = ring.count
     }
 
