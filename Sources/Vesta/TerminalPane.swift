@@ -87,6 +87,17 @@ import GhosttyKit
             }
         }
 
+        // Surfaces START UNFOCUSED. libghostty defaults a new surface to
+        // focused=true, which makes its cursor blink (solid block) and keeps its
+        // renderer/CVDisplayLink ticking at full rate. Vesta only ever toggled
+        // focus through the NSView first-responder path, which touches exactly one
+        // pane per window — so every split sibling, every restored-but-not-active
+        // leaf, and every background-session pane stayed focused=true forever, all
+        // blinking and burning CPU at once. Only the pane that actually becomes
+        // first responder (in a key window) should be focused; becomeFirstResponder
+        // and windowKeyChanged turn it on truthfully.
+        if let surface { ghostty_surface_set_focus(surface, false) }
+
         // Tracking area so we receive mouseMoved/entered/exited.
         updateTrackingAreas()
 
@@ -343,7 +354,10 @@ import GhosttyKit
 
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
-        if ok, let surface { ghostty_surface_set_focus(surface, true) }
+        // Focus the surface only when the window is actually key. A pane made
+        // first responder in a background window must not blink; windowKeyChanged
+        // turns it on when (and if) the window becomes key.
+        if ok, let surface { ghostty_surface_set_focus(surface, window?.isKeyWindow ?? false) }
         return ok
     }
 
@@ -351,6 +365,16 @@ import GhosttyKit
         let ok = super.resignFirstResponder()
         if ok, let surface { ghostty_surface_set_focus(surface, false) }
         return ok
+    }
+
+    /// Sync surface focus to the window's key state. Called by the window
+    /// controller on key/resign so the focused pane's cursor blinks only while the
+    /// window is key — matching stock Ghostty, where an inactive window shows a
+    /// hollow, non-blinking cursor. Only the first-responder pane reacts; every
+    /// other surface is already unfocused and stays that way.
+    func windowKeyChanged(_ isKey: Bool) {
+        guard let surface, window?.firstResponder === self else { return }
+        ghostty_surface_set_focus(surface, isKey)
     }
 
     override func setFrameSize(_ newSize: NSSize) {

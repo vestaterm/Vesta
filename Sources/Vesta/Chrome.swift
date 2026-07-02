@@ -124,6 +124,17 @@ final class VestaWindowController: NSWindowController {
                 MainActor.assumeIsolated { self?.flattenTitlebarSoon() }
             }
         }
+        // Cursor blink follows window-key state: the focused pane blinks only while
+        // the window is key (an inactive window shows a hollow, non-blinking cursor).
+        // Only the first-responder terminal pane reacts; all other surfaces are
+        // already unfocused. resignFirstResponder/becomeFirstResponder handle the
+        // intra-window case; these two handle the window gaining/losing key.
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: win, queue: .main) { [weak win] _ in
+            MainActor.assumeIsolated { (win?.firstResponder as? TerminalPane)?.windowKeyChanged(true) }
+        }
+        NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: win, queue: .main) { [weak win] _ in
+            MainActor.assumeIsolated { (win?.firstResponder as? TerminalPane)?.windowKeyChanged(false) }
+        }
     }
 
     private weak var titlebarBacking: NSView?
