@@ -590,7 +590,12 @@ final class Workspace {
     }
 
     private func wire(_ tree: PaneTree) -> PaneTree {
-        tree.onFocusChange = { [weak self] in self?.handleChange() }
+        // Broadcast through the app-owned store, NOT this Workspace: trees live in the
+        // shared pool and outlive the window that wired them (close the last window →
+        // reopen from the Dock reuses the pool; close one window of several). A dead
+        // workspace here silently swallowed every tree mutation — closing/splitting a
+        // pane stopped refreshing the sidebar's "N panes" until a click re-rendered it.
+        tree.onFocusChange = { [weak store = store] in store?.broadcast() }
         tree.onAttention = { [weak self, weak tree] in
             guard let self, let tree else { return }
             // Only ring if this session isn't the one you're looking at.
