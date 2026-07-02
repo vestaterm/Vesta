@@ -64,7 +64,10 @@ func spawnDaemon() {
     posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_RDWR, 0)
     var attr: posix_spawnattr_t?
     posix_spawnattr_init(&attr)
-    posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSID))
+    // SETSID: own session so vestad outlives this pane. CLOEXEC_DEFAULT: every fd not named in
+    // file_actions (0/1/2 → /dev/null above) is closed at exec, so this relay's socket + PTY fds
+    // never leak into the daemon — the daemon then never re-leaks them into the shells it forks.
+    posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))
     var pid: pid_t = 0
     exe.withCString { c in
         var argv: [UnsafeMutablePointer<CChar>?] = [UnsafeMutablePointer(mutating: c), nil]

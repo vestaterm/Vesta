@@ -24,6 +24,7 @@ if argv.first == "selfcheck" {
     focusOwnerSelfCheck()
     muxProtocolSelfCheck()
     muxPathsSelfCheck()
+    fdLimitSelfCheck()
     luaSandboxSelfCheck()
     // Resource smoke test (works in release — asserts compile out): the bundled fonts must be
     // locatable from THIS binary's bundle. Catches a mispackaged .app before notarize/publish.

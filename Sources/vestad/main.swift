@@ -11,5 +11,9 @@ if CommandLine.arguments.dropFirst().first == "--proto-version" {
     exit(0)
 }
 
+// Raise the soft fd limit before we open anything: with dozens of persisted sessions the
+// daemon (and every shell it forks, which inherit this limit) blew past the default 256.
+raiseFDLimit()
+
 let daemon = Daemon()
 daemon.run()
