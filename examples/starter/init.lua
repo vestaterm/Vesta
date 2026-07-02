@@ -15,7 +15,7 @@ local function palette()
   })
 end
 vesta.command("palette", palette)          -- runnable as a Vesta command
-vesta.bind("cmd+shift+p", palette)         -- and on a keybind
+vesta.bind("cmd+shift+m", palette)         -- and on a keybind (⌘⇧P is the built-in palette)
 
 -- A prompt → run whatever you type; a confirm before something destructive.
 vesta.command("run", function()

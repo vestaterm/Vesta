@@ -241,41 +241,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// vesta.pick overlay (PickerOverlay); selecting a row runs its action. Filtering is the
     /// overlay's built-in case-insensitive substring match — no fuzzy matching. // ponytail: substring is fine.
     func showCommandPalette() {
-        guard let ctx = active else { return }
-        let ws = ctx.workspace
-        // (label, shortcut-for-desc-column, action). Built-ins mirror installKeybinds/dispatchPrefix.
-        var entries: [(String, String, () -> Void)] = [
-            ("Split Vertical", "⌘D", { ws.activeTree.splitFocused(.vertical, cwd: ws.activeTree.focusedCwd) }),
-            ("Split Horizontal", "⌘⇧D", { ws.activeTree.splitFocused(.horizontal, cwd: ws.activeTree.focusedCwd) }),
-            ("Zoom Pane", "", { ws.activeTree.zoomFocused() }),
-            ("Close Pane", "⌘W", { ws.activeTree.closeFocused() }),
-            ("Close Session", "⌘⇧W", { ws.closeSession(ws.activeP, ws.activeS) }),
-            ("New Session", "⌘T", { ws.newSession(ws.activeP) }),
-            ("New Window", "⌘N", { [weak self] in self?.newWindow() }),
-            ("Toggle Sidebar", "⌘B", { ctx.controller.toggleSidebar() }),
-            ("Focus Next Pane", "⌘]", { ws.activeTree.focusNext() }),
-            ("Focus Previous Pane", "⌘[", { ws.activeTree.focusPrev() }),
-            ("Next Session", "⌘}", { ws.nextSession() }),
-            ("Previous Session", "⌘{", { ws.prevSession() }),
-            ("Find in Terminal", "⌘F", { ws.activeTree.focused?.startSearch() }),
-            ("Rename Session", "", { [weak self] in self?.promptRenameActiveSession() }),
-            ("Kill Session", "", { ws.activeTree.killFocusedSession() }),
-            ("Open Browser Pane", "⌘⇧↵", {
-                let tree = ws.activeTree
+        // (label, shortcut-for-desc-column, action). Built-ins mirror installKeybinds/
+        // dispatchPrefix. Actions take the key window at PICK time — nothing window-scoped
+        // is captured, so a window closed with the palette up isn't retained by the overlay.
+        var entries: [(String, String, (WindowContext) -> Void)] = [
+            ("Split Vertical", "⌘D", { let ws = $0.workspace; ws.activeTree.splitFocused(.vertical, cwd: ws.activeTree.focusedCwd) }),
+            ("Split Horizontal", "⌘⇧D", { let ws = $0.workspace; ws.activeTree.splitFocused(.horizontal, cwd: ws.activeTree.focusedCwd) }),
+            ("Zoom Pane", "", { $0.workspace.activeTree.zoomFocused() }),
+            ("Close Pane", "⌘W", { $0.workspace.activeTree.closeFocused() }),
+            ("Close Session", "⌘⇧W", { let ws = $0.workspace; ws.closeSession(ws.activeP, ws.activeS) }),
+            ("New Session", "⌘T", { let ws = $0.workspace; ws.newSession(ws.activeP) }),
+            ("New Window", "⌘N", { [weak self] _ in self?.newWindow() }),
+            ("Toggle Sidebar", "⌘B", { $0.controller.toggleSidebar() }),
+            ("Focus Next Pane", "⌘]", { $0.workspace.activeTree.focusNext() }),
+            ("Focus Previous Pane", "⌘[", { $0.workspace.activeTree.focusPrev() }),
+            ("Next Session", "⌘}", { $0.workspace.nextSession() }),
+            ("Previous Session", "⌘{", { $0.workspace.prevSession() }),
+            ("Find in Terminal", "⌘F", { $0.workspace.activeTree.focused?.startSearch() }),
+            ("Rename Session", "", { [weak self] _ in self?.promptRenameActiveSession() }),
+            ("Kill Session", "", { $0.workspace.activeTree.killFocusedSession() }),
+            ("Open Browser Pane", "⌘⇧↵", { ctx in
+                let tree = ctx.workspace.activeTree
                 let url = ctx.detectedPort(tree).map { URL(string: "http://localhost:\($0)")! }
                     ?? URL(string: "about:blank")!
                 tree.openBrowser(url: url)
             }),
-            ("Notifications", "", { [weak self] in self?.showNotifications() }),
-            ("Enter Full Screen", "⌃⌘F", { ctx.controller.window?.toggleFullScreen(nil) }),
-            ("Settings…", "⌘,", { [weak self] in self?.openSettings() }),
-            ("Reload Config", "", { [weak self] in self?.reloadConfig() }),
-            ("Check for Updates…", "", { [weak self] in self?.checkForUpdates() }),
-            ("About Vesta", "", { [weak self] in self?.showAbout() }),
+            ("Notifications", "", { [weak self] _ in self?.showNotifications() }),
+            ("Enter Full Screen", "⌃⌘F", { $0.controller.window?.toggleFullScreen(nil) }),
+            ("Settings…", "⌘,", { [weak self] _ in self?.openSettings() }),
+            ("Reload Config", "", { [weak self] _ in self?.reloadConfig() }),
+            ("Check for Updates…", "", { [weak self] _ in self?.checkForUpdates() }),
+            ("About Vesta", "", { [weak self] _ in self?.showAbout() }),
         ]
-        // Lua plugin commands (vesta.command) appear alongside the built-ins.
+        // Lua plugin commands (vesta.command) appear alongside the built-ins. The closure
+        // captures the NAME and re-resolves at pick time, so a reload can't leave stale refs.
         for name in luaCommands.keys.sorted() {
-            entries.append((name, "plugin", { luaRunCommand(name) }))
+            entries.append((name, "plugin", { _ in luaRunCommand(name) }))
         }
         let items = entries.map { PickItem(label: $0.0, desc: $0.1.isEmpty ? nil : $0.1) }
         let actions = entries.map { $0.2 }
@@ -283,9 +284,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             { _, dismiss in
                 PickerOverlay(
                     theme: self.theme, richItems: items, multiSelect: false, opts: PickOpts(),
-                    onPick: { idx in
+                    onPick: { [weak self] idx in
                         dismiss()
-                        if let i = idx.first, actions.indices.contains(i) { actions[i]() }
+                        guard let ctx = self?.active else { return }
+                        if let i = idx.first, actions.indices.contains(i) { actions[i](ctx) }
                     },
                     onCancel: { dismiss() })
             }, freeing: [])
