@@ -139,6 +139,8 @@ Register with `vesta.on(name, fn)`. Handlers receive the relevant `paneID`
 use `chunk:find(needle, 1, true)`). It's best-effort and coalesced under load, and
 only works in persist mode (the default) where a daemon owns the PTY.
 
+**Dormant sessions:** after relaunch, a session that has never been clicked is dormant — `dir-changed`, `command-finished`, and the attention badge don't fire for it until it's first activated; `pane-output` is unaffected and taps the daemon directly regardless.
+
 ## Safety
 
 Plugins can't crash Vesta:
