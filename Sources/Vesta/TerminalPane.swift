@@ -372,21 +372,30 @@ import GhosttyKit
     /// invariant: taking focus first drops the previous owner. Every set_focus
     /// call in Vesta goes through here.
     func setSurfaceFocus(_ focused: Bool) {
-        guard let surface else { return }
+        // Key the handoff by pane IDENTITY, never by `id`: `id` is PaneTree.nextId,
+        // a per-tree counter, so every tree's first pane is id 0. Across trees those
+        // ints alias, which would (a) leave a tree-1 owner focused when a tree-2 pane
+        // took focus, and (b) let a colliding pane's set_focus(false) clear the wrong
+        // owner. ObjectIdentifier is unique per pane by construction.
         let prev = TerminalPane.currentlyFocused
-        let h = TerminalPane.focusHandoff(current: prev?.id, incoming: id, focused: focused)
+        let selfID = ObjectIdentifier(self)
+        let h = TerminalPane.focusHandoff(current: prev.map(ObjectIdentifier.init),
+                                          incoming: selfID, focused: focused)
         if h.dropPrevious, let prev, prev !== self { prev.setSurfaceFocus(false) }
-        // owner id can only resolve to self, prev, or none.
-        TerminalPane.currentlyFocused = h.owner == nil ? nil : (h.owner == id ? self : prev)
+        // owner can only resolve to self, prev, or none.
+        TerminalPane.currentlyFocused = h.owner == nil ? nil : (h.owner == selfID ? self : prev)
+        guard let surface else { return }
         ghostty_surface_set_focus(surface, focused)
     }
 
     /// Pure single-owner handoff decision (unit-checkable without a live surface):
-    /// given the current owner's pane id (nil = none) and a request from pane
-    /// `incoming` to set `focused`, return the new owner id and whether the
-    /// previous owner must be dropped (set_focus(false)) first.
-    nonisolated static func focusHandoff(current: Int?, incoming: Int, focused: Bool)
-        -> (owner: Int?, dropPrevious: Bool) {
+    /// given the current owner's identity (nil = none) and a request from pane
+    /// `incoming` to set `focused`, return the new owner identity and whether the
+    /// previous owner must be dropped (set_focus(false)) first. Generic over any
+    /// Equatable identity so callers pass `ObjectIdentifier`, not the aliasing
+    /// per-tree `id`.
+    nonisolated static func focusHandoff<ID: Equatable>(current: ID?, incoming: ID, focused: Bool)
+        -> (owner: ID?, dropPrevious: Bool) {
         if focused { return (incoming, current != nil && current != incoming) }
         return (current == incoming ? nil : current, false)
     }
@@ -779,6 +788,16 @@ func focusOwnerSelfCheck() {
     // A non-owner resigning leaves the owner intact.
     r = TerminalPane.focusHandoff(current: 2, incoming: 5, focused: false)
     assert(r.owner == 2 && !r.dropPrevious, "non-owner resign keeps owner")
+    // Identity, not per-tree id. Two panes in different trees each have per-tree
+    // id 0, which used to alias and hide the handoff (a tree-2 pane taking focus
+    // left the tree-1 owner focused). ObjectIdentifier makes every pane unique by
+    // construction, so distinct identities that would have collided as ints (both
+    // 0) still hand off correctly — modeled here as two distinct ids.
+    let a = NSObject(), b = NSObject()   // two distinct panes; both would be id 0
+    let owner = ObjectIdentifier(a), taker = ObjectIdentifier(b)
+    assert(owner != taker, "identities are unique by construction")
+    let ri = TerminalPane.focusHandoff(current: owner, incoming: taker, focused: true)
+    assert(ri.owner == taker && ri.dropPrevious, "distinct identities never alias")
     print("focusOwnerSelfCheck OK")
 }
 
