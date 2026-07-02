@@ -31,6 +31,11 @@ and an agent-control CLI on top.
 - **Persistent sessions (tmux-style)** — shells survive Vesta quitting and
   reattach cleanly. A small daemon (`vestad`) holds the PTYs; panes connect
   through a relay (`vesta-attach`). Prefix-key mode for tmux muscle memory.
+  Restore is lazy: at launch only the visible session reattaches; the rest
+  stay listed in the sidebar and attach instantly on first click, so a big
+  saved workspace opens fast. Until a restored session is first activated it
+  won't ring the attention dot (its shell keeps running under the daemon
+  regardless, and plugin `pane-output` taps still work).
 - **Projects → sessions sidebar** — vertical, drag-resizable. Each project owns
   sessions; rename / recolor / remove from the right-click menu.
 - **Native splits** — `⌘D` / `⌘⇧D`, click-to-focus, zoom, drag dividers.

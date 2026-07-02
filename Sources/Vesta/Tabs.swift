@@ -633,6 +633,8 @@ final class Workspace {
 
     /// True if THIS window currently hosts the live terminal for its active session
     /// (vs. another window holding the rootView, in which case we show a frozen snapshot).
+    /// NOTE: touches rootView, which MATERIALIZES a dormant tree — fine for the active
+    /// session (it's about to display anyway); never call this in a loop over all sessions.
     var hostsLive: Bool { activeTree.rootView.superview === body }
 
     /// Put our active session's live rootView into our body (stealing it from any other
