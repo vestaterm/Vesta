@@ -20,6 +20,7 @@ if argv.first == "selfcheck" {
     browserSelfCheck()
     prefixKeytableSelfCheck()
     sessionNameSelfCheck()
+    focusOwnerSelfCheck()
     muxProtocolSelfCheck()
     muxPathsSelfCheck()
     luaSandboxSelfCheck()
