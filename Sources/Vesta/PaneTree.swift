@@ -105,6 +105,13 @@ final class PaneTree {
     private var nextId = 0
     private let root: NSView
 
+    // Non-nil ⇒ this session is DORMANT: its persisted split layout is kept as data and
+    // no ghostty surfaces / vesta-attach processes are built until first activation
+    // (materialize()). paneID/name/paneIDs/cwd/paneCount are all derivable from the layout,
+    // so a dormant session shows in the sidebar + round-trips through windows.json losslessly
+    // without a single live surface. ponytail: only the displayed tree is ever live.
+    private var dormantLayout: [String: Any]?
+
     // zoom state
     private var zoomed = false
     private var zoomHidden: [(view: NSView, was: Bool)] = []
@@ -147,17 +154,31 @@ final class PaneTree {
         restyle()
     }
 
-    /// Rebuild a session from a serialized split layout (windows.json). Builds the
-    /// NSSplitView tree directly (mirrors splitAndAttach's frame-based layout); each
-    /// leaf carries its own persisted paneID for daemon reattach. Divider ratios are
+    /// Rebuild a session from a serialized split layout (windows.json). Keeps the layout as
+    /// data (DORMANT) and builds NOTHING — no ghostty surfaces, no daemon attach — until first
+    /// activation (materialize()). Used by hydrate for every restored session; the one the
+    /// window displays materializes on mount, the rest stay data. The big launch-time win.
+    /// Each leaf carries its own persisted paneID for daemon reattach; divider ratios are
     /// best-effort, applied after the tree is mounted (see applyPendingRatios).
-    init(theme: Theme, layout: [String: Any], name: String? = nil) {
+    init(theme: Theme, dormant layout: [String: Any], name: String? = nil) {
         self.theme = theme
-        self.paneID = PaneTree.firstLeafID(layout) ?? UUID().uuidString  // tree id = top-left leaf
+        self.paneID = PaneTree.firstLeafID(layout) ?? UUID().uuidString
         self.name = normalizedSessionName(name)
+        self.dormantLayout = layout
         root = NSView()
         root.wantsLayer = true
         root.layer?.backgroundColor = theme.background.cgColor
+        // Leaves + click monitor are built in materialize(), not here.
+    }
+
+    /// True while this session is dormant (persisted layout only, no live surfaces).
+    var isDormant: Bool { dormantLayout != nil }
+
+    /// Build the live surfaces from the dormant layout on first activation. Idempotent —
+    /// a no-op once already live. Mirrors init(theme:layout:).
+    func materialize() {
+        guard let layout = dormantLayout else { return }
+        dormantLayout = nil
         let child = buildNode(layout)
         child.autoresizingMask = [.width, .height]
         child.frame = root.bounds
@@ -196,7 +217,9 @@ final class PaneTree {
 
     // MARK: Public API
 
-    var rootView: NSView { root }
+    /// The live view tree. Accessing it means we're about to DISPLAY this session, so
+    /// materialize on demand — this is what turns a dormant session live on activation.
+    var rootView: NSView { materialize(); return root }
 
     /// The focused leaf's content cast to TerminalPane, or nil if it's a browser leaf.
     var focused: TerminalPane? { (leaf(focusedId)?.content) as? TerminalPane }
@@ -275,9 +298,13 @@ final class PaneTree {
         return leaf
     }
 
-    /// Every TerminalPane paneID currently live in this tree (for switcher
-    /// dedup: a daemon session already shown by a pane isn't "detached").
-    var paneIDs: [String] { leaves.compactMap { ($0.content as? TerminalPane)?.paneID } }
+    /// Every TerminalPane paneID in this tree (for switcher dedup / pane-output / kill).
+    /// Dormant: read from the persisted layout — the daemon panes exist regardless of
+    /// whether we've built surfaces for them.
+    var paneIDs: [String] {
+        if let l = dormantLayout { return PaneTree.layoutPaneIDs(l) }
+        return leaves.compactMap { ($0.content as? TerminalPane)?.paneID }
+    }
 
     /// Every live TerminalPane in this tree (browser leaves excluded) — used by
     /// broadcast send-keys and `pane status` to fan out / look up by paneID.
@@ -390,7 +417,32 @@ final class PaneTree {
     /// Serialize the split topology to a nested dict for windows.json:
     /// a split is {vertical, ratio, a, b}; a terminal leaf is {paneID, cwd?};
     /// a browser leaf is {browser: <url>}.
-    func serializeLayout() -> [String: Any] { nodeDict(root.subviews.first) }
+    func serializeLayout() -> [String: Any] { dormantLayout ?? nodeDict(root.subviews.first) }
+
+    /// Collect every terminal-leaf paneID in a serialized layout (DFS) — a dormant
+    /// session's live daemon pane ids without building a single surface. nonisolated: pure.
+    nonisolated static func layoutPaneIDs(_ node: [String: Any]) -> [String] {
+        if let a = node["a"] as? [String: Any], let b = node["b"] as? [String: Any] {
+            return layoutPaneIDs(a) + layoutPaneIDs(b)
+        }
+        return (node["paneID"] as? String).map { [$0] } ?? []
+    }
+
+    /// Count leaves (terminal or browser) in a serialized layout — the sidebar's "· N panes".
+    nonisolated static func layoutLeafCount(_ node: [String: Any]) -> Int {
+        if let a = node["a"] as? [String: Any], let b = node["b"] as? [String: Any] {
+            return layoutLeafCount(a) + layoutLeafCount(b)
+        }
+        return 1
+    }
+
+    /// The top-left leaf's cwd in a serialized layout (DFS) — a dormant session's label + serialize dir.
+    nonisolated static func firstLeafCwd(_ node: [String: Any]) -> String? {
+        if let a = node["a"] as? [String: Any], let b = node["b"] as? [String: Any] {
+            return firstLeafCwd(a) ?? firstLeafCwd(b)
+        }
+        return node["cwd"] as? String
+    }
 
     private func nodeDict(_ v: NSView?) -> [String: Any] {
         if let sv = v as? VestaSplitView, sv.arrangedSubviews.count == 2 {
@@ -503,6 +555,7 @@ final class PaneTree {
     func applyTheme(_ t: Theme) {
         theme = t
         root.layer?.backgroundColor = t.background.cgColor
+        guard dormantLayout == nil else { return }   // dormant: theme adopted at materialize()
         for l in leaves {
             l.applyTheme(accent: t.accent, surface: t.background)
             (l.content as? TerminalPane)?.updateConfig(GhosttyApp.shared.config)
@@ -514,9 +567,16 @@ final class PaneTree {
     /// a click (called when this session becomes the active one).
     func focusActivePane() { leaf(focusedId)?.content.focusContent() }
 
-    /// The focused pane's label + cwd, for the tab/titlebar/footer.
-    var focusedLabel: String { focused?.label ?? "shell" }
-    var focusedCwd: String? { focused?.cwd }
+    /// The focused pane's label + cwd, for the tab/titlebar/footer. Dormant sessions derive
+    /// a label/cwd from the persisted layout (no live pane to ask).
+    var focusedLabel: String {
+        if dormantLayout != nil { return (focusedCwd as NSString?)?.lastPathComponent ?? "shell" }
+        return focused?.label ?? "shell"
+    }
+    var focusedCwd: String? {
+        if let l = dormantLayout { return PaneTree.firstLeafCwd(l) }
+        return focused?.cwd
+    }
     /// The focused pane's stable session id (for "mirror here"). nil if a browser leaf is focused.
     var focusedPaneID: String? { focused?.paneID }
     /// The focused pane's live program title (from SET_TITLE/OSC 0/2); empty when none set.
@@ -524,7 +584,30 @@ final class PaneTree {
     /// PID of the foreground process in the focused pane (for port scanning).
     var focusedPID: pid_t? { focused?.foregroundPID }
     /// Number of split panes in this session (for the sidebar's "· N panes").
-    var paneCount: Int { leaves.count }
+    var paneCount: Int { dormantLayout.map { PaneTree.layoutLeafCount($0) } ?? leaves.count }
+}
+
+/// Pure checks of the dormant-session layout helpers (no ghostty / NSApp needed): a dormant
+/// session derives its pane ids, pane count, and label-cwd entirely from persisted data, and
+/// serializeLayout echoes that data back verbatim (lossless windows.json round-trip).
+func dormantLayoutSelfCheck() {
+    // A vertical split: terminal leaf | (horizontal split of terminal + browser).
+    let layout: [String: Any] = [
+        "vertical": true, "ratio": 0.5,
+        "a": ["paneID": "P1", "cwd": "/work/api"],
+        "b": ["vertical": false, "ratio": 0.5,
+              "a": ["paneID": "P2", "cwd": "/work/web"],
+              "b": ["browser": "https://example.com"]],
+    ]
+    assert(PaneTree.layoutPaneIDs(layout) == ["P1", "P2"], "collects terminal paneIDs DFS, skips browser")
+    assert(PaneTree.layoutLeafCount(layout) == 3, "counts every leaf incl. browser")
+    assert(PaneTree.firstLeafCwd(layout) == "/work/api", "first leaf cwd = top-left terminal")
+    // Flat single-leaf layout (hydrate's fallback shape) round-trips too.
+    let flat: [String: Any] = ["paneID": "P9", "cwd": "/tmp"]
+    assert(PaneTree.layoutPaneIDs(flat) == ["P9"], "flat layout paneID")
+    assert(PaneTree.layoutLeafCount(flat) == 1, "flat layout is one leaf")
+    assert(PaneTree.firstLeafCwd(flat) == "/tmp", "flat layout cwd")
+    print("dormantLayoutSelfCheck OK")
 }
 
 func sessionNameSelfCheck() {

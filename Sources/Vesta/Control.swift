@@ -126,7 +126,7 @@ final class ControlServer: @unchecked Sendable {
             for (si, t) in p.sessions.enumerated() {
                 var d: [String: Any] = [
                     "id": "\(pi).\(si)", "name": t.name ?? t.focusedLabel, "project": p.name,
-                    "panes": t.panes.count, "active": pi == ws.activeP && si == ws.activeS,
+                    "panes": t.paneCount, "active": pi == ws.activeP && si == ws.activeS,   // paneCount works while dormant
                     "attention": ws.hasAttention(t),
                 ]
                 if let c = t.focusedCwd { d["cwd"] = c }
@@ -258,6 +258,9 @@ final class ControlServer: @unchecked Sendable {
             if let targets {
                 guard let text = rest.first else { return ["ok": false, "error": "send-keys: <text> required"] }
                 let body = enter && !text.hasSuffix("\n") ? text + "\n" : text
+                // A --session/--project broadcast can name a dormant session: materialize it on
+                // demand so its live panes exist to receive the keys (it's what the user asked for).
+                targets.forEach { $0.materialize() }
                 let panes = targets.flatMap { $0.panes }
                 for p in panes { p.sendKeys(body) }
                 return ["ok": true, "panes": panes.count]
@@ -281,6 +284,10 @@ final class ControlServer: @unchecked Sendable {
             let paneID = args[1]
             for (pi, p) in workspace.projs.enumerated() {
                 for (si, t) in p.sessions.enumerated() {
+                    // paneIDs works while dormant (reads the layout); materialize on match so a
+                    // live TerminalPane exists to report cwd/title/alive.
+                    guard t.paneIDs.contains(paneID) else { continue }
+                    t.materialize()
                     guard let pane = t.panes.first(where: { $0.paneID == paneID }) else { continue }
                     let fg = pane.foregroundPID   // read once: `alive` and `pid` must agree
                     var d: [String: Any] = [

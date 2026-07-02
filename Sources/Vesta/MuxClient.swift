@@ -43,7 +43,11 @@ enum MuxClient {
         defer { close(fd) }
         guard send(fd, .hello(paneID: paneID, cols: 80, rows: 24)),   // bind this fd to the session
               send(fd, .kill) else { return false }
-        // Wait for the daemon to act; 0/-1 means it vanished without acking.
+        // Bound the blocking read: kill runs on main (close/quit), so a wedged daemon must not
+        // beachball the app. 2s is plenty for a local socket ack; on timeout read → -1 → false.
+        var tv = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        // Wait for the daemon to act; 0/-1 (incl. timeout) means it vanished without acking.
         var tmp = [UInt8](repeating: 0, count: 4096)
         return read(fd, &tmp, tmp.count) > 0
     }

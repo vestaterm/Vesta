@@ -642,13 +642,26 @@ final class LuaRuntime {
         //    + manifest version per plugin; non-git drop-ins are skipped). Rebuilding — rather
         //    than merging — prunes entries for plugins that have since been removed. Entries for
         //    plugins still cloning (step 1, async) are re-added by their completion handler.
-        var lock: [String: LockEntry] = [:]
-        for it in items {
-            guard let commit = gitHeadCommit(it.dir) else { continue }
-            let spec = declared[it.name]
-            lock[it.name] = LockEntry(repo: spec?.repo ?? "", ref: spec?.ref, commit: commit, version: it.version)
+        //
+        // Off the launch critical path: `git rev-parse HEAD` per plugin was a synchronous
+        // Process on main during launch — ×2 on the vesta.set double-start. The output only
+        // lands on disk, so run it on a utility queue. Inputs are plain Sendable values.
+        // ponytail: a first-launch clone that finishes before this runs may have its lock
+        // entry pruned here; it's re-added on the next reload (best-effort lockfile).
+        let rebuildInputs: [(name: String, dir: String, repo: String, ref: String?, version: String?)] =
+            items.map { ($0.name, $0.dir, declared[$0.name]?.repo ?? "", declared[$0.name]?.ref, $0.version) }
+        let lockPath = Self.lockPath
+        DispatchQueue.global(qos: .utility).async {
+            var lock: [String: LockEntry] = [:]
+            for it in rebuildInputs {
+                guard let commit = gitHeadCommit(it.dir) else { continue }
+                lock[it.name] = LockEntry(repo: it.repo, ref: it.ref, commit: commit, version: it.version)
+            }
+            let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? enc.encode(lock) {
+                try? data.write(to: URL(fileURLWithPath: lockPath), options: .atomic)
+            }
         }
-        writeLock(lock)
     }
 
     // MARK: - Manifest + lockfile

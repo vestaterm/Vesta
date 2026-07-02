@@ -38,6 +38,7 @@ final class WindowContext {
 
     init(theme: Theme,
          store: SessionStore,
+         hydrateFrom: [String: Any]? = nil,
          onBecomeKey: @escaping (WindowContext) -> Void,
          onClose: @escaping (WindowContext) -> Void) {
         self.onBecomeKey = onBecomeKey
@@ -48,7 +49,7 @@ final class WindowContext {
         // untitled→1 — both live, different sessions. The store is app-owned, so closing
         // a window drops the view, never the sessions. First window to see an empty pool
         // populates it (config projects + persisted state).
-        let ws = Workspace(theme: theme, store: store)
+        let ws = Workspace(theme: theme, store: store, hydrateFrom: hydrateFrom)
         if store.projs.isEmpty {
             loadProjects(GhosttyApp.shared.settings, into: ws)
             ws.restorePersisted()
@@ -139,6 +140,7 @@ final class WindowContext {
         let live = Set(sessions.map(ObjectIdentifier.init))
         sessionBusy = sessionBusy.filter { live.contains($0.key) }   // evict closed sessions
         for tree in sessions {
+            if tree.isDormant { continue }   // no live panes to poll; materializes on activation
             let oid = ObjectIdentifier(tree)
             // dir-changed: the focused pane's cwd moved (cd, etc.).
             let cwd = tree.focusedCwd ?? ""
