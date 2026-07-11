@@ -101,6 +101,10 @@ import GhosttyKit
         // Tracking area so we receive mouseMoved/entered/exited.
         updateTrackingAreas()
 
+        // Drop target: files insert their shell-escaped path (Terminal.app behavior,
+        // what Claude Code etc. expect), plain text inserts as-is.
+        registerForDraggedTypes([.fileURL, .string])
+
         let p = Unmanaged.passUnretained(self).toOpaque()
         TerminalPane.liveLock.lock(); TerminalPane.live.insert(p); TerminalPane.liveLock.unlock()
     }
@@ -173,6 +177,30 @@ import GhosttyKit
             isARepeat: false, keyCode: 0x24) else { return }
         keyAction(GHOSTTY_ACTION_PRESS, event: ev)
         keyAction(GHOSTTY_ACTION_RELEASE, event: ev)
+    }
+
+    // MARK: - Drag & drop (files → shell-escaped paths, text → insert)
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let pb = sender.draggingPasteboard
+        if let urls = pb.readObjects(forClasses: [NSURL.self],
+                                     options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           !urls.isEmpty {
+            sendKeys(urls.map { shellEscape($0.path) }.joined(separator: " ") + " ")
+            return true
+        }
+        if let s = pb.string(forType: .string), !s.isEmpty {
+            sendKeys(s)
+            return true
+        }
+        return false
+    }
+
+    /// Single-quote for the shell; embedded quotes become '\''.
+    private func shellEscape(_ p: String) -> String {
+        "'" + p.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     // MARK: - Edit menu (responder-chain copy/paste via ghostty binding actions)
