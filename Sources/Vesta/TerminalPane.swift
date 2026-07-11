@@ -101,6 +101,10 @@ import GhosttyKit
         // Tracking area so we receive mouseMoved/entered/exited.
         updateTrackingAreas()
 
+        // Drop target: files insert their shell-escaped path (Terminal.app behavior,
+        // what Claude Code etc. expect), plain text inserts as-is.
+        registerForDraggedTypes([.fileURL, .string])
+
         let p = Unmanaged.passUnretained(self).toOpaque()
         TerminalPane.liveLock.lock(); TerminalPane.live.insert(p); TerminalPane.liveLock.unlock()
     }
@@ -173,6 +177,40 @@ import GhosttyKit
             isARepeat: false, keyCode: 0x24) else { return }
         keyAction(GHOSTTY_ACTION_PRESS, event: ev)
         keyAction(GHOSTTY_ACTION_RELEASE, event: ev)
+    }
+
+    // MARK: - Drag & drop (files → shell-escaped paths, text → insert)
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        sender.draggingPasteboard.availableType(from: [.fileURL, .string]) != nil ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let pb = sender.draggingPasteboard
+        if let urls = pb.readObjects(forClasses: [NSURL.self],
+                                     options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           !urls.isEmpty {
+            insertText(urls.map { shellEscape($0.path) }.joined(separator: " ") + " ")
+            return true
+        }
+        if let s = pb.string(forType: .string), !s.isEmpty {
+            insertText(s)
+            return true
+        }
+        return false
+    }
+
+    /// Insert dropped content via bracketed paste — NEVER through sendKeys, which turns
+    /// every \n into a real Return: multi-line text drops would execute each line, and a
+    /// newline inside a filename would break out of shellEscape's quoting and submit.
+    private func insertText(_ s: String) {
+        guard let surface, !s.isEmpty else { return }
+        s.withCString { ghostty_surface_text(surface, $0, UInt(s.utf8.count)) }
+    }
+
+    /// Single-quote for the shell; embedded quotes become '\''.
+    private func shellEscape(_ p: String) -> String {
+        "'" + p.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     // MARK: - Edit menu (responder-chain copy/paste via ghostty binding actions)
