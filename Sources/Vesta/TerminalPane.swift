@@ -181,21 +181,31 @@ import GhosttyKit
 
     // MARK: - Drag & drop (files → shell-escaped paths, text → insert)
 
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        sender.draggingPasteboard.availableType(from: [.fileURL, .string]) != nil ? .copy : []
+    }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let pb = sender.draggingPasteboard
         if let urls = pb.readObjects(forClasses: [NSURL.self],
                                      options: [.urlReadingFileURLsOnly: true]) as? [URL],
            !urls.isEmpty {
-            sendKeys(urls.map { shellEscape($0.path) }.joined(separator: " ") + " ")
+            insertText(urls.map { shellEscape($0.path) }.joined(separator: " ") + " ")
             return true
         }
         if let s = pb.string(forType: .string), !s.isEmpty {
-            sendKeys(s)
+            insertText(s)
             return true
         }
         return false
+    }
+
+    /// Insert dropped content via bracketed paste — NEVER through sendKeys, which turns
+    /// every \n into a real Return: multi-line text drops would execute each line, and a
+    /// newline inside a filename would break out of shellEscape's quoting and submit.
+    private func insertText(_ s: String) {
+        guard let surface, !s.isEmpty else { return }
+        s.withCString { ghostty_surface_text(surface, $0, UInt(s.utf8.count)) }
     }
 
     /// Single-quote for the shell; embedded quotes become '\''.
