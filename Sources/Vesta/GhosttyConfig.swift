@@ -201,6 +201,9 @@ struct VestaConfig {
     var sidebarPanes: Bool      // vesta-sidebar-panes: split schematic on session cards
     var glassSidebar: Bool      // vesta-glass-sidebar: translucent sidebar (colors become tints).
                                 // Terminal translucency is SEPARATE: ghostty's own background-opacity.
+    var sidebarOpacity: CGFloat // vesta-sidebar-opacity: sidebar tint alpha in glass mode
+    var terminalOpacity: CGFloat // ghostty background-opacity (read here so the chrome can
+                                 // un-paint the opaque backing that would block see-through)
 
     init(_ s: [String: String]) {
         surface      = s["vesta-surface"].flatMap(ghosttyColor)
@@ -214,7 +217,12 @@ struct VestaConfig {
         sidebarTails = (s["vesta-sidebar-tails"].map { $0 != "false" && $0 != "0" }) ?? true
         sidebarPanes = (s["vesta-sidebar-panes"].map { $0 == "true" || $0 == "1" }) ?? false
         glassSidebar = (s["vesta-glass-sidebar"].map { $0 == "true" || $0 == "1" }) ?? false
+        sidebarOpacity = CGFloat(min(max(s["vesta-sidebar-opacity"].flatMap(Double.init) ?? 0.55, 0), 1))
+        terminalOpacity = CGFloat(min(max(s["background-opacity"].flatMap(Double.init) ?? 1, 0), 1))
     }
+
+    /// Any translucency in play → the window itself must be non-opaque.
+    var seeThrough: Bool { glassSidebar || terminalOpacity < 1 }
 
     /// Built from the real config once GhosttyApp is up. Safe to read from any UI
     /// code (Fonts/Chrome/PaneTree) — all of it runs after GhosttyApp.shared init.

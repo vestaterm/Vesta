@@ -530,6 +530,7 @@ func printUsage() {
       vesta-sidebar-tails = true     output-tail lines on session cards
       vesta-sidebar-panes = false    split schematic on session cards
       vesta-glass-sidebar = false    translucent sidebar (colors become tints)
+      vesta-sidebar-opacity = 0.55   sidebar tint strength in glass mode (0..1)
       background-opacity = 0.85      ghostty key: terminal translucency (separate from sidebar)
     Colors also sync from your ghostty background/foreground/palette.
 
