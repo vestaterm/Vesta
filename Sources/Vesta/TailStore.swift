@@ -1,4 +1,5 @@
 import Foundation
+import VestaMux
 
 /// Last few cleaned scrollback lines per pane — the session cards' "output tail".
 /// Fed by PaneOutputTap (same passive daemon subscription that powers `pane-output`),
@@ -152,5 +153,11 @@ func tailStoreSelfCheck() {
     assert(TailStore.lastExitMarker("\u{1B}]133;D;0\u{07}x\u{1B}]133;D;2\u{07}") == 2, "last marker wins")
     assert(TailStore.lastExitMarker("plain text") == nil, "no marker, no heat")
     assert(TailStore.lastExitMarker("\u{1B}]133;D;1") == nil, "unterminated marker ignored")
+    // End-to-end: the EXACT bytes our generated zsh integration emits must parse. Uses the
+    // shared source of truth (VestaShellIntegration.doneMark) so the script's mark and this
+    // parser can't silently drift apart.
+    assert(TailStore.lastExitMarker(VestaShellIntegration.doneMark(0)) == 0, "script success mark parses")
+    assert(TailStore.lastExitMarker("build\r\n" + VestaShellIntegration.doneMark(127) + "❯ ") == 127,
+           "script failure mark parses in a realistic prompt tail")
     print("tailStoreSelfCheck OK")
 }

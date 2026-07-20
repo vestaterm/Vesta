@@ -16,27 +16,40 @@ final class Daemon {
     private var pendingSubscribers: [String: [Int32]] = [:]
     // Persist scrollback to disk? Off by default; read once from config at startup.
     private let logEnabled = Daemon.scrollbackEnabled()
+    // Inject our zsh shell integration (OSC 133 command marks → sidebar heat)? On by default;
+    // opt out with `vesta-shell-integration = false`. Read once from config at startup.
+    private let shellIntegration = Daemon.boolConfig("vesta-shell-integration", default: true)
 
     /// Read `vesta-persist-scrollback` from the Vesta config (XDG-aware). Default false —
     /// terminal output can contain secrets, so on-disk persistence is strictly opt-in.
     private static func scrollbackEnabled() -> Bool {
+        boolConfig("vesta-persist-scrollback", default: false)
+    }
+
+    /// Read a boolean `key = true/1/yes` from the Vesta config (XDG-aware), or `default` if
+    /// the file/key is absent. Mirrors how the app reads vesta-* settings; keeps the daemon
+    /// dependency-free (no ghostty config parser linked here).
+    private static func boolConfig(_ key: String, default def: Bool) -> Bool {
         let env = ProcessInfo.processInfo.environment
         let path = (env["XDG_CONFIG_HOME"].map { $0 + "/vesta/config" }) ?? (NSHomeDirectory() + "/.config/vesta/config")
-        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return def }
         for raw in text.split(whereSeparator: \.isNewline) {
             let line = raw.trimmingCharacters(in: .whitespaces)
             guard !line.hasPrefix("#") else { continue }   // skip comment lines
             let kv = line.split(separator: "=", maxSplits: 1)
-            guard kv.count == 2, kv[0].trimmingCharacters(in: .whitespaces) == "vesta-persist-scrollback" else { continue }
+            guard kv.count == 2, kv[0].trimmingCharacters(in: .whitespaces) == key else { continue }
             // value before any inline comment, lowercased; accept true/1/yes
             let v = kv[1].split(separator: "#")[0].trimmingCharacters(in: .whitespaces).lowercased()
             return v == "true" || v == "1" || v == "yes"
         }
-        return false
+        return def
     }
 
     func run() {
         MuxPaths.ensureDirs()
+        // Generate our zsh OSC 133 integration once (write-if-changed). Skipped when opted
+        // out — then spawned shells simply won't have ZDOTDIR swapped (graceful degradation).
+        if shellIntegration { VestaShellIntegration.ensure() }
         // Single-instance: hold an exclusive lock so concurrent lazy-spawns (one per
         // pane at launch) don't race to unlink/clobber each other's live socket. A
         // redundant vestad exits cleanly; the relays then all connect to the winner.
@@ -195,7 +208,7 @@ final class Daemon {
                 // prompt. resize() no-ops when the size is unchanged.
                 existing.resize(cols: Int32(cols), rows: Int32(rows))
             } else {
-                guard let fresh = Session(paneID: paneID, cols: Int32(cols), rows: Int32(rows), cwd: cwd, logEnabled: logEnabled) else {
+                guard let fresh = Session(paneID: paneID, cols: Int32(cols), rows: Int32(rows), cwd: cwd, logEnabled: logEnabled, shellIntegration: shellIntegration) else {
                     if !sendFrame(fd, encode(ServerFrame.exited(status: 1))) { closeClient(fd) }
                     return
                 }
