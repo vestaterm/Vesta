@@ -866,6 +866,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         maybeShowOnboarding()
         scheduleBackgroundMaterialize()   // fill dormant sessions' sidebar tails after first paint
+        // If an OLDER session daemon is still running (from a previous app version — release
+        // builds keep it alive across quit so shells survive), swap it to our bundled vestad in
+        // place so its shells migrate to the new code without dying. Deferred so a freshly
+        // launched daemon (lazy-spawned by the first pane) has bound its socket first. Runs at
+        // launch, which also covers the post-self-update relaunch (a relaunch is a fresh launch).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.autoUpgradeDaemonIfNeeded()
+        }
+    }
+
+    // Debounce: at most one auto-upgrade attempt per launch.
+    private var daemonUpgradeChecked = false
+
+    /// Compare the running daemon's own executable identity against our bundled vestad; on a
+    /// mismatch, upgrade it in place (see MuxClient.upgradeDaemon) and toast the outcome.
+    /// Skipped in DEBUG — dev daemons churn constantly and the DEBUG quit-pkill already handles
+    /// dev hygiene, so an in-place upgrade there is noise (and would fight the churn).
+    private func autoUpgradeDaemonIfNeeded() {
+        #if DEBUG
+        return
+        #else
+        guard !daemonUpgradeChecked else { return }
+        daemonUpgradeChecked = true
+        let bundled = Bundle.main.executableURL!.deletingLastPathComponent()
+            .appendingPathComponent("vestad").path
+        // File hash + socket round-trip off the main thread; toast back on main.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let bundledSHA = MuxClient.sha256OfFile(bundled) else { return }
+            // Daemon down, or an older daemon that doesn't speak `info` → leave it alone. A
+            // daemon spawned fresh from THIS bundle is already the new binary.
+            guard let daemonSHA = MuxClient.daemonExecutableSHA() else { return }
+            guard daemonSHA != bundledSHA else { return }   // already running our binary
+            let outcome = MuxClient.upgradeDaemon(to: bundled)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch outcome {
+                case .success:
+                    self.showToast("session daemon updated in place — shells kept")
+                case let .failure(reason):
+                    // Non-scary: the shells are fine, we just didn't swap the daemon.
+                    self.showToast("session daemon kept the previous version (\(reason))")
+                case .unreachable:
+                    break   // vanished mid-check; a fresh daemon will be the new binary
+                }
+            }
+        }
+        #endif
     }
 
     /// Background-materialize dormant restored sessions so their sidebar output tails
