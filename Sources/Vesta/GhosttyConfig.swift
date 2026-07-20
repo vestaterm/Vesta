@@ -197,6 +197,8 @@ struct VestaConfig {
     var fontScale: CGFloat      // multiplier on all chrome font sizes
     var dividerWidth: CGFloat   // split grab/draw thickness
     var persist: Bool           // vesta-persist: spawn vesta-attach (mux) instead of a bare shell
+    var sidebarTails: Bool      // vesta-sidebar-tails: output-tail lines on session cards
+    var sidebarPanes: Bool      // vesta-sidebar-panes: split schematic on session cards
 
     init(_ s: [String: String]) {
         surface      = s["vesta-surface"].flatMap(ghosttyColor)
@@ -207,6 +209,8 @@ struct VestaConfig {
         fontScale    = CGFloat((s["vesta-font-size"].flatMap(Double.init) ?? 13) / 13)
         dividerWidth = s["vesta-divider-width"].flatMap(Double.init).map { CGFloat($0) } ?? 8
         persist      = (s["vesta-persist"].map { $0 != "false" && $0 != "0" }) ?? true   // default ON in M3
+        sidebarTails = (s["vesta-sidebar-tails"].map { $0 != "false" && $0 != "0" }) ?? true
+        sidebarPanes = (s["vesta-sidebar-panes"].map { $0 == "true" || $0 == "1" }) ?? false
     }
 
     /// Built from the real config once GhosttyApp is up. Safe to read from any UI

@@ -235,7 +235,9 @@ final class VestaWindowController: NSWindowController {
     func setStatus(_ text: String) { baseStatus = text; renderFooter() }
     func setLuaStatus(_ s: String) { luaStatus = s; renderFooter() }
     private func renderFooter() {
-        footer?.stringValue = luaStatus.isEmpty ? baseStatus : "\(baseStatus)   ·   \(luaStatus)"
+        let full = luaStatus.isEmpty ? baseStatus : "\(baseStatus) · \(luaStatus)"
+        footer?.stringValue = full
+        footer?.toolTip = full   // single-line footer truncates; the tooltip keeps it whole
     }
     func setDir(_ text: String) {
         dirLabel?.attributedStringValue = dirAttributed(text)
@@ -269,14 +271,14 @@ final class VestaWindowController: NSWindowController {
                 let prow = makeProjectRow(pi, proj)
                 stack.addArrangedSubview(prow)
                 // Stretch project row to full stack width (constraint added after insertion).
-                prow.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
+                prow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -8).isActive = true
                 var last: NSView = prow
                 if proj.expanded {
                     stack.setCustomSpacing(3, after: prow)   // tighter gap before nested sessions
                     for (si, sess) in proj.sessions.enumerated() {
                         let srow = makeSessionRow(pi, si, sess)
                         stack.addArrangedSubview(srow)
-                        srow.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
+                        srow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -8).isActive = true
                         last = srow
                     }
                 }
@@ -371,8 +373,9 @@ final class VestaWindowController: NSWindowController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 2
-        stack.edgeInsets = NSEdgeInsets(top: 4, left: 0, bottom: 8, right: 0)
+        stack.spacing = 3
+        // Side insets so the outlined cards float instead of touching the sidebar edges.
+        stack.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 8, right: 0)
         projectsStack = stack   // setProjects clears + refills it
 
         // Scroll the list so many projects/sessions don't grow the window. A flipped clip view
@@ -452,164 +455,181 @@ final class VestaWindowController: NSWindowController {
         return header
     }
 
-    /// Project row: [bar] caret · dot · name · branch …… +   (inner hstack = reliable alignment)
+    /// Project DIVIDER: ▾ name ── hairline ── (count | +). Projects are grouping labels,
+    /// not cards — sessions carry the visual weight (cmux-style). Click = expand/collapse;
+    /// the + is hover-revealed so a stray click near the edge can't create a session.
     private func makeProjectRow(_ pi: Int, _ p: SidebarProject) -> NSView {
-        let active = p.active
         let tint = p.color ?? theme.accent
 
-        let caretView = NSImageView()
-        let caretImg = p.expanded
-            ? NSImage(systemSymbolName: "chevron.down",  accessibilityDescription: "Collapse project")
-            : NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Expand project")
-        caretView.image = caretImg?.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
-        caretView.contentTintColor = txt(.faint)
-        caretView.setContentHuggingPriority(.required, for: .horizontal)
-
-        let dot = DotView()
-        dot.set(selected: active, accent: tint, off: p.color ?? txt(.faint))
-        dot.widthAnchor.constraint(equalToConstant: 7).isActive = true
-        dot.heightAnchor.constraint(equalToConstant: 7).isActive = true
-
-        let nameLabel = NSTextField(labelWithString: p.name)
-        nameLabel.font = Fonts.mono(12.5, medium: active)
-        nameLabel.textColor = active ? txt(.full) : txt(.dim)
+        let nameLabel = NSTextField(labelWithString: "\(p.expanded ? "▾" : "▸") \(p.name)")
+        nameLabel.font = Fonts.mono(11, medium: p.active)
+        nameLabel.textColor = p.active ? tint : tint.withAlphaComponent(0.75)
         nameLabel.lineBreakMode = .byTruncatingTail
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        if let branch = p.branch { nameLabel.toolTip = "\(p.name) · ⎇ \(branch)" }
 
-        let content = NSStackView(views: [caretView, dot, nameLabel])
-        content.orientation = .horizontal
-        content.alignment = .centerY
-        content.spacing = 7
-        content.translatesAutoresizingMaskIntoConstraints = false
+        let hairline = NSView()
+        hairline.translatesAutoresizingMaskIntoConstraints = false
+        hairline.wantsLayer = true
+        hairline.layer?.backgroundColor = hair(0.08).cgColor
+        hairline.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        hairline.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        if let branch = p.branch {
-            let branchLabel = NSTextField(labelWithString: branch)
-            branchLabel.font = Fonts.inst(10)
-            branchLabel.textColor = txt(.faint)
-            branchLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-            content.addArrangedSubview(branchLabel)
-            content.setCustomSpacing(8, after: nameLabel)
-        }
+        // Collapsed projects keep their session count visible (no information lost).
+        let count = NSTextField(labelWithString: p.expanded ? "" : "\(p.sessions.count)")
+        count.font = Fonts.mono(9.5)
+        count.textColor = txt(.faint)
+        count.setContentHuggingPriority(.required, for: .horizontal)
 
         let addBtn = tinyButton(symbol: "plus", label: "New session") { [weak self] in self?.onNewSession(pi) }
         addBtn.translatesAutoresizingMaskIntoConstraints = false
+        addBtn.alphaValue = 0   // hover-revealed
 
-        let bar = accentBar(active ? tint : .clear)
+        let content = NSStackView(views: [nameLabel, hairline, count, addBtn])
+        content.orientation = .horizontal
+        content.alignment = .centerY
+        content.spacing = 8
+        content.translatesAutoresizingMaskIntoConstraints = false
 
         let row = TaggedRow()
         row.tag1 = pi
         row.translatesAutoresizingMaskIntoConstraints = false
         row.wantsLayer = true
         row.layer?.cornerRadius = 5
-        row.layer?.backgroundColor = active ? tint.withAlphaComponent(0.12).cgColor : NSColor.clear.cgColor
+        row.hoverHighlight = false   // dividers don't need a hover wash; the + reveal is enough
+        row.onHover = { [weak addBtn] inside in addBtn?.animator().alphaValue = inside ? 1 : 0 }
 
-        row.addSubview(bar); row.addSubview(content); row.addSubview(addBtn)
+        row.addSubview(content)
         NSLayoutConstraint.activate([
-            bar.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-            bar.topAnchor.constraint(equalTo: row.topAnchor, constant: 5),
-            bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -5),
-            bar.widthAnchor.constraint(equalToConstant: 2),
-
-            content.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 13),
+            content.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 11),
+            content.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
             content.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            content.trailingAnchor.constraint(lessThanOrEqualTo: addBtn.leadingAnchor, constant: -6),
-
-            addBtn.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
-            addBtn.centerYAnchor.constraint(equalTo: row.centerYAnchor),
             addBtn.widthAnchor.constraint(equalToConstant: 18),
             addBtn.heightAnchor.constraint(equalToConstant: 18),
-
-            row.heightAnchor.constraint(equalToConstant: 30),
+            row.heightAnchor.constraint(equalToConstant: 26),
         ])
 
-        // mouseDown (not a gesture recognizer) so the + NSButton hit-tests first.
         row.onClick = { [weak self] in self?.onToggleExpand(pi) }
         row.menu = makeProjectMenu(pi, name: p.name, hasColor: p.color != nil)
         return row
     }
 
-    /// Session row (indented): [bar]  label [●N] [:PORT] …… ×
+    /// Session CARD: outlined, self-sizing — title row (label + plain-text meta) over up
+    /// to 4 verbatim scrollback lines (TailStore). Heat is paint only: the inner-left rail
+    /// tints mint while the session waits for you (attention), never the geometry.
+    /// × is hover-revealed; the whole card selects.
     private func makeSessionRow(_ pi: Int, _ si: Int, _ sess: SidebarSession) -> NSView {
         let active = sess.active
 
         let label = NSTextField(labelWithString: sess.label)
-        label.font = Fonts.mono(12)
+        label.font = Fonts.mono(12, medium: active)
         label.textColor = active ? txt(.full) : txt(.dim)
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         label.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        // Inner horizontal stack: label + optional dirty chip + optional port chip.
-        var innerViews: [NSView] = [label]
+        // Chip-free meta: ⊞panes · ●dirty · :port · age — one dim run of text.
+        var meta: [String] = []
+        if sess.paneCount > 1 { meta.append("⊞\(sess.paneCount)") }
+        if sess.dirty > 0 { meta.append("●\(sess.dirty)") }
+        if let port = sess.ports.first { meta.append(":\(port)") }
+        if sess.attention { meta.append(sess.attentionAge ?? "●") }
+        var titleViews: [NSView] = [label]
+        // Split schematic (vesta-sidebar-panes): pane-count cells, focused-first lit.
+        // ponytail: count-based grid, not real topology — read PaneTree.serializeLayout
+        // and draw the true split tree if anyone asks.
+        if VestaConfig.shared.sidebarPanes, sess.paneCount > 1 {
+            titleViews.insert(PaneSchematic(count: sess.paneCount, accent: theme.accent, dim: txt(.faint)), at: 0)
+        }
+        if !meta.isEmpty {
+            let m = NSTextField(labelWithString: meta.joined(separator: " · "))
+            m.font = Fonts.mono(9.5)
+            m.textColor = sess.attention ? theme.accent : txt(.faint)
+            m.setContentCompressionResistancePriority(.required, for: .horizontal)
+            m.setContentHuggingPriority(.required, for: .horizontal)
+            titleViews.append(m)
+            // Reserve the top-right corner so the revealed × never covers the meta text.
+            let pad = NSView()
+            pad.translatesAutoresizingMaskIntoConstraints = false
+            pad.widthAnchor.constraint(equalToConstant: 14).isActive = true
+            titleViews.append(pad)
+        }
+        let title = NSStackView(views: titleViews)
+        title.orientation = .horizontal
+        title.alignment = .centerY
+        title.spacing = 6
 
-        if sess.dirty > 0 {
-            let dirtyLabel = NSTextField(labelWithString: "●\(sess.dirty)")
-            dirtyLabel.font = Fonts.mono(10)
-            dirtyLabel.textColor = theme.accent                          // color sync: use theme.accent
-            dirtyLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-            dirtyLabel.setContentHuggingPriority(.required, for: .horizontal)
-            innerViews.append(dirtyLabel)
+        var rows: [NSView] = [title]
+        if !sess.tail.isEmpty {
+            let lines = sess.tail.suffix(TailStore.maxLines).map { (t: String) -> NSView in
+                let l = NSTextField(labelWithString: t)
+                l.font = Fonts.mono(9)
+                l.textColor = txt(.faint)
+                l.lineBreakMode = .byTruncatingTail
+                l.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                return l
+            }
+            let tailStack = NSStackView(views: lines)
+            tailStack.orientation = .vertical
+            tailStack.alignment = .leading
+            tailStack.spacing = 2
+            let rule = NSView()
+            rule.translatesAutoresizingMaskIntoConstraints = false
+            rule.wantsLayer = true
+            rule.layer?.backgroundColor = hair(0.10).cgColor
+            rule.layer?.cornerRadius = 1
+            rule.widthAnchor.constraint(equalToConstant: 2).isActive = true
+            let tail = NSStackView(views: [rule, tailStack])
+            tail.orientation = .horizontal
+            tail.alignment = .top
+            tail.spacing = 7
+            rule.heightAnchor.constraint(equalTo: tailStack.heightAnchor).isActive = true
+            rows.append(tail)
         }
 
-        if let port = sess.ports.first {
-            let portLabel = NSTextField(labelWithString: ":\(port)")
-            portLabel.font = Fonts.mono(10)
-            portLabel.textColor = txt(.dim)                              // color sync: dim tone, no hardcoded hex
-            portLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-            portLabel.setContentHuggingPriority(.required, for: .horizontal)
-            innerViews.append(portLabel)
-        }
-
-        // Attention ring: 8×8 accent-bordered ring when the session has a pending bell.
-        if sess.attention {
-            let ring = NSView()
-            ring.translatesAutoresizingMaskIntoConstraints = false
-            ring.wantsLayer = true
-            ring.layer?.borderWidth = 1.5
-            ring.layer?.cornerRadius = 4
-            ring.layer?.borderColor = theme.accent.cgColor               // color sync: always theme.accent
-            ring.layer?.backgroundColor = NSColor.clear.cgColor
-            ring.widthAnchor.constraint(equalToConstant: 8).isActive = true
-            ring.heightAnchor.constraint(equalToConstant: 8).isActive = true
-            innerViews.append(ring)
-        }
-
-        let inner = NSStackView(views: innerViews)
-        inner.orientation = .horizontal
-        inner.alignment = .centerY
-        inner.spacing = 5
-        inner.translatesAutoresizingMaskIntoConstraints = false
+        let content = NSStackView(views: rows)
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 5
+        content.translatesAutoresizingMaskIntoConstraints = false
+        title.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
 
         let closeBtn = tinyButton(symbol: "xmark", label: "Close session") { [weak self] in self?.onCloseSession(pi, si) }
         closeBtn.translatesAutoresizingMaskIntoConstraints = false
+        closeBtn.alphaValue = 0   // hover-revealed: no permanent destructive target
 
-        let bar = accentBar(active ? theme.accent : .clear)
+        // Heat rail (paint only): waiting-for-you (bell/attention) tints the inner edge.
+        let bar = accentBar(sess.attention ? theme.accent : .clear)
 
         let row = TaggedRow()
         row.tag1 = pi; row.tag2 = si
         row.translatesAutoresizingMaskIntoConstraints = false
         row.wantsLayer = true
-        row.layer?.cornerRadius = 5
-        row.layer?.backgroundColor = active ? theme.accent.withAlphaComponent(0.09).cgColor : NSColor.clear.cgColor
+        row.layer?.cornerRadius = 7
+        row.layer?.borderWidth = 1
+        row.layer?.borderColor = hair(active ? 0.16 : 0.07).cgColor
+        row.layer?.backgroundColor = active ? theme.accent.withAlphaComponent(0.07).cgColor : NSColor.clear.cgColor
+        row.onHover = { [weak closeBtn] inside in closeBtn?.animator().alphaValue = inside ? 1 : 0 }
 
-        row.addSubview(bar); row.addSubview(inner); row.addSubview(closeBtn)
+        row.addSubview(bar); row.addSubview(content); row.addSubview(closeBtn)
         NSLayoutConstraint.activate([
-            bar.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-            bar.topAnchor.constraint(equalTo: row.topAnchor, constant: 4),
-            bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -4),
+            bar.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 1),
+            bar.topAnchor.constraint(equalTo: row.topAnchor, constant: 5),
+            bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -5),
             bar.widthAnchor.constraint(equalToConstant: 2),
 
-            inner.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 32),
-            inner.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            inner.trailingAnchor.constraint(lessThanOrEqualTo: closeBtn.leadingAnchor, constant: -6),
+            // Title pinned to the card TOP (never centered) — tails grow downward.
+            content.topAnchor.constraint(equalTo: row.topAnchor, constant: 8),
+            content.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -8),
+            content.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 11),
+            content.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
 
-            closeBtn.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
-            closeBtn.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            closeBtn.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -7),
+            closeBtn.topAnchor.constraint(equalTo: row.topAnchor, constant: 6),
             closeBtn.widthAnchor.constraint(equalToConstant: 16),
             closeBtn.heightAnchor.constraint(equalToConstant: 16),
 
-            row.heightAnchor.constraint(equalToConstant: 26),
+            row.heightAnchor.constraint(greaterThanOrEqualToConstant: 30),
         ])
 
         row.onClick = { [weak self] in self?.onSelectSession(pi, si) }
@@ -806,11 +826,13 @@ final class VestaWindowController: NSWindowController {
         footer.textColor = txt(.dim)
         footer.lineBreakMode = .byTruncatingTail
         footer.cell?.usesSingleLineMode = true
+        footer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let version = NSTextField(labelWithString: "vesta \(Updater.currentVersion)")
+        let version = NSTextField(labelWithString: Updater.currentVersion)
         version.translatesAutoresizingMaskIntoConstraints = false
         version.font = Fonts.inst(9.5)
         version.textColor = txt(.faint)
+        version.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         // Update indicator (hidden until an update is available / downloading / ready).
         // Clickable: starts the download, or relaunches once the new version is staged.
@@ -818,13 +840,15 @@ final class VestaWindowController: NSWindowController {
         upd.font = Fonts.inst(10)
         upd.translatesAutoresizingMaskIntoConstraints = false
         upd.isHidden = true
+        upd.setContentCompressionResistancePriority(.required, for: .horizontal)
         updateBadge = upd
 
-        // Vertical stack so the hidden badge takes no space (detachesHiddenViews).
-        let rows = NSStackView(views: [footer, version, upd])
-        rows.orientation = .vertical
-        rows.alignment = .leading
-        rows.spacing = 8
+        // ONE line: status left (truncates, full text in tooltip), update + version right —
+        // the footer never stacks, so plugin status can't grow it into a column of clutter.
+        let rows = NSStackView(views: [footer, upd, version])
+        rows.orientation = .horizontal
+        rows.alignment = .centerY
+        rows.spacing = 10
         rows.translatesAutoresizingMaskIntoConstraints = false
 
         block.addSubview(topHair)
@@ -836,7 +860,7 @@ final class VestaWindowController: NSWindowController {
             topHair.heightAnchor.constraint(equalToConstant: 1),
 
             rows.leadingAnchor.constraint(equalTo: block.leadingAnchor, constant: 16),
-            rows.trailingAnchor.constraint(lessThanOrEqualTo: block.trailingAnchor, constant: -12),
+            rows.trailingAnchor.constraint(equalTo: block.trailingAnchor, constant: -12),
             rows.topAnchor.constraint(equalTo: topHair.bottomAnchor, constant: 12),
             rows.bottomAnchor.constraint(equalTo: block.bottomAnchor, constant: -12),
         ])
@@ -1086,13 +1110,20 @@ final class TaggedRow: NSView {
     var tag2 = 0   // session index (unused for project rows)
     var onClick: (() -> Void)?
     var onDoubleClick: (() -> Void)?
+    var onHover: ((Bool) -> Void)?   // hover-revealed actions (+/×)
+    var hoverHighlight = true        // background wash on hover (off for divider rows)
 
     // Claim every click on the row EXCEPT over real buttons (the +/× actions).
     // Decorative subviews (labels, caret, dot) would otherwise swallow the click
     // and the row's mouseDown would never fire — that's why collapse/select looked dead.
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
-        return hit is NSButton ? hit : (bounds.contains(convert(point, from: superview)) ? self : hit)
+        if let b = hit as? NSButton {
+            // A hover-revealed button at alpha 0 still hit-tests in AppKit — an invisible ×
+            // must never eat a click (that's a destructive mis-click). Fall through to the row.
+            return b.alphaValue > 0.01 ? b : self
+        }
+        return bounds.contains(convert(point, from: superview)) ? self : hit
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1107,17 +1138,54 @@ final class TaggedRow: NSView {
         if let t = tracking { removeTrackingArea(t) }
         let t = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
         addTrackingArea(t); tracking = t
-    }
-    override func mouseEntered(with event: NSEvent) {
-        if (layer?.backgroundColor.flatMap { $0.alpha } ?? 0) < 0.01 {
-            layer?.backgroundColor = NSColor(white: 1, alpha: 0.04).cgColor
+        // Rows are rebuilt (≤1/s) while output streams; a stationary cursor gets no fresh
+        // mouseEntered, which would leave the hover-revealed ×/+ invisible-forever. Re-assert.
+        if let w = window {
+            let p = convert(w.mouseLocationOutsideOfEventStream, from: nil)
+            if bounds.contains(p), bounds.width > 0 { setHovered(true) }
         }
     }
-    override func mouseExited(with event: NSEvent) {
-        if let bg = layer?.backgroundColor, bg.alpha <= 0.05 {
+    /// Single hover implementation — the mouseEntered/Exited overrides and the
+    /// rebuild re-assert all funnel here, so no path ever needs a synthetic NSEvent.
+    private func setHovered(_ inside: Bool) {
+        onHover?(inside)
+        guard hoverHighlight else { return }
+        if inside, (layer?.backgroundColor.flatMap { $0.alpha } ?? 0) < 0.01 {
+            layer?.backgroundColor = NSColor(white: 1, alpha: 0.04).cgColor
+        } else if !inside, let bg = layer?.backgroundColor, bg.alpha <= 0.05 {
             layer?.backgroundColor = NSColor.clear.cgColor
         }
     }
+    override func mouseEntered(with event: NSEvent) { setHovered(true) }
+    override func mouseExited(with event: NSEvent) { setHovered(false) }
+}
+
+/// Tiny split-topology schematic on a session card (vesta-sidebar-panes): up to four
+/// cells, the first (focused) lit. ponytail: count-based layout, not the real split tree.
+final class PaneSchematic: NSView {
+    init(count: Int, accent: NSColor, dim: NSColor) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        let n = min(count, 4)
+        let cols = n == 1 ? 1 : 2
+        let rowsN = n <= 2 ? 1 : 2
+        let w: CGFloat = 18, h: CGFloat = 12, gap: CGFloat = 1.5
+        let cw = (w - gap * CGFloat(cols - 1)) / CGFloat(cols)
+        let ch = (h - gap * CGFloat(rowsN - 1)) / CGFloat(rowsN)
+        for i in 0..<n {
+            let cell = CALayer()
+            let r = i / cols, c = i % cols
+            cell.frame = CGRect(x: CGFloat(c) * (cw + gap), y: CGFloat(rowsN - 1 - r) * (ch + gap),
+                                width: cw, height: ch)
+            cell.cornerRadius = 1.5
+            cell.backgroundColor = (i == 0 ? accent.withAlphaComponent(0.55) : dim.withAlphaComponent(0.35)).cgColor
+            layer?.addSublayer(cell)
+        }
+        widthAnchor.constraint(equalToConstant: w).isActive = true
+        heightAnchor.constraint(equalToConstant: h).isActive = true
+    }
+    required init?(coder: NSCoder) { fatalError("no xib") }
 }
 
 /// Opaque fill pinned over the titlebar to defeat AppKit's translucent material. Click-through
