@@ -32,7 +32,7 @@ final class ConfirmOverlay: NSView {
     private func build(message: String) {
         panel.translatesAutoresizingMaskIntoConstraints = false
         panel.wantsLayer = true
-        panel.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.98).cgColor
+        installGlass(panel, tint: NSColor(white: 0.10, alpha: 1))   // glass moment: blur + dark tint
         panel.layer?.cornerRadius = 9
         panel.layer?.borderWidth = 1
         panel.layer?.borderColor = theme.accent.withAlphaComponent(0.5).cgColor

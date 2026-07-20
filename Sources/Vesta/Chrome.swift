@@ -183,6 +183,7 @@ final class VestaWindowController: NSWindowController {
         // Belt-and-suspenders: hide the material/background and the decoration hairline.
         if let frame = window?.contentView?.superview {
             func hide(_ v: NSView) {
+                if v is GlassView { return }   // OUR glass (overlay moments) is never prey
                 let n = "\(type(of: v))"
                 if v !== backing,
                    v is NSVisualEffectView || n.contains("Separator")

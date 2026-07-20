@@ -524,7 +524,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         label.translatesAutoresizingMaskIntoConstraints = false
         let banner = NSView()
         banner.wantsLayer = true
-        banner.layer?.backgroundColor = NSColor(white: 0.11, alpha: 0.97).cgColor
+        installGlass(banner, tint: NSColor(white: 0.10, alpha: 1))   // glass moment: blur + dark tint
         banner.layer?.cornerRadius = 9
         banner.layer?.borderWidth = 1
         banner.layer?.borderColor = theme.accent.withAlphaComponent(0.55).cgColor
