@@ -25,8 +25,9 @@ func makeMainMenu(target: AppDelegate) -> NSMenu {
     app.addItem(withTitle: "Import ghostty config…", action: #selector(AppDelegate.importGhosttyConfig), keyEquivalent: "")
         .target = target
     app.addItem(.separator())
-    app.addItem(withTitle: "Make Vesta the Default Terminal", action: #selector(AppDelegate.makeDefaultTerminal), keyEquivalent: "")
-        .target = target
+    let mkDefault = app.addItem(withTitle: "Make Vesta the Default Terminal", action: #selector(AppDelegate.makeDefaultTerminal), keyEquivalent: "")
+    mkDefault.target = target
+    mkDefault.image = NSImage(systemSymbolName: "star.fill", accessibilityDescription: nil)  // ghostty-style
     app.addItem(.separator())
     app.addItem(withTitle: "Hide Vesta", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
     let hideOthers = app.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
