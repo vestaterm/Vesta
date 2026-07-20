@@ -1096,6 +1096,13 @@ final class VestaWindowController: NSWindowController {
         window?.addTitlebarAccessoryViewController(acc)
         buildBellAccessory()
         DispatchQueue.main.async { [weak self] in self?.syncTitlebarLayout() }  // after first layout
+        // Fullscreen hides the traffic lights → the accessory host's origin shifts, which
+        // would leave the cluster misaligned until the next sidebar interaction. Re-sync.
+        for n in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
+            NotificationCenter.default.addObserver(forName: n, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.syncTitlebarLayout() }
+            }
+        }
     }
 
     /// Track the sidebar edge from the titlebar: the + hugs the sidebar's right edge and
