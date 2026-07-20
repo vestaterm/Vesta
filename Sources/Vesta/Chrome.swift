@@ -37,8 +37,8 @@ final class VestaWindowController: NSWindowController {
     private let onRemoveProject:   (Int) -> Void
     private let onNewWorktree:     (Int, String) -> Void
     private let onChangeProjectDir: () -> Void
-    private let onReorderProject:  (Int, Int) -> Void        // (from, dropGap)
-    private let onReorderSession:  (Int, Int, Int) -> Void   // (project, from, dropGap)
+    private let onReorderProject:  (Int, Int, String) -> Void        // (from, dropGap, Proj.id)
+    private let onReorderSession:  (Int, Int, Int, String) -> Void   // (project, from, dropGap, paneID)
 
     private var sidebar: NSView!
     private var sidebarWidth: NSLayoutConstraint!
@@ -64,11 +64,14 @@ final class VestaWindowController: NSWindowController {
     private var projCount: NSTextField?      // PROJECTS count, pinned in the header (not scrolled)
     private var projScroll: NSScrollView?    // wraps the project list; appearance tracks surface
 
-    // Drag-to-reorder state. While a drag is live, setProjects is suppressed (the ~1Hz
-    // sidebar rebuild would otherwise destroy the row mid-drag). lastProjects lets a
-    // cancelled drag rebuild from truth without waiting for the next refresh.
+    // Drag-to-reorder state. While a press or drag is live, setProjects is suppressed (the
+    // ~1Hz sidebar rebuild would otherwise destroy the row mid-interaction — even a plain
+    // click resolves at mouseUp now, and a detached row isn't guaranteed its mouseUp).
+    // Suppressed rebuilds stash into pendingProjects and replay on release, so no refresh
+    // is ever lost; lastProjects lets a cancelled drag rebuild from truth immediately.
     private var suppressRebuild = false
     private var lastProjects: [SidebarProject] = []
+    private var pendingProjects: [SidebarProject]?   // rebuild that arrived while suppressed
     private weak var dragRow: TaggedRow?
     private var dragGap = 0
     private var dragLine: NSView?            // 2px accent insertion line
@@ -86,8 +89,8 @@ final class VestaWindowController: NSWindowController {
          onRemoveProject:   @escaping (Int) -> Void          = { _ in },
          onNewWorktree:     @escaping (Int, String) -> Void  = { _, _ in },
          onChangeProjectDir: @escaping () -> Void            = {},
-         onReorderProject:  @escaping (Int, Int) -> Void      = { _, _ in },
-         onReorderSession:  @escaping (Int, Int, Int) -> Void = { _, _, _ in }) {
+         onReorderProject:  @escaping (Int, Int, String) -> Void      = { _, _, _ in },
+         onReorderSession:  @escaping (Int, Int, Int, String) -> Void = { _, _, _, _ in }) {
         self.theme = theme
         self.surface = theme.background
         // Restore the dragged sidebar width if saved, else the config default.
@@ -153,6 +156,11 @@ final class VestaWindowController: NSWindowController {
         }
         NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: win, queue: .main) { [weak win] _ in
             MainActor.assumeIsolated { (win?.firstResponder as? TerminalPane)?.windowKeyChanged(false) }
+        }
+        // Window closing mid-drag: endDrag never runs from mouseUp, which would leak the
+        // Esc key monitor and strand the drag state. Cancel defensively (idempotent).
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: win, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.endDrag(commit: false) }
         }
     }
 
@@ -310,9 +318,9 @@ final class VestaWindowController: NSWindowController {
     /// Single source of sidebar truth — called on every onChange.
     func setProjects(_ projects: [SidebarProject]) {
         guard let stack = projectsStack else { return }
-        // A drag is live — keep the dragged row (and its neighbours) intact. We re-render
-        // once on drop (the reorder callback → broadcast → setProjects with the flag clear).
-        if suppressRebuild { return }
+        // A press/drag is live — keep the pressed row intact; stash the data and replay it
+        // when the interaction releases (endPress / endDrag), so the refresh isn't lost.
+        if suppressRebuild { pendingProjects = projects; return }
         lastProjects = projects
 
         // Remove all previously arranged subviews (avoid constraint leaks).
@@ -626,6 +634,7 @@ final class VestaWindowController: NSWindowController {
         row.toolTip = "click to expand/collapse · drag to reorder"
         row.onClick = { [weak self] in self?.onToggleExpand(pi) }
         row.menu = makeProjectMenu(pi, name: p.name, hasColor: p.color != nil)
+        row.identity = p.id
         wireDrag(row, isSession: false)
         return row
     }
@@ -788,6 +797,7 @@ final class VestaWindowController: NSWindowController {
         row.onDoubleClick = { [weak self] in
             self?.promptRenameSession(pi, si, current: sess.label)
         }
+        row.identity = sess.treeID
         wireDrag(row, isSession: true)
         return row
     }
@@ -800,9 +810,19 @@ final class VestaWindowController: NSWindowController {
     private func wireDrag(_ row: TaggedRow, isSession: Bool) {
         row.isSessionRow = isSession
         row.draggable = true
+        row.onPressBegin = { [weak self] in self?.suppressRebuild = true }
+        row.onPressEnd   = { [weak self] in self?.endPress() }
         row.onDragBegin = { [weak self, weak row] in guard let self, let row else { return }; self.beginDrag(row) }
         row.onDragMove  = { [weak self] pt in self?.moveDrag(to: pt) }
         row.onDragEnd   = { [weak self] commit in self?.endDrag(commit: commit) }
+    }
+
+    /// mouseUp on a plain (non-drag) press: un-freeze and replay any rebuild that arrived
+    /// during the press. An active drag owns its own teardown (endDrag), never this.
+    private func endPress() {
+        guard dragRow == nil else { return }
+        suppressRebuild = false
+        if let p = pendingProjects { pendingProjects = nil; setProjects(p) }
     }
 
     /// Rows eligible as drop neighbours for the dragged row, in visual (top→bottom) order:
@@ -849,19 +869,23 @@ final class VestaWindowController: NSWindowController {
     }
 
     private func endDrag(commit: Bool) {
-        guard suppressRebuild else { return }   // idempotent — Esc + mouseUp can both fire
+        guard suppressRebuild else { return }   // idempotent — Esc, mouseUp, window-close can all fire
         suppressRebuild = false
         dragLine?.removeFromSuperview(); dragLine = nil
         if let m = dragEscMonitor { NSEvent.removeMonitor(m); dragEscMonitor = nil }
         let row = dragRow; dragRow = nil
+        let pending = pendingProjects; pendingProjects = nil
         guard commit, let row else {
-            setProjects(lastProjects)   // cancelled → rebuild from truth (model unchanged)
+            setProjects(pending ?? lastProjects)   // cancelled → rebuild from latest truth
             return
         }
-        if row.isSessionRow { onReorderSession(row.tag1, row.tag2, dragGap) }
-        else { onReorderProject(row.tag1, dragGap) }
+        // row.identity travels with the drop: the store can mutate mid-drag (another
+        // window, `vesta kill`, a shell exiting) — the model verifies the item at the
+        // frozen index is still the one that was picked up, else aborts as a no-op.
+        if row.isSessionRow { onReorderSession(row.tag1, row.tag2, dragGap, row.identity) }
+        else { onReorderProject(row.tag1, dragGap, row.identity) }
         // The reorder → store.broadcast → setProjects rebuilds (flag now clear). A no-op
-        // drop skips the broadcast; nothing moved on screen, so no rebuild is needed.
+        // drop skips the broadcast; the next ≤1s refresh tick re-renders.
     }
 
     /// A 2px rounded accent left-edge bar (shared by project + session rows).
@@ -1403,9 +1427,15 @@ final class TaggedRow: NSView {
     // the whole drag/up sequence to the mouseDown view even across a sidebar rebuild, so the
     // captured indices in these closures stay valid to the drop.
     var draggable = false
+    var identity = ""                      // stable id (Proj.id / PaneTree.paneID) — drop-time guard
     var onDragBegin: (() -> Void)?
     var onDragMove: ((NSPoint) -> Void)?   // cursor in window coords
     var onDragEnd: ((Bool) -> Void)?       // commit flag (false ⇒ cancelled)
+    // Every press freezes sidebar rebuilds for its (~100ms) duration: with the click
+    // resolved at mouseUp, a ~1Hz rebuild between down and up would detach this row and
+    // AppKit doesn't guarantee mouseUp delivery to a detached view — the click got lost.
+    var onPressBegin: (() -> Void)?
+    var onPressEnd: (() -> Void)?
     private var pressAt: NSPoint?
     private var dragging = false
     private static let dragThreshold: CGFloat = 4   // px before a click becomes a drag
@@ -1429,6 +1459,7 @@ final class TaggedRow: NSView {
         // select/collapse. Non-draggable rows still resolve on mouseUp identically.
         pressAt = event.locationInWindow
         dragging = false
+        onPressBegin?()   // freeze rebuilds for the whole press, not just once dragging
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -1443,8 +1474,14 @@ final class TaggedRow: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if dragging { onDragEnd?(true) }
-        else if pressAt != nil { onClick?() }   // plain click → select / collapse
+        if dragging {
+            onDragEnd?(true)   // owns the un-freeze + rebuild
+        } else {
+            // Un-freeze BEFORE the click: the click's own model mutation re-renders fresh,
+            // and a stale pending rebuild must never land on top of that.
+            onPressEnd?()
+            if pressAt != nil { onClick?() }   // plain click → select / collapse
+        }
         pressAt = nil
         dragging = false
     }

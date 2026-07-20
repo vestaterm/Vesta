@@ -16,6 +16,7 @@ struct SidebarSession {
     var paneCount: Int = 1
     var focusedPaneID: String? = nil  // tail lookup key (filled by WindowContext)
     var tail: [String] = []           // last cleaned output lines (TailStore)
+    var treeID: String = ""           // stable PaneTree.paneID — drag-reorder identity guard
 }
 
 struct SidebarProject {
@@ -25,6 +26,7 @@ struct SidebarProject {
     let active: Bool
     var color: NSColor? = nil    // custom project tint (nil ⇒ accent)
     var sessions: [SidebarSession]  // var so AppDelegate can inject ports/dirty per session
+    var id: String = ""          // stable Proj.id — drag-reorder identity guard
 }
 
 // MARK: - Project/Session model
@@ -364,7 +366,8 @@ final class Workspace {
                 return SidebarSession(label: label, active: isActive,
                                      attention: attn, heat: heat, heatAge: age,
                                      paneCount: tree.paneCount,
-                                     focusedPaneID: tree.isDormant ? nil : tree.focusedPaneID)
+                                     focusedPaneID: tree.isDormant ? nil : tree.focusedPaneID,
+                                     treeID: tree.paneID)
             }
             return SidebarProject(
                 name: proj.name,
@@ -372,7 +375,8 @@ final class Workspace {
                 expanded: proj.expanded,
                 active: pi == activeP,
                 color: proj.color,
-                sessions: sessions
+                sessions: sessions,
+                id: proj.id
             )
         }
     }
@@ -634,9 +638,12 @@ final class Workspace {
     }
 
     /// Move a whole project block from `from` to drop-gap `gap`. Keeps activeP on the same
-    /// project, persists project order (projects.json + windows.json), refreshes all windows.
-    func moveProject(from: Int, gap: Int) {
-        guard projs.indices.contains(from) else { return }
+    /// project and refreshes all windows. Order is RESTORED from windows.json (hydrate keeps
+    /// array order); projects.json only re-layers name/path/color — restorePersisted never
+    /// reorders. `id` is the identity captured at drag start: the store can mutate mid-drag
+    /// (another window, `vesta kill`), so a shifted index aborts as a no-op.
+    func moveProject(from: Int, gap: Int, id: String) {
+        guard projs.indices.contains(from), projs[from].id == id else { return }
         let order = Self.movedOrder(count: projs.count, from: from, gap: gap)
         guard order != Array(projs.indices) else { return }   // no-op drop
         projs = order.map { projs[$0] }
@@ -647,8 +654,11 @@ final class Workspace {
 
     /// Reorder a session WITHIN its project (`p`) from `from` to drop-gap `gap`. Keeps the
     /// active session pinned; order persists via windows.json (serialize writes session order).
-    func moveSession(_ p: Int, from: Int, gap: Int) {
-        guard projs.indices.contains(p), projs[p].sessions.indices.contains(from) else { return }
+    /// `id` is the dragged tree's paneID captured at drag start — a store that shifted
+    /// mid-drag (session closed elsewhere) no longer matches, and the drop aborts as a no-op.
+    func moveSession(_ p: Int, from: Int, gap: Int, id: String) {
+        guard projs.indices.contains(p), projs[p].sessions.indices.contains(from),
+              projs[p].sessions[from].paneID == id else { return }
         let order = Self.movedOrder(count: projs[p].sessions.count, from: from, gap: gap)
         guard order != Array(projs[p].sessions.indices) else { return }   // no-op drop
         projs[p].sessions = order.map { projs[p].sessions[$0] }
