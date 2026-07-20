@@ -4,13 +4,15 @@ import AppKit
 /// writes straight to Vesta's own config (creating it, seeded from ghostty).
 /// Sidebar width applies live; colors/fonts/divider apply on relaunch.
 @MainActor
-final class SettingsWindowController: NSWindowController {
+final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
     private let onSidebarWidth: (CGFloat) -> Void
     private let onImport: () -> Void
     private let onOpenConfig: () -> Void
     private let onReload: () -> Void
     private let onReset: () -> Void
     private var configView: NSTextView?   // full-config editor (any ghostty key)
+    private var editorState: NSTextField?  // "unsaved changes" / "saved" next to the buttons
+    private var keyMonitor: Any?           // ⌘S while the settings window is key
     private var accent: NSColor = .controlAccentColor   // selection rings in the icon grid
     private var iconCells: [IconCell] = []
     private var pluginBoxes: [NSButton] = []   // for the plugin filter field
@@ -47,6 +49,14 @@ final class SettingsWindowController: NSWindowController {
         build(theme: theme)
         refreshLocks()
         win.center()
+        // ⌘S saves the config editor whenever this window is key (no menu item needed).
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self, self.window?.isKeyWindow == true,
+                  e.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
+                  e.charactersIgnoringModifiers == "s" else { return e }
+            self.saveConfigTapped()
+            return nil
+        }
     }
     required init?(coder: NSCoder) { fatalError("no xib") }
 
@@ -230,11 +240,16 @@ final class SettingsWindowController: NSWindowController {
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticSpellingCorrectionEnabled = false
         tv.string = currentConfigText()
+        tv.delegate = self   // dirty tracking → ⌘S save + edited indicator
         scroll.documentView = tv
         self.configView = tv
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
 
-        let saveRow = NSStackView(views: [button("Reload", #selector(reloadTapped)), button("Save config", #selector(saveConfigTapped))])
+        let state = NSTextField(labelWithString: "")
+        state.font = .systemFont(ofSize: 11)
+        state.textColor = .secondaryLabelColor
+        editorState = state
+        let saveRow = NSStackView(views: [button("Reload", #selector(reloadTapped)), button("Save config", #selector(saveConfigTapped)), state])
         saveRow.orientation = .horizontal; saveRow.spacing = 8
 
         addSection("Configuration", [note, btns, scroll, saveRow])
@@ -480,8 +495,20 @@ final class SettingsWindowController: NSWindowController {
         try? FileManager.default.createDirectory(
             atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         try? text.write(toFile: path, atomically: true, encoding: .utf8)
-
+        setEditorDirty(false, justSaved: true)
         onReload()
+    }
+
+    /// Config-editor dirty state: native edited dot on the window + a small label.
+    private func setEditorDirty(_ dirty: Bool, justSaved: Bool = false) {
+        window?.isDocumentEdited = dirty
+        editorState?.stringValue = dirty ? "unsaved changes — ⌘S to save" : (justSaved ? "saved" : "")
+        editorState?.textColor = dirty ? .secondaryLabelColor : .tertiaryLabelColor
+    }
+
+    func textDidChange(_ notification: Notification) {
+        guard (notification.object as? NSTextView) === configView else { return }
+        setEditorDirty(true)
     }
 
     /// Change the terminal font (ghostty `font-family`) and apply immediately.
@@ -491,6 +518,7 @@ final class SettingsWindowController: NSWindowController {
             ? String(title.dropLast(Self.defaultSuffix.count)) : title
         setVestaConfigKey("font-family", name)
         configView?.string = currentConfigText()
+        setEditorDirty(false)
         onReload()
     }
 
@@ -503,6 +531,7 @@ final class SettingsWindowController: NSWindowController {
         guard a.runModal() == .alertFirstButtonReturn else { return }
         onReset()
         configView?.string = currentConfigText()
+        setEditorDirty(false)
     }
 
     /// Filter the (potentially huge) plugin list by substring — hidden rows collapse out
