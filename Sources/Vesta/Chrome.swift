@@ -257,7 +257,7 @@ final class VestaWindowController: NSWindowController {
         // material; ON can't retrofit a blur into an existing window, only re-tint.
         rootGlass?.isHidden = !glass
         titlebarBand?.isHidden = !glass
-        titlebarBand?.layer?.backgroundColor = surface.withAlphaComponent(VestaConfig.shared.sidebarOpacity).cgColor
+        titlebarBand?.layer?.backgroundColor = surface.withAlphaComponent(VestaConfig.shared.terminalOpacity).cgColor
         sidebar?.layer?.backgroundColor = glass
             ? surface.withAlphaComponent(VestaConfig.shared.sidebarOpacity).cgColor : surface.cgColor
         if let projScroll { applyScrollAppearance(projScroll) }
@@ -353,14 +353,14 @@ final class VestaWindowController: NSWindowController {
                 fx.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             ])
             rootGlass = fx
-            // Unified glass titlebar: tint the strip over the terminal to MATCH the
-            // sidebar, so the top band reads as one continuous piece of glass. Constrained
-            // to START at the sidebar's edge (below) — overlapping the sidebar would
-            // double-tint it (0.55 over 0.55) and re-create the seam.
+            // Titlebar strip over the terminal: matches the TERMINAL column it caps
+            // (surface color at the terminal's own opacity), so the band and the pane read
+            // as one piece. Constrained to START at the sidebar's edge (below) — overlapping
+            // the sidebar would double-tint it and re-create the seam.
             let band = NSView()
             band.wantsLayer = true
             band.translatesAutoresizingMaskIntoConstraints = false
-            band.layer?.backgroundColor = surface.withAlphaComponent(VestaConfig.shared.sidebarOpacity).cgColor
+            band.layer?.backgroundColor = surface.withAlphaComponent(VestaConfig.shared.terminalOpacity).cgColor
             titlebarBand = band
         }
 
