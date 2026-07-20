@@ -125,7 +125,9 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
         scroll.scrollerStyle = .overlay            // floats over content, reserves no width
         scroll.autohidesScrollers = true           // hidden until the list actually overflows
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.contentView = FlippedClipView()     // top-anchor the list so it hugs from the top
+        let clip = FlippedClipView()               // top-anchor the list so it hugs from the top
+        clip.drawsBackground = false               // replacement clip defaults OPAQUE → painted a
+        scroll.contentView = clip                  // "second background" over the card glass
         scroll.documentView = listStack
 
         panel.addSubview(input)
