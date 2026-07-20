@@ -30,7 +30,8 @@ public enum VestaShellIntegration {
     /// marking; we emit no prompt marks and care only about an accurate exit code, so FIRST is
     /// what we want.)
     public static let zshEnv = """
-    # Vesta zsh shell integration (auto-generated; safe to delete — vestad regenerates it).
+    # Vesta zsh shell integration (auto-generated; safe to delete — new shells then skip
+    # integration until the next vestad restart regenerates it).
     #
     # vestad spawns login shells directly, so ghostty's automatic shell integration never
     # runs here. This restores your normal zsh startup, then emits OSC 133 command marks so

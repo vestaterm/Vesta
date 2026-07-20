@@ -59,7 +59,11 @@ final class Session {
         // the user's real ZDOTDIR (only when they had one) so `.zshenv` can restore it. Other
         // shells are left untouched → graceful degradation (attention rail still works).
         let shell = getenv("SHELL").flatMap { String(cString: $0) } ?? "/bin/zsh"
-        let zdotdir = (shellIntegration && VestaShellIntegration.isZsh(shell))
+        // FAIL OPEN: swap ZDOTDIR only if our .zshenv actually exists — pointing zsh at an
+        // empty dir would skip the restore AND the user's entire config for every new shell.
+        let zshenv = MuxPaths.shellIntegrationZsh + "/.zshenv"
+        let zdotdir = (shellIntegration && VestaShellIntegration.isZsh(shell)
+                       && FileManager.default.fileExists(atPath: zshenv))
             ? MuxPaths.shellIntegrationZsh : nil
         let origZDOTDIR = getenv("ZDOTDIR").flatMap { String(cString: $0) }
         // forkpty a login shell.
