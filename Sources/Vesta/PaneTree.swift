@@ -22,14 +22,11 @@ func terminalBacking(_ c: NSColor) -> CGColor {
 /// NSSplitView with a wide (grabbable) divider that *draws* as a 1px hairline —
 /// so it looks like the demo's thin split line but is easy to drag-resize.
 final class VestaSplitView: NSSplitView {
-    /// Gutter paint for see-through terminals (set by PaneTree; tracks the theme). The
-    /// divider gutter must not show raw desktop between translucent panes.
-    var gutterColor: NSColor = .clear
     override var dividerThickness: CGFloat { VestaConfig.shared.dividerWidth }
-    override var dividerColor: NSColor {
-        VestaConfig.shared.terminalOpacity < 1
-            ? gutterColor.withAlphaComponent(VestaConfig.shared.terminalOpacity) : .clear
-    }
+    // Always clear: on translucent terminals a painted gutter reads as an opaque bar
+    // between glass panes (user feedback) — the 1px drawn hairline is separation enough,
+    // and the glass/desktop behind shows through the gutter just like the panes.
+    override var dividerColor: NSColor { .clear }
     override func drawDivider(in rect: NSRect) {
         NSColor(white: 1, alpha: 0.07).setFill()
         if isVertical {
@@ -298,7 +295,6 @@ final class PaneTree {
         if zoomed { unzoom() }
 
         let sv = VestaSplitView()
-        sv.gutterColor = theme.background
         sv.isVertical = (s == .vertical)          // vertical split = side-by-side
         // frame-based layout: the mask + frame we set below only apply when this
         // is true. (false here is why split panes collapsed to zero size.)
@@ -529,7 +525,6 @@ final class PaneTree {
     private func buildNode(_ node: [String: Any]) -> NSView {
         if let a = node["a"] as? [String: Any], let b = node["b"] as? [String: Any] {
             let sv = VestaSplitView()
-        sv.gutterColor = theme.background
             sv.isVertical = (node["vertical"] as? Bool) ?? false
             sv.translatesAutoresizingMaskIntoConstraints = true
             for child in [buildNode(a), buildNode(b)] {
