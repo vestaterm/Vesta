@@ -88,7 +88,10 @@ final class Workspace {
         self.store = store
         self.theme = theme
         container.wantsLayer = true
-        container.layer?.backgroundColor = theme.background.cgColor
+        // Terminal glass: an opaque backing here would block ghostty's background-opacity
+        // from ever reaching the desktop — un-paint it when the terminal is translucent.
+        container.layer?.backgroundColor = VestaConfig.shared.terminalOpacity < 1
+            ? NSColor.clear.cgColor : theme.background.cgColor
 
         body.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(body)
@@ -713,7 +716,8 @@ final class Workspace {
     /// the new theme for sessions created afterwards.
     func applyTheme(_ t: Theme) {
         theme = t
-        container.layer?.backgroundColor = t.background.cgColor
+        container.layer?.backgroundColor = VestaConfig.shared.terminalOpacity < 1
+            ? NSColor.clear.cgColor : t.background.cgColor
         for p in projs { for s in p.sessions { s.applyTheme(t) } }
     }
 
