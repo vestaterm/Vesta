@@ -228,8 +228,8 @@ outer: while true {
                              "End them (exit their shells, or `vesta kill <id>`) to let the new daemon take over.\r\n")
                     break outer
                 }
-            case .sessions:
-                break              // not used by the pump
+            case .sessions, .upgradeResult:
+                break              // not used by the pump (the relay never sends list/upgrade)
             }
         }
     }

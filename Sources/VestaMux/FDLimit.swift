@@ -49,6 +49,17 @@ public func setCloseOnExec(_ fd: Int32) -> Bool {
     return fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0
 }
 
+/// Inverse of `setCloseOnExec`: clear FD_CLOEXEC so this fd DELIBERATELY survives an `execve`.
+/// Used by the zero-downtime self-exec upgrade — the PTY master fds and the single-instance
+/// lock fd must persist by number across `execv(newBinary)` so the new image can re-adopt the
+/// live shells (and keep holding the lock, so no competing daemon slips into the swap window).
+@discardableResult
+public func clearCloseOnExec(_ fd: Int32) -> Bool {
+    let flags = fcntl(fd, F_GETFD)
+    if flags < 0 { return false }
+    return fcntl(fd, F_SETFD, flags & ~FD_CLOEXEC) == 0
+}
+
 public func fdLimitSelfCheck() {
     let INF = rlim_t((rlim_t(1) << 63) - 1)
     // Unlimited hard cap → take the full 8192 target.
