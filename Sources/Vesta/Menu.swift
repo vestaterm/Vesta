@@ -25,6 +25,9 @@ func makeMainMenu(target: AppDelegate) -> NSMenu {
     app.addItem(withTitle: "Import ghostty config…", action: #selector(AppDelegate.importGhosttyConfig), keyEquivalent: "")
         .target = target
     app.addItem(.separator())
+    app.addItem(withTitle: "Make Vesta the Default Terminal", action: #selector(AppDelegate.makeDefaultTerminal), keyEquivalent: "")
+        .target = target
+    app.addItem(.separator())
     app.addItem(withTitle: "Hide Vesta", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
     let hideOthers = app.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
     hideOthers.keyEquivalentModifierMask = [.command, .option]

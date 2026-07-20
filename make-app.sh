@@ -117,6 +117,13 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
       <key>LSHandlerRank</key>         <string>Alternate</string>
       <key>LSItemContentTypes</key>    <array><string>public.folder</string></array>
     </dict>
+    <!-- Shell role for unix executables: what "Make Vesta the Default Terminal"
+         registers us as (macOS's notion of the default terminal). -->
+    <dict>
+      <key>CFBundleTypeName</key>      <string>Unix Executable</string>
+      <key>CFBundleTypeRole</key>      <string>Shell</string>
+      <key>LSItemContentTypes</key>    <array><string>public.unix-executable</string></array>
+    </dict>
   </array>
   <!-- Finder right-click > Services > New Vesta Session Here -->
   <key>NSServices</key>

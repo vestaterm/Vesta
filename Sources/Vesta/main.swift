@@ -952,6 +952,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu actions
 
+    /// Register Vesta as the Shell-role handler for unix executables — macOS's notion of
+    /// "default terminal" (same mechanism as Ghostty/iTerm2). Requires the installed .app
+    /// (Info.plist declares the Shell role); the bare dev binary has no bundle, so the
+    /// error toast is the expected outcome there.
+    @objc func makeDefaultTerminal() {
+        NSWorkspace.shared.setDefaultApplication(
+            at: Bundle.main.bundleURL, toOpen: .unixExecutable
+        ) { [weak self] err in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.showToast(err == nil
+                        ? "vesta is now the default terminal"
+                        : "couldn't set default terminal: \(err!.localizedDescription)")
+                }
+            }
+        }
+    }
+
     private var aboutWC: AboutWindowController?
     @objc func showAbout() {
         if aboutWC == nil { aboutWC = AboutWindowController(theme: theme) }
