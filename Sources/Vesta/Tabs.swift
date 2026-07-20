@@ -2,13 +2,17 @@ import AppKit
 
 // MARK: - Sidebar data types (consumed by Task B's Chrome rendering)
 
+/// Card heat — paint only, never geometry: what a BACKGROUND session wants you to know.
+enum SessionHeat { case none, ok, warn, need }
+
 struct SidebarSession {
     let label: String
     let active: Bool
     var ports: [Int] = []   // listening TCP ports of the session's foreground process tree
     var dirty: Int = 0      // uncommitted changes in the session's cwd (git status --porcelain)
     var attention: Bool = false  // bell/desktop-notification fired while session was not active
-    var attentionAge: String? = nil  // "3m" since attention rang (heat age on the card)
+    var heat: SessionHeat = .none
+    var heatAge: String? = nil       // "3m" since the heat event (bell / command exit)
     var paneCount: Int = 1
     var focusedPaneID: String? = nil  // tail lookup key (filled by WindowContext)
     var tail: [String] = []           // last cleaned output lines (TailStore)
@@ -339,14 +343,25 @@ final class Workspace {
                 // Prefer worktree branch tag when available.
                 if let br = worktreeBranch[ObjectIdentifier(tree)] { label = "⎇ \(br)" }
                 let oid = ObjectIdentifier(tree)
+                let isActive = pi == activeP && si == activeS
                 let attn = attention.contains(oid)
-                var age: String? = nil
-                if attn, let at = attentionAt[oid] {
-                    let m = Int(Date().timeIntervalSince(at) / 60)
-                    age = m < 1 ? "now" : (m < 60 ? "\(m)m" : "\(m / 60)h")
+                // Heat: waiting-for-you (bell) beats last-command ✓/✗; the ACTIVE session
+                // carries none (you're looking at it), and exits are cleared on select
+                // (markSeen) so heat always means "unseen news".
+                var heat: SessionHeat = .none
+                var heatAt: Date? = nil
+                if attn {
+                    heat = .need; heatAt = attentionAt[oid]
+                } else if !isActive, !tree.isDormant, let pid = tree.focusedPaneID,
+                          let ex = TailStore.shared.exitState(pid) {
+                    heat = ex.code == 0 ? .ok : .warn; heatAt = ex.at
                 }
-                return SidebarSession(label: label, active: pi == activeP && si == activeS,
-                                     attention: attn, attentionAge: age,
+                let age: String? = heatAt.map {
+                    let m = Int(Date().timeIntervalSince($0) / 60)
+                    return m < 1 ? "now" : (m < 60 ? "\(m)m" : "\(m / 60)h")
+                }
+                return SidebarSession(label: label, active: isActive,
+                                     attention: attn, heat: heat, heatAge: age,
                                      paneCount: tree.paneCount,
                                      focusedPaneID: tree.isDormant ? nil : tree.focusedPaneID)
             }
@@ -648,6 +663,7 @@ final class Workspace {
         mountLive()
         let cleared = ObjectIdentifier(activeTree)                // clear ring for the focused session
         attention.remove(cleared); attentionAt[cleared] = nil
+        TailStore.shared.markSeen(activeTree.paneIDs)             // its ✓/✗ heat is seen now
         handleChange()                                   // broadcast → other windows reconcile
     }
 
