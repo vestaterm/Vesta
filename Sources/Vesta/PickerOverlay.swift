@@ -39,6 +39,7 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
     private let listStack = NSStackView()
     private let opts: PickOpts
     private weak var panelView: NSView?      // the floating card; scrim-clicks outside it cancel
+    private var listHeight: NSLayoutConstraint?   // auto-scale: measured rows, capped
 
     /// Designated init: index-based selection over `items`.
     private init(theme: Theme, items: [PickItem], multiSelect: Bool, isPrompt: Bool,
@@ -151,11 +152,24 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
             fixed.priority = .defaultHigh   // yields to the window cap above
             cons.append(fixed)
         } else {
-            let hug = scroll.heightAnchor.constraint(equalTo: listStack.heightAnchor)
-            hug.priority = .defaultHigh     // hug content; the caps below win when exceeded
-            cons += [hug, scroll.heightAnchor.constraint(lessThanOrEqualToConstant: opts.maxHeight)]
+            // Explicit measured height, updated on every rebuild (see syncListHeight):
+            // hugging the documentView's anchor through the clip view proved unreliable —
+            // the panel stayed at the cap after filtering shrank the list.
+            let h = scroll.heightAnchor.constraint(equalToConstant: opts.maxHeight)
+            h.priority = .defaultHigh       // yields to the window cap above
+            cons.append(h)
+            listHeight = h
         }
         NSLayoutConstraint.activate(cons)
+        syncListHeight()
+    }
+
+    /// Auto-scale: list area = measured rows, capped at maxHeight (then scrolls) —
+    /// grows and SHRINKS live as the filter changes.
+    private func syncListHeight() {
+        guard let listHeight else { return }
+        listStack.layoutSubtreeIfNeeded()
+        listHeight.constant = min(max(listStack.fittingSize.height, 26), opts.maxHeight)
     }
 
     private func apply(query: String) {
@@ -163,6 +177,7 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
         shown = items.indices.filter { q.isEmpty || items[$0].label.lowercased().contains(q) }
         cursor = 0
         rebuildRows()
+        syncListHeight()
     }
 
     private static let rowFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
