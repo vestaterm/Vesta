@@ -14,6 +14,7 @@ final class TailStore {
     private var tails: [String: [String]] = [:]      // paneID → last lines, newest last
     private var partial: [String: String] = [:]      // trailing unterminated line (the prompt)
     private var lastActivity: [String: Date] = [:]
+    private var lastExit: [String: (code: Int, at: Date)] = [:]  // OSC 133;D per pane (card heat)
     private var notifyScheduled = false
 
     /// Cleaned tail for a pane: complete lines plus the current partial (prompt) line.
@@ -31,9 +32,20 @@ final class TailStore {
 
     func activity(_ paneID: String) -> Date? { lastActivity[paneID] }
 
+    /// Last command's exit (code + when), from shell-integration OSC 133;D markers.
+    /// nil when the shell doesn't emit them, or after markSeen.
+    func exitState(_ paneID: String) -> (code: Int, at: Date)? { lastExit[paneID] }
+
+    /// The user looked at the session — its ✓/✗ heat is old news now.
+    func markSeen(_ paneIDs: [String]) { paneIDs.forEach { lastExit[$0] = nil } }
+
     func ingest(paneID: String, chunk: Data) {
         guard let s = String(data: chunk, encoding: .utf8) ?? String(data: chunk, encoding: .isoLatin1),
               !s.isEmpty else { return }
+        // Exit-status heat: scan ONLY the fresh chunk (not the carried partial — a marker
+        // parked in the partial would re-record every ingest and pin its age at "now").
+        // ponytail: a marker split across chunks is missed; fine, the next command re-emits.
+        if let code = Self.lastExitMarker(s) { lastExit[paneID] = (code, Date()) }
         let text = (partial[paneID] ?? "") + s
         var lines = tails[paneID] ?? []
         var rest = Substring(text)
@@ -53,7 +65,27 @@ final class TailStore {
     }
 
     func forget(_ paneID: String) {
-        tails[paneID] = nil; partial[paneID] = nil; lastActivity[paneID] = nil
+        tails[paneID] = nil; partial[paneID] = nil; lastActivity[paneID] = nil; lastExit[paneID] = nil
+    }
+
+    /// Last `ESC ] 133 ; D [; code] (BEL | ESC \)` in a chunk → exit code (no code ⇒ 0).
+    /// Emitted by ghostty/iTerm2-style shell integration when a command finishes.
+    nonisolated static func lastExitMarker(_ s: String) -> Int? {
+        var result: Int? = nil
+        var rest = Substring(s)
+        while let r = rest.range(of: "\u{1B}]133;D") {
+            var tail = rest[r.upperBound...]
+            var digits = ""
+            if tail.first == ";" {
+                tail.removeFirst()
+                while let c = tail.first, c.isNumber { digits.append(c); tail.removeFirst() }
+            }
+            if tail.first == "\u{07}" || tail.hasPrefix("\u{1B}\\") {
+                result = Int(digits) ?? 0
+            }
+            rest = rest[r.upperBound...]
+        }
+        return result
     }
 
     private func scheduleNotify() {
@@ -114,5 +146,11 @@ func tailStoreSelfCheck() {
     assert(ts.lines("t") == ["ok green", "❯"], "split SGR survives chunk boundary: \(ts.lines("t"))")
     ts.forget("t")
     assert(ts.lines("t").isEmpty, "forget clears")
+    // OSC 133;D exit markers (shell integration) → heat state.
+    assert(TailStore.lastExitMarker("out\u{1B}]133;D;1\u{07}❯ ") == 1, "failure code parsed")
+    assert(TailStore.lastExitMarker("\u{1B}]133;D\u{1B}\\") == 0, "bare D means success")
+    assert(TailStore.lastExitMarker("\u{1B}]133;D;0\u{07}x\u{1B}]133;D;2\u{07}") == 2, "last marker wins")
+    assert(TailStore.lastExitMarker("plain text") == nil, "no marker, no heat")
+    assert(TailStore.lastExitMarker("\u{1B}]133;D;1") == nil, "unterminated marker ignored")
     print("tailStoreSelfCheck OK")
 }

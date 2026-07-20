@@ -152,6 +152,7 @@ final class VestaWindowController: NSWindowController {
     /// and the accessory + traffic lights are lifted back above it. ponytail: view grafts are
     /// the only durable handle AppKit gives for the titlebar.
     private var rootGlass: GlassView?   // glass mode's behind-window material (root-level)
+    static let heatAmber = NSColor(srgbRed: 0.88, green: 0.70, blue: 0.47, alpha: 1)  // unseen-failure rail
     private var titlebarBand: NSView?   // glass mode's full-width titlebar tint strip
 
     func flattenTitlebar() {
@@ -610,7 +611,12 @@ final class VestaWindowController: NSWindowController {
         if sess.paneCount > 1 { meta.append("⊞\(sess.paneCount)") }
         if sess.dirty > 0 { meta.append("●\(sess.dirty)") }
         if let port = sess.ports.first { meta.append(":\(port)") }
-        if sess.attention { meta.append(sess.attentionAge ?? "●") }
+        switch sess.heat {
+        case .need: meta.append(sess.heatAge ?? "●")
+        case .warn: meta.append("✗ · \(sess.heatAge ?? "now")")
+        case .ok:   meta.append("✓ · \(sess.heatAge ?? "now")")
+        case .none: break
+        }
         var titleViews: [NSView] = [label]
         // Split schematic (vesta-sidebar-panes): pane-count cells, focused-first lit.
         // ponytail: count-based grid, not real topology — read PaneTree.serializeLayout
@@ -621,7 +627,11 @@ final class VestaWindowController: NSWindowController {
         if !meta.isEmpty {
             let m = NSTextField(labelWithString: meta.joined(separator: " · "))
             m.font = Fonts.mono(9.5)
-            m.textColor = sess.attention ? theme.accent : txt(.faint)
+            m.textColor = switch sess.heat {
+            case .need, .ok: theme.accent
+            case .warn: Self.heatAmber
+            case .none: txt(.faint)
+            }
             m.setContentCompressionResistancePriority(.required, for: .horizontal)
             m.setContentHuggingPriority(.required, for: .horizontal)
             titleViews.append(m)
@@ -675,8 +685,15 @@ final class VestaWindowController: NSWindowController {
         closeBtn.translatesAutoresizingMaskIntoConstraints = false
         closeBtn.alphaValue = 0   // hover-revealed: no permanent destructive target
 
-        // Heat rail (paint only): waiting-for-you (bell/attention) tints the inner edge.
-        let bar = accentBar(sess.attention ? theme.accent : .clear)
+        // Heat rail (paint only, never geometry): bright accent = waiting for you,
+        // amber = unseen failure, soft accent = unseen success.
+        let railColor: NSColor = switch sess.heat {
+        case .need: theme.accent
+        case .warn: Self.heatAmber
+        case .ok:   theme.accent.withAlphaComponent(0.45)
+        case .none: .clear
+        }
+        let bar = accentBar(railColor)
 
         let row = TaggedRow()
         row.tag1 = pi; row.tag2 = si
