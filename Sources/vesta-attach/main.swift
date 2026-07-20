@@ -80,15 +80,24 @@ func spawnDaemon() {
 }
 if !socketAlive(MuxPaths.daemonSocket) { spawnDaemon() }
 
-// ── connect ──────────────────────────────────────────────────────────────────
-let sock = socket(AF_UNIX, SOCK_STREAM, 0)
-guard sock >= 0 else { exit(1) }
-var addr = makeSockaddrUn(MuxPaths.daemonSocket)
-let slen = socklen_t(MemoryLayout<sockaddr_un>.size)
-let connected = withUnsafePointer(to: &addr) {
-    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(sock, $0, slen) }
+// Open a fresh blocking connection to the daemon socket. Returns the connected fd, or
+// nil if the daemon isn't reachable. Used for the initial attach AND for reconnect.
+func connectSocket() -> Int32? {
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    if fd < 0 { return nil }
+    var addr = makeSockaddrUn(MuxPaths.daemonSocket)
+    let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+    let ok = withUnsafePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) == 0 }
+    }
+    if !ok { close(fd); return nil }
+    return fd
 }
-guard connected == 0 else { writeErr("vesta-attach: daemon unavailable\n"); exit(1) }
+
+// ── connect ──────────────────────────────────────────────────────────────────
+// Mutable: a daemon restart/crash (or a transient socket blip) swaps in a fresh fd via
+// reconnect() below, transparently resuming the relay without disturbing the ghostty PTY.
+guard var sock = connectSocket() else { writeErr("vesta-attach: daemon unavailable\n"); exit(1) }
 
 // ── raw mode on our controlling terminal (the ghostty PTY = our stdin/stdout) ─
 // Without this the PTY slave stays in cooked mode: the kernel line discipline
@@ -179,6 +188,34 @@ signal(SIGWINCH) { _ in
     }
 }
 
+// ── reconnect ────────────────────────────────────────────────────────────────
+// A daemon-socket EOF/error is NOT session death: the daemon may have restarted (in-place
+// upgrade), crashed, or hit a transient blip while the shell it hosts is still alive. Retry
+// connect + re-hello for ~10s (250ms backoff), transparently resuming the byte relay; only
+// give up (return false → relay exits) if the retries exhaust.
+//
+// The PTY side stays undisturbed throughout: we never EOF ghostty. Keystrokes typed during
+// the outage queue in the kernel PTY buffer and flush after we reattach. Re-hello uses the
+// SAME paneID, so Daemon.hello REATTACHES to the live pane (never a new session) and replays
+// its ring — the screen comes back byte-exact. If the daemon lost the session (hard crash
+// with no persisted shell), hello spawns a fresh shell, the best possible recovery.
+@MainActor func reconnect() -> Bool {
+    let deadline = Date().addingTimeInterval(10)
+    while Date() < deadline {
+        usleep(250_000)   // backoff first: the daemon needs a beat to rebind its socket
+        // Heal a full daemon crash: respawn it if the socket is gone (spawnDaemon waits for it).
+        if !socketAlive(MuxPaths.daemonSocket) { spawnDaemon() }
+        guard let fd = connectSocket() else { continue }
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK)
+        sock = fd; gSock = fd            // route send()/SIGWINCH at the new fd
+        inbuf.removeAll(keepingCapacity: true)   // the old frame stream is gone; start clean
+        let (c, r) = currentWinsize()
+        if send(.hello(paneID: paneID, cols: c, rows: r, cwd: spawnCwd)) { return true }
+        close(fd); sock = -1
+    }
+    return false
+}
+
 // ── pump loop: stdin → daemon(input), daemon(server frames) → stdout ─────────
 _ = fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL, 0) | O_NONBLOCK)
 _ = fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) | O_NONBLOCK)
@@ -198,16 +235,26 @@ outer: while true {
         // loop would re-select instantly forever, spinning at 100% CPU. Only EINTR and
         // EAGAIN/EWOULDBLOCK are transient; anything else (EIO) means detach cleanly.
         if k < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK { break }
-        if k > 0, !send(.input(Data(tmp[0..<k]))) { break }   // write failed → teardown, like daemon EOF
+        if k > 0, !send(.input(Data(tmp[0..<k]))) {
+            // Input write failed → the daemon socket broke. Reconnect and resend this chunk on
+            // the new fd so the keystrokes aren't lost; only tear down if reconnect exhausts.
+            if !reconnect() { break outer }
+            _ = send(.input(Data(tmp[0..<k])))
+        }
     }
     // daemon → stdout (decode server frames; write output bytes).
     if __darwin_fd_isset(sock, &rset) != 0 {
         var tmp = [UInt8](repeating: 0, count: 65536)
         let k = read(sock, &tmp, tmp.count)
-        if k == 0 { break }   // daemon closed the socket → exit
+        // Daemon closed the socket (restart/crash/blip). Don't treat as session death:
+        // reconnect + re-hello, resuming the relay. Only exit if the retries exhaust.
+        if k == 0 { if reconnect() { continue } else { break outer } }
         // sock is non-blocking: a spurious EAGAIN/EWOULDBLOCK (or EINTR) is transient,
-        // so don't treat it as EOF and don't process stale bytes. Only a real error breaks.
-        if k < 0 { if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }; break }
+        // so don't treat it as EOF and don't process stale bytes. A real error → reconnect.
+        if k < 0 {
+            if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
+            if reconnect() { continue } else { break outer }
+        }
         inbuf.append(Data(tmp[0..<k]))
         while let f = decodeServerFrame(from: &inbuf) {
             switch f {
