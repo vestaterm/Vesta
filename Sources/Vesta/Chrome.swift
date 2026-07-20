@@ -544,17 +544,33 @@ final class VestaWindowController: NSWindowController {
         hairline.heightAnchor.constraint(equalToConstant: 1).isActive = true
         hairline.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        // Collapsed projects keep their session count visible (no information lost).
-        let count = NSTextField(labelWithString: p.expanded ? "" : "\(p.sessions.count)")
+        // Session count is always visible (expanded or not — no information lost).
+        let count = NSTextField(labelWithString: "\(p.sessions.count)")
         count.font = Fonts.mono(9.5)
         count.textColor = txt(.faint)
-        count.setContentHuggingPriority(.required, for: .horizontal)
+        count.alignment = .center
+        count.translatesAutoresizingMaskIntoConstraints = false
 
         let addBtn = tinyButton(symbol: "plus", label: "New session") { [weak self] in self?.onNewSession(pi) }
         addBtn.translatesAutoresizingMaskIntoConstraints = false
         addBtn.alphaValue = 0   // hover-revealed
 
-        let content = NSStackView(views: [nameLabel, hairline, count, addBtn])
+        // Count and + share one fixed-width trailing slot: the count shows at rest, and on
+        // hover the + swaps in over the same position (count fades out) — no width jump.
+        let slot = NSView()
+        slot.translatesAutoresizingMaskIntoConstraints = false
+        slot.setContentHuggingPriority(.required, for: .horizontal)
+        slot.addSubview(count)
+        slot.addSubview(addBtn)
+        NSLayoutConstraint.activate([
+            slot.widthAnchor.constraint(equalToConstant: 18),
+            count.centerXAnchor.constraint(equalTo: slot.centerXAnchor),
+            count.centerYAnchor.constraint(equalTo: slot.centerYAnchor),
+            addBtn.centerXAnchor.constraint(equalTo: slot.centerXAnchor),
+            addBtn.centerYAnchor.constraint(equalTo: slot.centerYAnchor),
+        ])
+
+        let content = NSStackView(views: [nameLabel, hairline, slot])
         content.orientation = .horizontal
         content.alignment = .centerY
         content.spacing = 8
@@ -566,7 +582,10 @@ final class VestaWindowController: NSWindowController {
         row.wantsLayer = true
         row.layer?.cornerRadius = 5
         row.hoverHighlight = false   // dividers don't need a hover wash; the + reveal is enough
-        row.onHover = { [weak addBtn] inside in addBtn?.animator().alphaValue = inside ? 1 : 0 }
+        row.onHover = { [weak addBtn, weak count] inside in
+            addBtn?.animator().alphaValue = inside ? 1 : 0   // + reveals
+            count?.animator().alphaValue = inside ? 0 : 1    // count hides — same slot
+        }
 
         row.addSubview(content)
         NSLayoutConstraint.activate([
