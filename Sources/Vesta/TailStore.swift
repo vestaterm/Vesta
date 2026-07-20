@@ -16,6 +16,12 @@ final class TailStore {
     private var partial: [String: String] = [:]      // trailing unterminated line (the prompt)
     private var lastActivity: [String: Date] = [:]
     private var lastExit: [String: (code: Int, at: Date)] = [:]  // OSC 133;D per pane (card heat)
+    private var cmdStart: [String: Date] = [:]                    // OSC 133;C per pane
+
+    /// Fired on each command completion (paneID, exit code, duration since its 133;C).
+    /// AppDelegate uses this for background-attention — the old pid heuristic can't see
+    /// through the persist relay (ghostty's pty only ever runs vesta-attach).
+    var onCommandDone: ((String, Int, TimeInterval) -> Void)?
     private var notifyScheduled = false
 
     /// Cleaned tail for a pane: complete lines plus the current partial (prompt) line.
@@ -40,13 +46,24 @@ final class TailStore {
     /// The user looked at the session — its ✓/✗ heat is old news now.
     func markSeen(_ paneIDs: [String]) { paneIDs.forEach { lastExit[$0] = nil } }
 
+    /// `ESC ] 133 ; C` anywhere in a chunk — a command just started (shell integration).
+    nonisolated static func hasStartMarker(_ s: String) -> Bool {
+        s.range(of: "\u{1B}]133;C") != nil
+    }
+
     func ingest(paneID: String, chunk: Data) {
         guard let s = String(data: chunk, encoding: .utf8) ?? String(data: chunk, encoding: .isoLatin1),
               !s.isEmpty else { return }
         // Exit-status heat: scan ONLY the fresh chunk (not the carried partial — a marker
         // parked in the partial would re-record every ingest and pin its age at "now").
         // ponytail: a marker split across chunks is missed; fine, the next command re-emits.
-        if let code = Self.lastExitMarker(s) { lastExit[paneID] = (code, Date()) }
+        if Self.hasStartMarker(s) { cmdStart[paneID] = Date() }
+        if let code = Self.lastExitMarker(s) {
+            lastExit[paneID] = (code, Date())
+            let dur = cmdStart[paneID].map { Date().timeIntervalSince($0) } ?? 0
+            cmdStart[paneID] = nil
+            onCommandDone?(paneID, code, dur)
+        }
         let text = (partial[paneID] ?? "") + s
         var lines = tails[paneID] ?? []
         var rest = Substring(text)
@@ -66,7 +83,8 @@ final class TailStore {
     }
 
     func forget(_ paneID: String) {
-        tails[paneID] = nil; partial[paneID] = nil; lastActivity[paneID] = nil; lastExit[paneID] = nil
+        tails[paneID] = nil; partial[paneID] = nil; lastActivity[paneID] = nil
+        lastExit[paneID] = nil; cmdStart[paneID] = nil
     }
 
     /// Last `ESC ] 133 ; D [; code] (BEL | ESC \)` in a chunk → exit code (no code ⇒ 0).
@@ -153,6 +171,8 @@ func tailStoreSelfCheck() {
     assert(TailStore.lastExitMarker("\u{1B}]133;D;0\u{07}x\u{1B}]133;D;2\u{07}") == 2, "last marker wins")
     assert(TailStore.lastExitMarker("plain text") == nil, "no marker, no heat")
     assert(TailStore.lastExitMarker("\u{1B}]133;D;1") == nil, "unterminated marker ignored")
+    assert(TailStore.hasStartMarker("run: \u{1B}]133;C\u{07}x"), "start marker seen")
+    assert(!TailStore.hasStartMarker("plain"), "no false start")
     // End-to-end: the EXACT bytes our generated zsh integration emits must parse. Uses the
     // shared source of truth (VestaShellIntegration.doneMark) so the script's mark and this
     // parser can't silently drift apart.

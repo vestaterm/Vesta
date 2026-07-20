@@ -758,6 +758,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Output-tail ticks re-render the sidebar cards (refresh() self-debounces to ≤1/s).
         // Deliberately NOT store.broadcast — that path also persists windows.json.
         TailStore.shared.onChange = { [weak self] in self?.windows.forEach { $0.refresh() } }
+        // Background-command attention, driven by shell-integration marks: the old
+        // prompt-return pid heuristic is blind under vesta-persist (ghostty's pty runs
+        // only the relay; commands live on the daemon's pty and never change the pid).
+        TailStore.shared.onCommandDone = { [weak self] paneID, _, duration in
+            guard let self, duration >= 3 else { return }   // quick commands don't ring
+            for proj in self.store.projs {
+                for tree in proj.sessions where !tree.isDormant && tree.paneIDs.contains(paneID) {
+                    self.windows.forEach { $0.workspace.markAttention(tree) }   // no-op for the active one
+                    return
+                }
+            }
+        }
 
         server = ControlServer(workspaceProvider: { [weak self] in self?.active?.workspace })
         server.onReload = { [weak self] in self?.reloadConfig() }
