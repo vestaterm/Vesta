@@ -12,11 +12,24 @@ func normalizedSessionName(_ s: String?) -> String? {
     func focusContent()
 }
 
+/// Terminal backing paint: clear when ghostty's background-opacity is in play, so the
+/// translucent surface actually reaches the desktop instead of an opaque twin behind it.
+@MainActor
+func terminalBacking(_ c: NSColor) -> CGColor {
+    VestaConfig.shared.terminalOpacity < 1 ? NSColor.clear.cgColor : c.cgColor
+}
+
 /// NSSplitView with a wide (grabbable) divider that *draws* as a 1px hairline —
 /// so it looks like the demo's thin split line but is easy to drag-resize.
 final class VestaSplitView: NSSplitView {
+    /// Gutter paint for see-through terminals (set by PaneTree; tracks the theme). The
+    /// divider gutter must not show raw desktop between translucent panes.
+    var gutterColor: NSColor = .clear
     override var dividerThickness: CGFloat { VestaConfig.shared.dividerWidth }
-    override var dividerColor: NSColor { .clear }
+    override var dividerColor: NSColor {
+        VestaConfig.shared.terminalOpacity < 1
+            ? gutterColor.withAlphaComponent(VestaConfig.shared.terminalOpacity) : .clear
+    }
     override func drawDivider(in rect: NSRect) {
         NSColor(white: 1, alpha: 0.07).setFill()
         if isVertical {
@@ -45,7 +58,7 @@ final class PaneTree {
             self.overlay = FocusOverlay(accent: accent)
             super.init(frame: .zero)
             wantsLayer = true
-            layer?.backgroundColor = surface.cgColor
+            layer?.backgroundColor = terminalBacking(surface)
             content.autoresizingMask = [.width, .height]
             content.frame = bounds
             addSubview(content)
@@ -57,7 +70,7 @@ final class PaneTree {
 
         /// Re-apply colors on a live config reload (no relaunch).
         func applyTheme(accent: NSColor, surface: NSColor) {
-            layer?.backgroundColor = surface.cgColor
+            layer?.backgroundColor = terminalBacking(surface)
             overlay.accent = accent
         }
     }
@@ -144,7 +157,7 @@ final class PaneTree {
         self.name = normalizedSessionName(name)
         root = NSView()
         root.wantsLayer = true
-        root.layer?.backgroundColor = theme.background.cgColor
+        root.layer?.backgroundColor = terminalBacking(theme.background)
         let first = makeTerminalLeaf(cwd: cwd, paneID: paneID)
         first.autoresizingMask = [.width, .height]
         first.frame = root.bounds
@@ -167,7 +180,7 @@ final class PaneTree {
         self.dormantLayout = layout
         root = NSView()
         root.wantsLayer = true
-        root.layer?.backgroundColor = theme.background.cgColor
+        root.layer?.backgroundColor = terminalBacking(theme.background)
         // Leaves + click monitor are built in materialize(), not here.
     }
 
@@ -224,6 +237,25 @@ final class PaneTree {
     /// The focused leaf's content cast to TerminalPane, or nil if it's a browser leaf.
     var focused: TerminalPane? { (leaf(focusedId)?.content) as? TerminalPane }
 
+    /// Sidebar tail: last rendered lines of the focused pane's VIEWPORT. Reading the
+    /// grid (not the byte stream) is what makes TUI apps work — claude/vim repaint via
+    /// cursor moves with no newlines, so a stream tail collapses to one line.
+    var tailLines: [String] {
+        guard dormantLayout == nil, let f = focused else { return [] }
+        return PaneTree.lastLines(f.capture(scrollback: false), max: TailStore.maxLines)
+    }
+
+    /// Last ≤max non-empty lines of a text block, whitespace-trimmed.
+    nonisolated static func lastLines(_ text: String, max: Int) -> [String] {
+        var out: [String] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false).reversed() {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty { out.append(t) }
+            if out.count == max { break }
+        }
+        return out.reversed()
+    }
+
     // MARK: Split + attach (shared core for terminal and browser splits)
 
     /// Inserts `newLeaf` next to the currently-focused leaf in an NSSplitView.
@@ -242,6 +274,7 @@ final class PaneTree {
         if zoomed { unzoom() }
 
         let sv = VestaSplitView()
+        sv.gutterColor = theme.background
         sv.isVertical = (s == .vertical)          // vertical split = side-by-side
         // frame-based layout: the mask + frame we set below only apply when this
         // is true. (false here is why split panes collapsed to zero size.)
@@ -472,6 +505,7 @@ final class PaneTree {
     private func buildNode(_ node: [String: Any]) -> NSView {
         if let a = node["a"] as? [String: Any], let b = node["b"] as? [String: Any] {
             let sv = VestaSplitView()
+        sv.gutterColor = theme.background
             sv.isVertical = (node["vertical"] as? Bool) ?? false
             sv.translatesAutoresizingMaskIntoConstraints = true
             for child in [buildNode(a), buildNode(b)] {
@@ -554,7 +588,7 @@ final class PaneTree {
     /// chrome colors on the leaves, fresh config to each terminal surface.
     func applyTheme(_ t: Theme) {
         theme = t
-        root.layer?.backgroundColor = t.background.cgColor
+        root.layer?.backgroundColor = terminalBacking(t.background)
         guard dormantLayout == nil else { return }   // dormant: theme adopted at materialize()
         for l in leaves {
             l.applyTheme(accent: t.accent, surface: t.background)
