@@ -98,6 +98,7 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
         let panel = NSView()
         panel.translatesAutoresizingMaskIntoConstraints = false
         panel.wantsLayer = true
+        panel.layer?.masksToBounds = true   // rows now reach the bottom edge — clip to the rounded corners
         installGlass(panel, tint: NSColor(white: 0.10, alpha: 1))   // glass moment: blur + dark tint
         panel.layer?.cornerRadius = 9
         panel.layer?.borderWidth = 1
@@ -125,7 +126,9 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
         scroll.scrollerStyle = .overlay            // floats over content, reserves no width
         scroll.autohidesScrollers = true           // hidden until the list actually overflows
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.contentView = FlippedClipView()     // top-anchor the list so it hugs from the top
+        let clip = FlippedClipView()               // top-anchor the list so it hugs from the top
+        clip.drawsBackground = false               // replacement clip defaults OPAQUE → painted a
+        scroll.contentView = clip                  // "second background" over the card glass
         scroll.documentView = listStack
 
         panel.addSubview(input)
@@ -152,7 +155,9 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
             scroll.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 10),
             scroll.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 8),
             scroll.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -8),
-            scroll.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -10),
+            // Near-flush bottom (2px): a scrolled list cuts at the card edge (reads as
+            // intentional overflow) instead of floating above a padding strip.
+            scroll.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -2),
             scroll.heightAnchor.constraint(lessThanOrEqualTo: heightAnchor, multiplier: 0.8),
             listStack.widthAnchor.constraint(equalTo: scroll.widthAnchor),
         ]
