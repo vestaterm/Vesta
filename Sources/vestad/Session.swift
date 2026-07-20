@@ -183,9 +183,9 @@ final class Session {
 
     /// Capture this session's adoptable state for a self-exec upgrade: the master fd number +
     /// child pid (both survive execv), size, cwd/name, and the raw ring the new image replays.
-    func snapshotState() -> SessionState {
+    func snapshotState(includeRing: Bool) -> SessionState {
         SessionState(paneID: paneID, masterFD: masterFD, pid: pid, cols: cols, rows: rows,
-                     cwd: cwd, name: name, ring: ring)
+                     cwd: cwd, name: name, ring: includeRing ? ring : Data())
     }
 
     func resize(cols rawCols: Int32, rows rawRows: Int32) {

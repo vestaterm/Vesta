@@ -336,7 +336,14 @@ final class Daemon {
             fail("new binary is identical to the running one (SHA-256 match) — no-op upgrade refused"); return
         }
         // 3. Snapshot every session (paneID/master-fd/pid/size/cwd/name/ring) to a 0600 file.
-        let state = UpgradeState(lockFD: lockFD, sessions: sessions.values.map { $0.snapshotState() })
+        // Ring bytes (terminal scrollback — can hold secrets) go to disk only when the user
+        // opted into scrollback persistence; otherwise panes replay blank after the swap —
+        // that's their privacy choice, honored here too. (File is 0600 + unlinked on adopt.)
+        // Known ms-window: input a relay already wrote into our socket buffer but we haven't
+        // read yet is dropped by the exec (relay resend covers only failed sends). Upgrades
+        // fire at app launch, not mid-typing; quiescing client input isn't worth the machinery.
+        let state = UpgradeState(lockFD: lockFD,
+                                 sessions: sessions.values.map { $0.snapshotState(includeRing: logEnabled) })
         guard writeUpgradeState(state) else { fail("failed to write the upgrade state file"); return }
         // 4. Clear CLOEXEC on the pty masters + the lock fd so they survive execv by number.
         clearCloseOnExec(lockFD)
