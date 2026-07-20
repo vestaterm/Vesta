@@ -133,10 +133,19 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
         // Sizing: width from opts. Height — if opts.fixedHeight is set, the list area is
         // exactly that (the old always-tall look); otherwise it hugs its rows up to
         // opts.maxHeight, then scrolls. Always capped to the window so it never overflows.
+        // The card must FIT the window, never stretch it: preferred width/position yield
+        // to hard caps against the overlay bounds, so a small window compresses the card.
+        let prefWidth = panel.widthAnchor.constraint(equalToConstant: opts.width ?? contentWidth())
+        prefWidth.priority = .defaultHigh
+        let prefTop = panel.topAnchor.constraint(equalTo: topAnchor, constant: 90)
+        prefTop.priority = .defaultHigh
         var cons: [NSLayoutConstraint] = [
-            panel.topAnchor.constraint(equalTo: topAnchor, constant: 90),
+            prefTop,
+            panel.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 12),
+            panel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -16),
             panel.centerXAnchor.constraint(equalTo: centerXAnchor),
-            panel.widthAnchor.constraint(equalToConstant: opts.width ?? contentWidth()),
+            prefWidth,
+            panel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.92),
             input.topAnchor.constraint(equalTo: panel.topAnchor, constant: 14),
             input.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 16),
             input.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -16),
