@@ -257,7 +257,7 @@ final class VestaWindowController: NSWindowController {
         // material; ON can't retrofit a blur into an existing window, only re-tint.
         rootGlass?.isHidden = !glass
         titlebarBand?.isHidden = !glass
-        titlebarBand?.layer?.backgroundColor = surface.withAlphaComponent(VestaConfig.shared.terminalOpacity).cgColor
+        titlebarBand?.layer?.backgroundColor = t.background.withAlphaComponent(VestaConfig.shared.terminalOpacity).cgColor
         sidebar?.layer?.backgroundColor = glass
             ? surface.withAlphaComponent(VestaConfig.shared.sidebarOpacity).cgColor : surface.cgColor
         if let projScroll { applyScrollAppearance(projScroll) }
@@ -361,7 +361,9 @@ final class VestaWindowController: NSWindowController {
             let band = NSView()
             band.wantsLayer = true
             band.translatesAutoresizingMaskIntoConstraints = false
-            band.layer?.backgroundColor = surface.withAlphaComponent(VestaConfig.shared.terminalOpacity).cgColor
+            // theme.background = ghostty's `background` (the terminal's true color) — NOT the
+            // chrome surface, which vesta-surface can override away from the terminal.
+            band.layer?.backgroundColor = theme.background.withAlphaComponent(VestaConfig.shared.terminalOpacity).cgColor
             titlebarBand = band
         }
 
