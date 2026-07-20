@@ -26,6 +26,7 @@ if argv.first == "selfcheck" {
     focusOwnerSelfCheck()
     muxProtocolSelfCheck()
     muxPathsSelfCheck()
+    shellIntegrationSelfCheck()
     fdLimitSelfCheck()
     luaSandboxSelfCheck()
     // Resource smoke test (works in release — asserts compile out): the bundled fonts must be

@@ -45,7 +45,7 @@ final class Session {
     /// secrets; opt in via `vesta-persist-scrollback = true`). Read once by the daemon.
     private let logEnabled: Bool
 
-    init?(paneID: String, cols rawCols: Int32, rows rawRows: Int32, cwd: String? = nil, logEnabled: Bool = false) {
+    init?(paneID: String, cols rawCols: Int32, rows rawRows: Int32, cwd: String? = nil, logEnabled: Bool = false, shellIntegration: Bool = false) {
         self.logEnabled = logEnabled
         // Clamp to a sane minimum. A pane created before its window lays out reports a
         // 0×0 size; a 0-sized PTY is rejected by some shells. The real size arrives via
@@ -53,6 +53,15 @@ final class Session {
         let cols = rawCols > 0 ? rawCols : 80
         let rows = rawRows > 0 ? rawRows : 24
         self.paneID = paneID; self.cols = cols; self.rows = rows; self.cwd = cwd
+        // Resolve the shell + shell-integration env in the PARENT (the child inherits this
+        // exact environment, so getenv here == getenv in the child). For zsh we point ZDOTDIR
+        // at our generated integration dir so its `.zshenv` runs; VESTA_ORIG_ZDOTDIR carries
+        // the user's real ZDOTDIR (only when they had one) so `.zshenv` can restore it. Other
+        // shells are left untouched → graceful degradation (attention rail still works).
+        let shell = getenv("SHELL").flatMap { String(cString: $0) } ?? "/bin/zsh"
+        let zdotdir = (shellIntegration && VestaShellIntegration.isZsh(shell))
+            ? MuxPaths.shellIntegrationZsh : nil
+        let origZDOTDIR = getenv("ZDOTDIR").flatMap { String(cString: $0) }
         // forkpty a login shell.
         var master: Int32 = 0
         var ws = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
@@ -62,7 +71,12 @@ final class Session {
             // Start the shell in the requested directory (the project/session dir). A bad
             // path just leaves the child in its inherited cwd — the shell still spawns.
             if let cwd, !cwd.isEmpty { cwd.withCString { _ = chdir($0) } }
-            let shell = getenv("SHELL").flatMap { String(cString: $0) } ?? "/bin/zsh"
+            // Inject the ZDOTDIR swap for zsh. Pass VESTA_ORIG_ZDOTDIR only when the user had
+            // a ZDOTDIR, mirroring zsh's own "unset ZDOTDIR == $HOME" semantics.
+            if let zdotdir {
+                if let orig = origZDOTDIR, !orig.isEmpty { setenv("VESTA_ORIG_ZDOTDIR", orig, 1) }
+                setenv("ZDOTDIR", zdotdir, 1)
+            }
             // execl is variadic (unavailable to Swift); build an explicit argv for execv.
             // Login shell: argv[0] = shell, argv[1] = "-l".
             shell.withCString { shellC in

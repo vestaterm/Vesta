@@ -11,6 +11,9 @@ public enum MuxPaths {
     }
     public static var daemonSocket: String { base + "/vestad.sock" }
     public static func sessionLog(_ paneID: String) -> String { base + "/sessions/\(paneID).log" }
+    /// Dir vestad points a spawned zsh's ZDOTDIR at (holds the generated `.zshenv` that
+    /// registers OSC 133 command marks). Created/populated by VestaShellIntegration.ensure().
+    public static var shellIntegrationZsh: String { base + "/shell-integration/zsh" }
     public static func ensureDirs() {
         let fm = FileManager.default
         let attrs: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
