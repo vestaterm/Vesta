@@ -122,17 +122,18 @@ import GhosttyKit
     /// CALayer whose IOSurface carries alpha is what actually blends onto the un-painted
     /// window behind it.
     private func applyTerminalOpacity() {
-        guard VestaConfig.shared.terminalOpacity < 1 else { return }
-        layer?.isOpaque = false
+        let opaque = VestaConfig.shared.terminalOpacity >= 1
+        layer?.isOpaque = opaque   // symmetric: reload back to 1 restores the compositor fast path
         // Defensive: if a future libghostty adds the Metal surface as a SUBLAYER instead
         // of replacing our layer, un-paint that too.
-        layer?.sublayers?.forEach { $0.isOpaque = false }
+        layer?.sublayers?.forEach { $0.isOpaque = opaque }
         // ponytail: the renderer may swap in its layer just after ghostty_surface_new
         // returns, so re-apply once on the next runloop turn to catch a late layer.
         DispatchQueue.main.async { [weak self] in
-            guard let self, VestaConfig.shared.terminalOpacity < 1 else { return }
-            self.layer?.isOpaque = false
-            self.layer?.sublayers?.forEach { $0.isOpaque = false }
+            guard let self else { return }
+            let opaque = VestaConfig.shared.terminalOpacity >= 1
+            self.layer?.isOpaque = opaque
+            self.layer?.sublayers?.forEach { $0.isOpaque = opaque }
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }

@@ -248,7 +248,8 @@ final class PaneTree {
     /// Last ≤max non-empty, non-chrome lines of a viewport, anchored on the latest activity.
     /// A plain shell just yields its last lines. A TUI agent (Claude Code) paints its own chrome
     /// at the viewport bottom — bordered input box, status bars — so we drop those lines, then, if
-    /// any surviving line is a ⏺ message/tool marker, start the tail at the LAST such marker. That
+    /// any surviving line is a ⏺ message/tool marker, drop everything BEFORE the last one (a block
+    /// longer than `max` still tails to its bottom `max` lines — the marker itself may scroll off). That
     /// pins the sidebar card to the newest real conversation instead of the empty prompt box.
     nonisolated static func lastLines(_ text: String, max: Int) -> [String] {
         var kept: [String] = []
