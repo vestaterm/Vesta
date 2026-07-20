@@ -744,6 +744,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         theme = ghostty.theme  // colors from the real ghostty config
 
         NSApp.mainMenu = makeMainMenu(target: self)  // bundle-less binary: build the menu bar
+        // Activate BEFORE building the first window: a translucent/glass window ordered
+        // front while the app is still inactive gets an OPAQUE backing surface from the
+        // WindowServer that never rebuilds (isOpaque reads false, but terminal see-through
+        // and behind-window sidebar glass both render solid). ⌘N windows are fine because
+        // the app is already active. Activating first makes the restored/first window's
+        // backing establish with alpha, exactly like a ⌘N window.
+        NSApp.activate(ignoringOtherApps: true)
         restoreWindows()  // saved windows (or one fresh window)
         // Output-tail ticks re-render the sidebar cards (refresh() self-debounces to ≤1/s).
         // Deliberately NOT store.broadcast — that path also persists windows.json.
@@ -834,7 +841,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 PaneOutputTap.shared.reconcile(self.allLivePaneIDs())
             }
         }
-        NSApp.activate(ignoringOtherApps: true)
 
         // Finder Services provider ("New Vesta Session Here"); drain any folders the
         // app was launched to open (open -a Vesta <dir> / Open With).
