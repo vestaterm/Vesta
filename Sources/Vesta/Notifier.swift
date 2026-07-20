@@ -75,7 +75,7 @@ final class NotificationsPanel: NSView {
     private func build(theme: Theme, notes: [VestaNote]) {
         panel.translatesAutoresizingMaskIntoConstraints = false
         panel.wantsLayer = true
-        panel.layer?.backgroundColor = NSColor(white: 0.11, alpha: 0.99).cgColor
+        installGlass(panel, tint: NSColor(white: 0.10, alpha: 1), corner: 10)   // glass moment
         panel.layer?.cornerRadius = 10
         panel.layer?.borderWidth = 1
         panel.layer?.borderColor = NSColor(white: 1, alpha: 0.12).cgColor
@@ -94,10 +94,16 @@ final class NotificationsPanel: NSView {
         clear.translatesAutoresizingMaskIntoConstraints = false
         panel.addSubview(clear)
 
+        // The card fits the WINDOW, never the reverse: width/height are preferred, and
+        // required caps pin it inside the overlay so no chain can push the window larger.
+        let prefWidth = panel.widthAnchor.constraint(equalToConstant: 330)
+        prefWidth.priority = .defaultHigh
         var cons: [NSLayoutConstraint] = [
             panel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             panel.topAnchor.constraint(equalTo: topAnchor, constant: 40),
-            panel.widthAnchor.constraint(equalToConstant: 330),
+            prefWidth,
+            panel.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 14),
+            panel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -16),
             header.topAnchor.constraint(equalTo: panel.topAnchor, constant: 12),
             header.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14),
             clear.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -12),
