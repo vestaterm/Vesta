@@ -548,6 +548,11 @@ final class VestaWindowController: NSWindowController {
             m.setContentCompressionResistancePriority(.required, for: .horizontal)
             m.setContentHuggingPriority(.required, for: .horizontal)
             titleViews.append(m)
+            // Reserve the top-right corner so the revealed × never covers the meta text.
+            let pad = NSView()
+            pad.translatesAutoresizingMaskIntoConstraints = false
+            pad.widthAnchor.constraint(equalToConstant: 14).isActive = true
+            titleViews.append(pad)
         }
         let title = NSStackView(views: titleViews)
         title.orientation = .horizontal
@@ -1113,7 +1118,12 @@ final class TaggedRow: NSView {
     // and the row's mouseDown would never fire — that's why collapse/select looked dead.
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
-        return hit is NSButton ? hit : (bounds.contains(convert(point, from: superview)) ? self : hit)
+        if let b = hit as? NSButton {
+            // A hover-revealed button at alpha 0 still hit-tests in AppKit — an invisible ×
+            // must never eat a click (that's a destructive mis-click). Fall through to the row.
+            return b.alphaValue > 0.01 ? b : self
+        }
+        return bounds.contains(convert(point, from: superview)) ? self : hit
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1128,6 +1138,12 @@ final class TaggedRow: NSView {
         if let t = tracking { removeTrackingArea(t) }
         let t = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
         addTrackingArea(t); tracking = t
+        // Rows are rebuilt (≤1/s) while output streams; a stationary cursor gets no fresh
+        // mouseEntered, which would leave the hover-revealed ×/+ invisible-forever. Re-assert.
+        if let w = window {
+            let p = convert(w.mouseLocationOutsideOfEventStream, from: nil)
+            if bounds.contains(p), bounds.width > 0 { mouseEntered(with: NSEvent()) }
+        }
     }
     override func mouseEntered(with event: NSEvent) {
         onHover?(true)

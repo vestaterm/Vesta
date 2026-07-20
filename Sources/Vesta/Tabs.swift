@@ -269,6 +269,7 @@ final class Workspace {
         let k = ObjectIdentifier(tree)
         worktreeBranch[k] = nil
         attention.remove(k)
+        attentionAt[k] = nil   // else an address-reusing tree inherits a stale heat age
     }
 
     /// Returns true when the last session is about to be removed — replace instead of deleting.

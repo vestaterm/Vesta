@@ -17,9 +17,15 @@ final class TailStore {
     private var notifyScheduled = false
 
     /// Cleaned tail for a pane: complete lines plus the current partial (prompt) line.
+    /// The partial is stored RAW and cleaned here — cleaning it at ingest would mangle
+    /// escape sequences split across chunk boundaries (a chunk ending mid-`ESC[32m`
+    /// leaks a literal "2m" into the next line).
     func lines(_ paneID: String) -> [String] {
         var out = tails[paneID] ?? []
-        if let p = partial[paneID], !p.isEmpty { out.append(p) }
+        if let p = partial[paneID] {
+            let clean = Self.cleanLine(p)
+            if !clean.isEmpty { out.append(clean) }
+        }
         return out.suffix(Self.maxLines)
     }
 
@@ -38,8 +44,9 @@ final class TailStore {
         }
         if lines.count > Self.maxLines { lines.removeFirst(lines.count - Self.maxLines) }
         tails[paneID] = lines
-        // The unterminated remainder is usually the prompt — keep it (bounded).
-        partial[paneID] = String(Self.cleanLine(String(rest)).suffix(256))
+        // Keep the unterminated remainder (usually the prompt) RAW — see lines(). Bounded;
+        // trimming the FRONT can only drop already-rendered bytes, never split a fresh escape.
+        partial[paneID] = String(rest.suffix(1024))
         lastActivity[paneID] = Date()
         scheduleNotify()
     }
@@ -92,11 +99,19 @@ final class TailStore {
     }
 }
 
-/// Pure-logic check for the line cleaner (run by `vesta selfcheck`).
+/// Pure-logic check for the line cleaner + split-chunk handling (run by `vesta selfcheck`).
+@MainActor
 func tailStoreSelfCheck() {
     assert(TailStore.cleanLine("\u{1B}[32m✓ built\u{1B}[0m in 240ms") == "✓ built in 240ms", "SGR stripped")
     assert(TailStore.cleanLine("\u{1B}]0;title\u{07}hello") == "hello", "OSC stripped")
     assert(TailStore.cleanLine("Progress 10%\rProgress 99%") == "Progress 99%", "CR keeps last segment")
     assert(TailStore.cleanLine("  \u{1B}[2K  ") == "", "blank after clean is empty")
+    // Escape sequence split across two chunks must not leak fragments ("2m").
+    let ts = TailStore()
+    ts.ingest(paneID: "t", chunk: Data("ok \u{1B}[3".utf8))
+    ts.ingest(paneID: "t", chunk: Data("2mgreen\u{1B}[0m\n❯ ".utf8))
+    assert(ts.lines("t") == ["ok green", "❯"], "split SGR survives chunk boundary: \(ts.lines("t"))")
+    ts.forget("t")
+    assert(ts.lines("t").isEmpty, "forget clears")
     print("tailStoreSelfCheck OK")
 }

@@ -43,6 +43,8 @@ final class PaneOutputTap: @unchecked Sendable {
     @MainActor func reconcile(_ paneIDs: Set<String>) {
         // Sidebar tails need the same passive byte feed as the Lua event, so the taps
         // stay open whenever either consumer wants them (and persist is on).
+        // ponytail: that's one fd + dispatch source per live pane, always (fd limit was
+        // raised in a04aee7). Subscribe-on-expand if pane counts ever make this hurt.
         let enabled = (luaHasPaneOutputHandler() || VestaConfig.shared.sidebarTails)
             && VestaConfig.shared.persist
         let want = enabled ? paneIDs : []
@@ -56,6 +58,7 @@ final class PaneOutputTap: @unchecked Sendable {
     private func _reconcile(_ want: Set<String>) {
         for (pid, tap) in taps where !want.contains(pid) {   // close panes that went away
             tap.source?.cancel(); taps[pid] = nil; clearPending(pid)
+            forgetTail(pid)
         }
         for pid in want where taps[pid] == nil {             // open newly-live panes
             guard let fd = Self.connectSubscribe(pid) else { continue }
@@ -70,6 +73,12 @@ final class PaneOutputTap: @unchecked Sendable {
 
     private func drop(_ pid: String) {
         taps[pid]?.source?.cancel(); taps[pid] = nil; clearPending(pid)
+        forgetTail(pid)
+    }
+
+    /// Dead pane → drop its tail lines (TailStore is main-actor; we're on q).
+    private func forgetTail(_ pid: String) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { TailStore.shared.forget(pid) } }
     }
 
     private func onReadable(_ pid: String) {
