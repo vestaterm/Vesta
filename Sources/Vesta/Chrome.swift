@@ -274,6 +274,7 @@ final class VestaWindowController: NSWindowController {
     func applyTheme(_ t: Theme) {
         theme = t
         surface = t.background
+        lastProjects = []   // invalidate the skip-if-unchanged cache — rows must repaint in the new theme
         let glass = VestaConfig.shared.glassSidebar
         window?.isOpaque = !VestaConfig.shared.seeThrough
         window?.backgroundColor = VestaConfig.shared.seeThrough ? .clear : surface
@@ -321,6 +322,11 @@ final class VestaWindowController: NSWindowController {
         // A press/drag is live — keep the pressed row intact; stash the data and replay it
         // when the interaction releases (endPress / endDrag), so the refresh isn't lost.
         if suppressRebuild { pendingProjects = projects; return }
+        // Nothing changed since the last render → keep the existing rows. This is what
+        // makes the ~1Hz refresh free at idle (no view churn, no layout, no tracking-area
+        // resets — hover state survives too). applyTheme clears the cache so a re-theme
+        // with identical data still repaints.
+        if projects == lastProjects, !stack.arrangedSubviews.isEmpty { return }
         lastProjects = projects
 
         // Remove all previously arranged subviews (avoid constraint leaks).
@@ -879,13 +885,17 @@ final class VestaWindowController: NSWindowController {
             setProjects(pending ?? lastProjects)   // cancelled → rebuild from latest truth
             return
         }
+        // Replay the freshest stashed render FIRST: a no-op drop (gap==from, or the
+        // identity-mismatch abort — exactly the case where the store changed mid-drag)
+        // fires no broadcast, and the stash would otherwise be silently dropped. The
+        // model call below uses the frozen tags + identity, so rebuilding first is safe.
+        if let pending { setProjects(pending) }
         // row.identity travels with the drop: the store can mutate mid-drag (another
         // window, `vesta kill`, a shell exiting) — the model verifies the item at the
         // frozen index is still the one that was picked up, else aborts as a no-op.
         if row.isSessionRow { onReorderSession(row.tag1, row.tag2, dragGap, row.identity) }
         else { onReorderProject(row.tag1, dragGap, row.identity) }
-        // The reorder → store.broadcast → setProjects rebuilds (flag now clear). A no-op
-        // drop skips the broadcast; the next ≤1s refresh tick re-renders.
+        // The reorder renders immediately via store.renderNow (no ≤1s debounce lag).
     }
 
     /// A 2px rounded accent left-edge bar (shared by project + session rows).
