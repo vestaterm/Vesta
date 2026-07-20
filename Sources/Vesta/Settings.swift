@@ -22,9 +22,9 @@ final class SettingsWindowController: NSWindowController {
     private enum Tier { case full, dim, faint }
     private func txt(_ tier: Tier) -> NSColor {
         switch tier {
-        case .full:  return NSColor(white: 0.95, alpha: 1)
-        case .dim:   return NSColor(white: 0.78, alpha: 1)
-        case .faint: return NSColor(white: 0.52, alpha: 1)
+        case .full:  return .labelColor
+        case .dim:   return .secondaryLabelColor
+        case .faint: return .tertiaryLabelColor
         }
     }
 
@@ -56,8 +56,8 @@ final class SettingsWindowController: NSWindowController {
 
         // Dark, app-consistent chrome: the same near-black surface the rest of Vesta
         // paints (ghostty `background` / vesta-surface), never a generic gray.
-        window?.appearance = NSAppearance(named: .darkAqua)
-        window?.backgroundColor = NSColor(white: 0.16, alpha: 1)   // match the About window
+        // Native prefs window: system appearance (light/dark follows macOS), standard
+        // window background — no custom chrome in here at all.
 
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -300,13 +300,9 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func sectionHeader(_ s: String) -> NSTextField {
-        // Same tiny uppercase instrument label the sidebar uses for its section titles.
         let l = NSTextField(labelWithString: s)
-        l.attributedStringValue = NSAttributedString(string: s.uppercased(), attributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: txt(.faint),
-            .kern: 1.3,
-        ])
+        l.font = .systemFont(ofSize: 11, weight: .semibold)
+        l.textColor = .secondaryLabelColor
         return l
     }
 
@@ -532,13 +528,14 @@ final class SettingsWindowController: NSWindowController {
 /// Top-down document view for the settings scroll view (default NSView is bottom-up).
 private final class FlippedView: NSView { override var isFlipped: Bool { true } }
 
-/// Subtle rounded background for a settings section.
+/// Native grouped-section background (System Settings style) — semantic colors so it
+/// adapts to light/dark with the system appearance.
 private final class CardView: NSView {
     override var isFlipped: Bool { true }
     override func draw(_ dirty: NSRect) {
-        let p = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 12, yRadius: 12)
-        NSColor(white: 1, alpha: 0.04).setFill(); p.fill()
-        NSColor(white: 1, alpha: 0.07).setStroke(); p.lineWidth = 1; p.stroke()   // hairline
+        let p = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10)
+        NSColor.textBackgroundColor.withAlphaComponent(0.5).setFill(); p.fill()
+        NSColor.separatorColor.setStroke(); p.lineWidth = 1; p.stroke()
     }
 }
 
