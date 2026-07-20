@@ -16,6 +16,18 @@ final class SettingsWindowController: NSWindowController {
     private var pluginBoxes: [NSButton] = []   // for the plugin filter field
     private var lockRows: [(key: String, control: NSView, badge: NSTextField)] = []   // Lua-ownable rows
 
+    // App-native tones, mirrored from Chrome.swift so the panel speaks the same
+    // visual language: hairlines (white @0.07) separate, text dims in tiers.
+    private func hair(_ a: CGFloat = 0.07) -> NSColor { NSColor(white: 1, alpha: a) }
+    private enum Tier { case full, dim, faint }
+    private func txt(_ tier: Tier) -> NSColor {
+        switch tier {
+        case .full:  return NSColor(white: 0.93, alpha: 1)
+        case .dim:   return NSColor(white: 0.66, alpha: 1)
+        case .faint: return NSColor(white: 0.46, alpha: 1)
+        }
+    }
+
     init(theme: Theme,
          onSidebarWidth: @escaping (CGFloat) -> Void,
          onImport: @escaping () -> Void,
@@ -42,9 +54,10 @@ final class SettingsWindowController: NSWindowController {
         let cfg = VestaConfig.shared
         accent = cfg.accent ?? theme.accent
 
-        // Dark, app-consistent chrome (the rest of Vesta is near-black).
+        // Dark, app-consistent chrome: the same near-black surface the rest of Vesta
+        // paints (ghostty `background` / vesta-surface), never a generic gray.
         window?.appearance = NSAppearance(named: .darkAqua)
-        window?.backgroundColor = NSColor(white: 0.12, alpha: 1)
+        window?.backgroundColor = cfg.surface ?? theme.background
 
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -65,12 +78,8 @@ final class SettingsWindowController: NSWindowController {
 
         // ── App Icon ──────────────────────────────────────────────────────────────
         if !AboutWindowController.loadVariants().isEmpty {
-            let caption = NSTextField(wrappingLabelWithString:
-                "Click a flame to set the app icon. It’s written onto Vesta.app, so it sticks in Finder and the Dock — and survives quitting and updates.")
-            caption.font = .systemFont(ofSize: 11)
-            caption.textColor = NSColor(white: 0.5, alpha: 1)
-            caption.preferredMaxLayoutWidth = 392
-            addSection("App Icon", [iconGrid(), caption])
+            addSection("App Icon", [iconGrid(), caption(
+                "Click a flame to set the app icon. It’s written onto Vesta.app, so it sticks in Finder and the Dock — and survives quitting and updates.")])
         }
 
         // ── Appearance ──────────────────────────────────────────────────────────────
@@ -101,6 +110,51 @@ final class SettingsWindowController: NSWindowController {
         addSection("Layout", [
             row("Sidebar width", slider(Double(cfg.sidebarWidth), 160, 420, #selector(sidebarChanged(_:))), key: "vesta-sidebar-width"),
             row("Divider width", slider(Double(cfg.dividerWidth), 1, 14, #selector(dividerChanged(_:))), key: "vesta-divider-width"),
+        ])
+
+        // ── Glass ─────────────────────────────────────────────────────────────────────
+        let glassBox = check(cfg.glassSidebar, #selector(glassChanged(_:)),
+            tip: "Translucent sidebar with a behind-window blur; colors become tints.")
+        let sidebarOpacity = slider(Double(cfg.sidebarOpacity), 0, 1, #selector(sidebarOpacityChanged(_:)))
+        sidebarOpacity.isContinuous = false   // onReload is heavy (re-runs plugins) — apply on release
+        sidebarOpacity.toolTip = "Sidebar tint strength in glass mode (0…1)."
+        let bgOpacity = slider(Double(cfg.terminalOpacity), 0.3, 1, #selector(bgOpacityChanged(_:)))
+        bgOpacity.isContinuous = false        // onReload is heavy (re-runs plugins) — apply on release
+        bgOpacity.toolTip = "Terminal translucency (ghostty background-opacity); separate from the sidebar. Floor 0.3 keeps text readable."
+        addSection("Glass", [
+            row("Glass sidebar", glassBox, key: "vesta-glass-sidebar"),
+            caption("Takes full effect on relaunch."),
+            row("Sidebar opacity", sidebarOpacity, key: "vesta-sidebar-opacity"),
+            row("Terminal opacity", bgOpacity, key: "background-opacity"),
+            caption("Terminal translucency is independent of the sidebar."),
+        ])
+
+        // ── Sidebar ─────────────────────────────────────────────────────────────────
+        let tailsBox = check(cfg.sidebarTails, #selector(tailsChanged(_:)),
+            tip: "Show output-tail lines on session cards.")
+        let panesBox = check(cfg.sidebarPanes, #selector(panesChanged(_:)),
+            tip: "Show a split schematic on session cards.")
+        addSection("Sidebar", [
+            row("Output tails", tailsBox, key: "vesta-sidebar-tails"),
+            row("Pane schematic", panesBox, key: "vesta-sidebar-panes"),
+        ])
+
+        // ── Sessions ──────────────────────────────────────────────────────────────────
+        let persistBox = check(cfg.persist, #selector(persistChanged(_:)),
+            tip: "Run shells under the daemon so they survive an app restart.")
+        let scrollbackBox = check(settingBool("vesta-persist-scrollback", default: false),
+            #selector(scrollbackChanged(_:)),
+            tip: "Mirror scrollback to disk so it survives a daemon restart.")
+        let shellBox = check(settingBool("vesta-shell-integration", default: true),
+            #selector(shellIntegrationChanged(_:)),
+            tip: "Inject zsh OSC 133 marks so card heat (✓/✗) works out of the box.")
+        addSection("Sessions", [
+            row("Persist shells", persistBox, key: "vesta-persist"),
+            caption("Shells survive quitting the app. Off: new sessions are plain shells — nothing survives quit, and daemon features (heat, in-place updates) are off."),
+            row("Persist scrollback", scrollbackBox, key: "vesta-persist-scrollback"),
+            caption("Off by default: terminal output can contain passwords, API tokens, and SSH keys — enable only if you accept that on disk. Applies on the next daemon start.", tone: .dim),
+            row("Shell integration", shellBox, key: "vesta-shell-integration"),
+            caption("Exit-status marks drive session-card heat; injected into zsh."),
         ])
 
         // ── Plugins — enable/disable installed Lua plugins (reloads on toggle) ──────
@@ -155,10 +209,8 @@ final class SettingsWindowController: NSWindowController {
         }
 
         // ── Configuration — full editor; accepts ANY ghostty key ────────────────────
-        let note = NSTextField(wrappingLabelWithString:
+        let note = caption(
             "Sidebar width applies live. Reload applies colors, fonts, theme, and edited config. The editor takes any ghostty option (ghostty.org/docs/config).")
-        note.font = .systemFont(ofSize: 11); note.textColor = NSColor(white: 0.5, alpha: 1)
-        note.preferredMaxLayoutWidth = 392
 
         let btns = NSStackView(views: [
             button("Import ghostty config", #selector(importTapped)),
@@ -248,13 +300,40 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func sectionHeader(_ s: String) -> NSTextField {
+        // Same tiny uppercase instrument label the sidebar uses for its section titles.
         let l = NSTextField(labelWithString: s)
         l.attributedStringValue = NSAttributedString(string: s.uppercased(), attributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor(white: 0.5, alpha: 1),
-            .kern: 0.8,
+            .font: Fonts.inst(9.5),
+            .foregroundColor: txt(.faint),
+            .kern: 1.3,
         ])
         return l
+    }
+
+    /// Dim wrapping caption, in the instrument font — for the sub-notes under rows.
+    private func caption(_ s: String, tone: Tier = .faint) -> NSTextField {
+        let l = NSTextField(wrappingLabelWithString: s)
+        l.font = Fonts.inst(10.5)
+        l.textColor = txt(tone)   // security-critical captions pass .dim for legibility
+        l.preferredMaxLayoutWidth = 360
+        return l
+    }
+
+    /// A titleless checkbox (the row label carries the name), pre-set to `on`.
+    /// Writes "true"/"false" via its action; joins lockRows when keyed by `row()`.
+    private func check(_ on: Bool, _ action: Selector, tip: String) -> NSButton {
+        let b = NSButton(checkboxWithTitle: "", target: self, action: action)
+        b.state = on ? .on : .off
+        b.toolTip = tip
+        return b
+    }
+
+    /// Read a bool ghostty/vesta key straight from the merged settings (for keys the
+    /// daemon owns and VestaConfig doesn't surface). Quotes stripped; "false"/"0" = off.
+    private func settingBool(_ key: String, default def: Bool) -> Bool {
+        guard let v = GhosttyApp.shared.settings[key]?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\" ")), !v.isEmpty else { return def }
+        return v == "true" || v == "1" || v == "yes"   // mirror Daemon.boolConfig exactly
     }
 
     private func card(_ rows: [NSView]) -> NSView {
@@ -285,17 +364,17 @@ final class SettingsWindowController: NSWindowController {
 
     private func row(_ label: String, _ control: NSView, key: String? = nil) -> NSView {
         let l = NSTextField(labelWithString: label)
-        l.font = .systemFont(ofSize: 12)
-        l.textColor = NSColor(white: 0.78, alpha: 1)
+        l.font = Fonts.mono(12)
+        l.textColor = txt(.dim)
         l.alignment = .left
-        l.widthAnchor.constraint(equalToConstant: 104).isActive = true
+        l.widthAnchor.constraint(equalToConstant: 118).isActive = true
         var views: [NSView] = [l, control]
         // Lua wins: a key set via vesta.set is Lua-owned — disable the control and badge
         // it with the owning script. Evaluated in refreshLocks (not here) so a reload
         // that drops the override (plugin disabled, line removed) unlocks live.
         if let key {
             let badge = NSTextField(labelWithString: "")
-            badge.font = .systemFont(ofSize: 10); badge.textColor = .secondaryLabelColor
+            badge.font = Fonts.inst(9.5); badge.textColor = txt(.faint)
             views.append(badge)
             lockRows.append((key, control, badge))
         }
@@ -369,6 +448,34 @@ final class SettingsWindowController: NSWindowController {
     }
     @objc private func fontChanged(_ s: NSSlider)    { setVestaConfigKey("vesta-font-size", "\(Int(s.doubleValue))") }
     @objc private func dividerChanged(_ s: NSSlider) { setVestaConfigKey("vesta-divider-width", "\(Int(s.doubleValue))") }
+
+    // Glass — full effect on relaunch; reload applies the best-effort live tint.
+    @objc private func glassChanged(_ b: NSButton) {
+        setVestaConfigKey("vesta-glass-sidebar", b.state == .on ? "true" : "false"); onReload()
+    }
+    @objc private func sidebarOpacityChanged(_ s: NSSlider) {
+        setVestaConfigKey("vesta-sidebar-opacity", String(format: "%.2f", s.doubleValue)); onReload()   // live
+    }
+    @objc private func bgOpacityChanged(_ s: NSSlider) {
+        setVestaConfigKey("background-opacity", String(format: "%.2f", s.doubleValue)); onReload()       // live
+    }
+    // Sidebar — reload re-renders the session cards with the new card decorations.
+    @objc private func tailsChanged(_ b: NSButton) {
+        setVestaConfigKey("vesta-sidebar-tails", b.state == .on ? "true" : "false"); onReload()
+    }
+    @objc private func panesChanged(_ b: NSButton) {
+        setVestaConfigKey("vesta-sidebar-panes", b.state == .on ? "true" : "false"); onReload()
+    }
+    // Sessions — the daemon reads these at (next) startup; no live reload.
+    @objc private func persistChanged(_ b: NSButton) {
+        setVestaConfigKey("vesta-persist", b.state == .on ? "true" : "false")
+    }
+    @objc private func scrollbackChanged(_ b: NSButton) {
+        setVestaConfigKey("vesta-persist-scrollback", b.state == .on ? "true" : "false")
+    }
+    @objc private func shellIntegrationChanged(_ b: NSButton) {
+        setVestaConfigKey("vesta-shell-integration", b.state == .on ? "true" : "false")
+    }
     /// Write the editor's full text to Vesta's config, then offer to relaunch so
     /// libghostty re-reads it (colors/font/theme need a fresh config load).
     @objc private func saveConfigTapped() {
@@ -430,8 +537,8 @@ private final class CardView: NSView {
     override var isFlipped: Bool { true }
     override func draw(_ dirty: NSRect) {
         let p = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 12, yRadius: 12)
-        NSColor(white: 1, alpha: 0.05).setFill(); p.fill()
-        NSColor(white: 1, alpha: 0.09).setStroke(); p.lineWidth = 1; p.stroke()
+        NSColor(white: 1, alpha: 0.04).setFill(); p.fill()
+        NSColor(white: 1, alpha: 0.07).setStroke(); p.lineWidth = 1; p.stroke()   // hairline
     }
 }
 
