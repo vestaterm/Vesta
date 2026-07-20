@@ -103,6 +103,33 @@ final class Session {
         seedRingAndOpenLog()
     }
 
+    /// Adopt a live PTY master + running child inherited across a daemon self-exec (the new
+    /// binary re-adopts every session from the upgrade snapshot). No forkpty — the shell is
+    /// already running (same pid, our child) and its master fd survived the exec by number.
+    /// The ring is seeded from the snapshot (NOT the disk log), so scrollback is byte-exact.
+    init(adopting state: SessionState, logEnabled: Bool) {
+        self.logEnabled = logEnabled
+        self.paneID = state.paneID
+        self.cols = state.cols > 0 ? state.cols : 80
+        self.rows = state.rows > 0 ? state.rows : 24
+        self.cwd = state.cwd
+        self.name = state.name
+        self.pid = state.pid
+        self.masterFD = state.masterFD
+        self.ring = state.ring
+        // Re-arm the invariants a forked master gets in init?(): CLOEXEC (so the NEXT upgrade/
+        // fork doesn't leak it) and non-blocking (the select loop must never block on it).
+        setCloseOnExec(masterFD)
+        _ = fcntl(masterFD, F_SETFL, fcntl(masterFD, F_GETFL, 0) | O_NONBLOCK)
+        // Re-open the on-disk log for append (if persistence is on) without reseeding the ring.
+        if logEnabled {
+            let path = MuxPaths.sessionLog(paneID)
+            logFD = open(path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
+            setCloseOnExec(logFD)
+            logBytes = ring.count   // approximate; only gates the amortized trim threshold
+        }
+    }
+
     /// Seed the replay ring from the prior on-disk log (scrollback from before a daemon
     /// restart), then open the log for append. The new shell's output continues the file.
     private func seedRingAndOpenLog() {
@@ -153,6 +180,13 @@ final class Session {
 
     /// The replay sent on attach: the whole current ring.
     func snapshot() -> Data { ring }
+
+    /// Capture this session's adoptable state for a self-exec upgrade: the master fd number +
+    /// child pid (both survive execv), size, cwd/name, and the raw ring the new image replays.
+    func snapshotState(includeRing: Bool) -> SessionState {
+        SessionState(paneID: paneID, masterFD: masterFD, pid: pid, cols: cols, rows: rows,
+                     cwd: cwd, name: name, ring: includeRing ? ring : Data())
+    }
 
     func resize(cols rawCols: Int32, rows rawRows: Int32) {
         let cols = rawCols > 0 ? rawCols : 80

@@ -26,6 +26,7 @@ if argv.first == "selfcheck" {
     focusOwnerSelfCheck()
     muxProtocolSelfCheck()
     muxPathsSelfCheck()
+    upgradeStateSelfCheck()
     shellIntegrationSelfCheck()
     fdLimitSelfCheck()
     luaSandboxSelfCheck()
