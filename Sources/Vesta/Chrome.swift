@@ -487,7 +487,7 @@ final class VestaWindowController: NSWindowController {
         NSLayoutConstraint.activate([
             edge.trailingAnchor.constraint(equalTo: v.trailingAnchor),
             // Start below the ~34px titlebar so the divider doesn't slice through the title strip.
-            edge.topAnchor.constraint(equalTo: v.topAnchor, constant: 34),
+            edge.topAnchor.constraint(equalTo: v.topAnchor),   // runs through the titlebar strip
             edge.bottomAnchor.constraint(equalTo: v.bottomAnchor),
             edge.widthAnchor.constraint(equalToConstant: 1),
 

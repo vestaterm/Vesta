@@ -169,30 +169,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Set((active?.workspace.projs ?? []).flatMap { $0.sessions.flatMap { $0.paneIDs } })
     }
 
-    /// Mount a picker overlay in the key window (or free `refs` and bail if one is already up).
+    // Transient glass overlays, each in a child window over the active one (see ChildOverlay).
+    private let pickerHost = ChildOverlay()    // pickers + prompt share one slot
+    private let confirmHost = ChildOverlay()
+    private let notifHost = ChildOverlay()
+
+    /// Mount a picker overlay over the key window (or free `refs` and bail if one is already up).
     private func presentPicker(
-        _ make: (NSView, @escaping () -> Void) -> PickerOverlay?, freeing refs: [Int32]
+        _ make: (@escaping () -> Void) -> PickerOverlay?, freeing refs: [Int32]
     ) {
         guard !onboardingActive,
-            let host = active?.controller.window?.contentView,
-            !host.subviews.contains(where: { $0 is PickerOverlay || $0 is ConfirmOverlay })
+            let parent = active?.controller.window,
+            !pickerHost.isOpen, !confirmHost.isOpen
         else {
             refs.forEach { luaUnref($0) }
             return
         }
-        let dismiss: () -> Void = { [weak host] in
-            host?.subviews.compactMap { $0 as? PickerOverlay }.forEach { $0.removeFromSuperview() }
-        }
-        guard let overlay = make(host, dismiss) else { return }
-        overlay.frame = host.bounds
-        overlay.autoresizingMask = [.width, .height]
-        host.addSubview(overlay)
+        let dismiss: () -> Void = { [weak self] in self?.pickerHost.close() }
+        guard let overlay = make(dismiss) else { return }
+        // Parent resize/close tears the overlay down without a pick — free the Lua refs
+        // so a waiting plugin flow doesn't leak (mirrors the cancel path's cleanup).
+        pickerHost.present(overlay, over: parent, onAutoClose: { refs.forEach { luaUnref($0) } })
     }
 
     /// vesta.pick: single-select (rich rows); call the ref with the chosen label.
     func showPick(_ items: [PickItem], _ ref: Int32, _ opts: PickOpts) {
         presentPicker(
-            { _, dismiss in
+            { dismiss in
                 PickerOverlay(
                     theme: theme, richItems: items, multiSelect: false, opts: opts,
                     onPick: { idx in
@@ -210,7 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// vesta.pickmulti: multi-select; call the ref with a table of chosen labels.
     func showPickMulti(_ items: [PickItem], _ ref: Int32, _ opts: PickOpts) {
         presentPicker(
-            { _, dismiss in
+            { dismiss in
                 PickerOverlay(
                     theme: theme, richItems: items, multiSelect: true, opts: opts,
                     onPick: { idx in
@@ -229,7 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func showMenu(_ items: [PickItem], _ refs: [Int32], _ opts: PickOpts) {
         let free = { refs.forEach { if $0 >= 0 { luaUnref($0) } } }
         presentPicker(
-            { _, dismiss in
+            { dismiss in
                 PickerOverlay(
                     theme: theme, richItems: items, multiSelect: false, opts: opts,
                     onPick: { idx in
@@ -291,7 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let items = entries.map { PickItem(label: $0.0, desc: $0.1.isEmpty ? nil : $0.1) }
         let actions = entries.map { $0.2 }
         presentPicker(
-            { _, dismiss in
+            { dismiss in
                 PickerOverlay(
                     theme: self.theme, richItems: items, multiSelect: false, opts: PickOpts(),
                     onPick: { [weak self] idx in
@@ -383,15 +386,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the ref on cancel).
     func showPrompt(_ message: String, _ initial: String, _ ref: Int32) {
         guard !onboardingActive,
-            let host = active?.controller.window?.contentView,
-            !host.subviews.contains(where: { $0 is PickerOverlay })
+            let parent = active?.controller.window,
+            !pickerHost.isOpen
         else {
             luaUnref(ref)
             return
         }
-        let dismiss = { [weak host] in
-            host?.subviews.compactMap { $0 as? PickerOverlay }.forEach { $0.removeFromSuperview() }
-        }
+        let dismiss: () -> Void = { [weak self] in self?.pickerHost.close() }
         let overlay = PickerOverlay(
             theme: theme, prompt: message, initial: initial,
             onSubmit: { text in
@@ -403,31 +404,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 dismiss()
                 luaUnref(ref)
             })
-        overlay.frame = host.bounds
-        overlay.autoresizingMask = [.width, .height]
-        host.addSubview(overlay)
+        pickerHost.present(overlay, over: parent, onAutoClose: { luaUnref(ref) })
     }
 
     /// vesta.confirm: compact yes/no dialog; call the Lua ref with a boolean (Esc/scrim → false).
     func showConfirm(_ message: String, _ ref: Int32) {
         guard !onboardingActive,
-            let host = active?.controller.window?.contentView,
-            !host.subviews.contains(where: { $0 is PickerOverlay || $0 is ConfirmOverlay })
+            let parent = active?.controller.window,
+            !pickerHost.isOpen, !confirmHost.isOpen
         else {
             luaUnref(ref)
             return
         }
-        let dismiss: () -> Void = { [weak host] in
-            host?.subviews.compactMap { $0 as? ConfirmOverlay }.forEach { $0.removeFromSuperview() }
-        }
+        let dismiss: () -> Void = { [weak self] in self?.confirmHost.close() }
         let overlay = ConfirmOverlay(theme: theme, message: message) { yes in
             dismiss()
             luaCallBool(ref: ref, yes)
             luaUnref(ref)
         }
-        overlay.frame = host.bounds
-        overlay.autoresizingMask = [.width, .height]
-        host.addSubview(overlay)
+        // Torn down by a parent-window event → resolve as "no" (Esc semantics), don't hang.
+        confirmHost.present(overlay, over: parent, onAutoClose: {
+            luaCallBool(ref: ref, false)
+            luaUnref(ref)
+        })
     }
 
     // In-app notification history (behind the titlebar bell). Ephemeral — last 50, not persisted.
@@ -457,8 +456,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Notifier.post(title: title, body: msg, force: desktop)
         // If the dropdown is already open, drop the new note straight in (it's visible → read);
         // otherwise bump the unread badge on the bell.
-        let host = active?.controller.window?.contentView
-        if host?.subviews.contains(where: { $0 is NotificationsPanel }) == true {
+        if notifHost.isOpen {
             unread = 0
             presentNotifications()
         } else {
@@ -469,22 +467,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Toggle the notifications dropdown under the bell. Opening marks everything read.
     func showNotifications() {
-        guard let host = active?.controller.window?.contentView else { return }
-        if host.subviews.contains(where: { $0 is NotificationsPanel }) {
-            host.subviews.compactMap { $0 as? NotificationsPanel }.forEach {
-                $0.removeFromSuperview()
-            }
-            return  // bell pressed while open → close
-        }
+        if notifHost.isOpen { notifHost.close(); return }  // bell pressed while open → close
         unread = 0
         windows.forEach { $0.controller.setUnread(0) }
         presentNotifications()
     }
 
-    /// (Re)render the panel on the active window — called on open and after delete/clear.
+    /// (Re)render the panel over the active window — called on open and after delete/clear.
     private func presentNotifications() {
-        guard let host = active?.controller.window?.contentView else { return }
-        host.subviews.compactMap { $0 as? NotificationsPanel }.forEach { $0.removeFromSuperview() }
+        guard let parent = active?.controller.window else { return }
         let panel = NotificationsPanel(
             theme: theme, notes: notes.reversed(),
             onDelete: { [weak self] id in
@@ -497,9 +488,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.saveNotes()
                 self?.presentNotifications()
             })
-        panel.frame = host.bounds
-        panel.autoresizingMask = [.width, .height]
-        host.addSubview(panel)
+        panel.onDismiss = { [weak self] in self?.notifHost.close() }
+        notifHost.present(panel, over: parent)
     }
 
     // Live transient toasts, newest first. They stack: the newest is on top showing its text,

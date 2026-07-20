@@ -22,12 +22,18 @@ func terminalBacking(_ c: NSColor) -> CGColor {
 /// NSSplitView with a wide (grabbable) divider that *draws* as a 1px hairline —
 /// so it looks like the demo's thin split line but is easy to drag-resize.
 final class VestaSplitView: NSSplitView {
+    /// Terminal surface color, set by PaneTree on init/theme reload — the gutter paints
+    /// with it (at terminal opacity, same recipe as the titlebar band) so split panes read
+    /// as one continuous sheet instead of a desktop-colored slot between glass panes.
+    static var surface: NSColor?
+
     override var dividerThickness: CGFloat { VestaConfig.shared.dividerWidth }
-    // Always clear: on translucent terminals a painted gutter reads as an opaque bar
-    // between glass panes (user feedback) — the 1px drawn hairline is separation enough,
-    // and the glass/desktop behind shows through the gutter just like the panes.
     override var dividerColor: NSColor { .clear }
     override func drawDivider(in rect: NSRect) {
+        if let bg = Self.surface {
+            bg.withAlphaComponent(VestaConfig.shared.terminalOpacity).setFill()
+            rect.fill()
+        }
         NSColor(white: 1, alpha: 0.07).setFill()
         if isVertical {
             NSRect(x: rect.midX - 0.5, y: rect.minY, width: 1, height: rect.height).fill()
@@ -152,6 +158,7 @@ final class PaneTree {
         self.theme = theme
         self.paneID = paneID
         self.name = normalizedSessionName(name)
+        VestaSplitView.surface = theme.background
         root = NSView()
         root.wantsLayer = true
         root.layer?.backgroundColor = terminalBacking(theme.background)
@@ -175,6 +182,7 @@ final class PaneTree {
         self.paneID = PaneTree.firstLeafID(layout) ?? UUID().uuidString
         self.name = normalizedSessionName(name)
         self.dormantLayout = layout
+        VestaSplitView.surface = theme.background
         root = NSView()
         root.wantsLayer = true
         root.layer?.backgroundColor = terminalBacking(theme.background)
@@ -215,7 +223,7 @@ final class PaneTree {
             guard let self, let win = self.root.window, e.window === win else { return e }
             // A modal picker/confirm overlay owns its clicks — don't refocus the pane
             // underneath it (that steals first-responder from the picker's field editor).
-            if win.contentView?.subviews.contains(where: { $0 is PickerOverlay || $0 is ConfirmOverlay }) == true { return e }
+            if win.hasModalOverlay { return e }
             let pt = self.root.convert(e.locationInWindow, from: nil)
             for l in self.leaves where l.convert(l.bounds, to: self.root).contains(pt) {
                 if l.id != self.focusedId { self.focusedId = l.id; self.restyle() }
@@ -249,16 +257,30 @@ final class PaneTree {
     /// longer than `max` still tails to its bottom `max` lines — the marker itself may scroll off). That
     /// pins the sidebar card to the newest real conversation instead of the empty prompt box.
     nonisolated static func lastLines(_ text: String, max: Int) -> [String] {
-        var kept: [String] = []
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        var kept: [(idx: Int, text: String)] = []
+        var boxBottom = -1
+        for (i, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             let t = line.trimmingCharacters(in: .whitespaces)
-            if t.isEmpty || isChrome(t) { continue }
-            kept.append(t)
+            if t.isEmpty { continue }
+            if isChrome(t) {
+                // A boxy line starting ╰/└ is a TUI input box's bottom border.
+                if t.hasPrefix("╰") || t.hasPrefix("└") { boxBottom = i }
+                continue
+            }
+            kept.append((i, t))
         }
-        if let anchor = kept.lastIndex(where: { $0.hasPrefix("⏺") }) {
-            kept = Array(kept[anchor...])
+        // Status bars live BELOW the input box and can say anything (custom statuslines),
+        // so pattern-matching them is a losing game — drop whatever follows the box's
+        // bottom border instead. ponytail: ≤3-line guard — more than that below the box
+        // means the TUI exited and real shell output scrolled in under it; keep that.
+        if boxBottom >= 0, kept.filter({ $0.idx > boxBottom }).count <= 3 {
+            kept.removeAll { $0.idx > boxBottom }
         }
-        return Array(kept.suffix(max))
+        var out = kept.map(\.text)
+        if let anchor = out.lastIndex(where: { $0.hasPrefix("⏺") }) {
+            out = Array(out[anchor...])
+        }
+        return Array(out.suffix(max))
     }
 
     /// ponytail: a cheap heuristic, not a parser — flag a rendered viewport line as TUI "chrome"
@@ -375,6 +397,7 @@ final class PaneTree {
         if zoomed { unzoom() }
 
         let parentSplit = target.superview as? NSSplitView
+        let targetIdx = leaves.firstIndex { $0 === target } ?? 0
         leaves.removeAll { $0 === target }
         target.removeFromSuperview()
 
@@ -396,7 +419,9 @@ final class PaneTree {
             (grand as? NSSplitView)?.adjustSubviews()
         }
 
-        focusedId = leaves.first?.id ?? 0
+        // Focus falls to the PREVIOUS neighbor (closing pane 3 of 3 lands on 2, not 1);
+        // closing the first falls forward to the new first.
+        focusedId = leaves[max(0, targetIdx - 1)].id
         restyle()
     }
 
@@ -607,7 +632,10 @@ final class PaneTree {
     /// chrome colors on the leaves, fresh config to each terminal surface.
     func applyTheme(_ t: Theme) {
         theme = t
+        VestaSplitView.surface = t.background
         root.layer?.backgroundColor = terminalBacking(t.background)
+        func redraw(_ v: NSView) { (v as? VestaSplitView)?.needsDisplay = true; v.subviews.forEach(redraw) }
+        redraw(root)
         guard dormantLayout == nil else { return }   // dormant: theme adopted at materialize()
         for l in leaves {
             l.applyTheme(accent: t.accent, surface: t.background)
@@ -685,6 +713,23 @@ func tailFocusSelfCheck() {
            "anchors on last ⏺ block, drops input box + status bars: \(ct)")
     assert(!ct.contains { $0.contains("ctx [") || $0.hasPrefix("⏵") || $0.contains("shortcuts") },
            "no chrome survives")
+
+    // CUSTOM statuslines below the input box match no known fragment — everything under
+    // the box's ╰ bottom border is chrome regardless of content.
+    let custom = """
+    ⏺ Done with the fixes.
+    ╭──────────────────────────╮
+    │ >                        │
+    ╰──────────────────────────╯
+    [Fable 5 high]  ⌂ halo  ⎇ main
+    ⊡ sidebar-mockups · glass-mockups
+    """
+    let cu = PaneTree.lastLines(custom, max: 4)
+    assert(cu == ["⏺ Done with the fixes."], "custom statusline below box dropped: \(cu)")
+    // …but a pile of real output under an old box (TUI exited, shell scrolled in) is kept.
+    let exited = "╰────────╯\n❯ ls\na.txt\nb.txt\nc.txt\nd.txt"
+    assert(PaneTree.lastLines(exited, max: 4) == ["a.txt", "b.txt", "c.txt", "d.txt"],
+           ">3 lines below an old box are real output, kept")
 
     // Plain shell viewport: no chrome, no ⏺ — last ≤max lines unchanged.
     let shell = "$ ls\nfile1.txt file2.txt\n$ echo hi\nhi"

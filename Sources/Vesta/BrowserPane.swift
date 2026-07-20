@@ -148,7 +148,7 @@ extension BrowserPane: PaneContent {
     func focusContent() {
         guard let window else { return }
         // Don't steal focus from a modal picker/confirm overlay (see TerminalPane.focusContent).
-        if window.contentView?.subviews.contains(where: { $0 is PickerOverlay || $0 is ConfirmOverlay }) == true { return }
+        if window.hasModalOverlay { return }
         window.makeFirstResponder(webView)
     }
 }
