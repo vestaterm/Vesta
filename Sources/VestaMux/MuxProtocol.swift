@@ -22,6 +22,7 @@ public enum ClientFrame: Equatable {
     case list
     case subscribe(paneID: String)   // v5: passive output-only reader (GUI pane-output tap)
     case upgrade(path: String)       // v6: swap the daemon to a new binary in place (self-exec)
+    case info                        // v6: probe the daemon's own executable identity (SHA-256)
 }
 
 public enum ServerFrame: Equatable {
@@ -35,6 +36,7 @@ public enum ServerFrame: Equatable {
     // v6: reply to `upgrade`. Sent ONLY on failure (ok:false + reason). On success the daemon
     // execs the new binary, which closes this socket → the client sees EOF (success signal).
     case upgradeResult(ok: Bool, message: String)
+    case info(sha: String)           // v6: reply to `info` — the daemon's own exe SHA-256 (hex)
 }
 
 // ── byte helpers ────────────────────────────────────────────────────────
@@ -81,6 +83,7 @@ public func encode(_ f: ClientFrame) -> Data {
         putStr(paneID, into: &p); return frame(0x07, p)
     case let .upgrade(path):
         putStr(path, into: &p); return frame(0x08, p)
+    case .info: return frame(0x09, p)
     }
 }
 
@@ -102,6 +105,8 @@ public func encode(_ f: ServerFrame) -> Data {
         return frame(0x16, p)
     case let .upgradeResult(ok, message):
         p.append(ok ? 1 : 0); putStr(message, into: &p); return frame(0x18, p)
+    case let .info(sha):
+        putStr(sha, into: &p); return frame(0x19, p)
     }
 }
 
@@ -152,6 +157,7 @@ public func decodeClientFrame(from buf: inout Data) -> ClientFrame? {
     case 0x06: return .list
     case 0x07: return .subscribe(paneID: r.str())
     case 0x08: return .upgrade(path: r.str())
+    case 0x09: return .info
     default:   return nil
     }
 }
@@ -173,6 +179,7 @@ public func decodeServerFrame(from buf: inout Data) -> ServerFrame? {
         }
         return .sessions(list)
     case 0x18: return .upgradeResult(ok: r.byte() == 1, message: r.str())
+    case 0x19: return .info(sha: r.str())
     default: return nil
     }
 }
@@ -187,6 +194,7 @@ public func muxProtocolSelfCheck() {
         .detach, .kill, .list,
         .subscribe(paneID: "sub-1"),
         .upgrade(path: "/Applications/Vesta.app/Contents/MacOS/vestad"),
+        .info,
     ]
     for f in clientCases {
         var buf = encode(f)
@@ -203,6 +211,7 @@ public func muxProtocolSelfCheck() {
         .sessions([info, SessionInfo(id: "p2", name: nil, cwd: nil, alive: false, attachedCount: 0)]),
         .upgradeResult(ok: false, message: "new binary not executable"),
         .upgradeResult(ok: true, message: ""),
+        .info(sha: "3acca5829d4db4a21f9cda77d2baf8f1345ec651aebe50bd990f92328ae4c9da"),
     ]
     for f in serverCases {
         var buf = encode(f)
