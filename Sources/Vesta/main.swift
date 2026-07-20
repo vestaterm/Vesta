@@ -1186,6 +1186,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             Sidebar
               Right-click a project: rename, recolor, remove, new worktree session.
+              Session cards show the last lines of output; hover a card for × (close),
+              a divider for + (new session). Hover any glyph for its meaning.
+
+            Card legend
+              ⊞2          panes in the session      ●3   uncommitted git changes
+              :4321       listening port
+              accent rail  rang while backgrounded — click to open
+              ✓ · 2m      last command succeeded (unseen)
+              ✗ · 18m     last command failed (unseen) — amber rail
 
             CLI
               Run `vesta help` in any terminal for the agent-control API
