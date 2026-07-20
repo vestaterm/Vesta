@@ -98,7 +98,6 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
         let panel = NSView()
         panel.translatesAutoresizingMaskIntoConstraints = false
         panel.wantsLayer = true
-        panel.layer?.masksToBounds = true   // rows now reach the bottom edge — clip to the rounded corners
         installGlass(panel, tint: NSColor(white: 0.10, alpha: 1))   // glass moment: blur + dark tint
         panel.layer?.cornerRadius = 9
         panel.layer?.borderWidth = 1
@@ -155,9 +154,7 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
             scroll.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 10),
             scroll.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 8),
             scroll.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -8),
-            // Flush bottom: a scrolled list cuts at the card edge (reads as intentional
-            // overflow) instead of floating above a padding strip.
-            scroll.bottomAnchor.constraint(equalTo: panel.bottomAnchor),
+            scroll.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -10),
             scroll.heightAnchor.constraint(lessThanOrEqualTo: heightAnchor, multiplier: 0.8),
             listStack.widthAnchor.constraint(equalTo: scroll.widthAnchor),
         ]
