@@ -173,6 +173,19 @@ func tailStoreSelfCheck() {
     assert(TailStore.lastExitMarker("\u{1B}]133;D;1") == nil, "unterminated marker ignored")
     assert(TailStore.hasStartMarker("run: \u{1B}]133;C\u{07}x"), "start marker seen")
     assert(!TailStore.hasStartMarker("plain"), "no false start")
+    // onCommandDone: C then D in separate chunks fires with a real duration; C+D in ONE
+    // chunk yields dur≈0 (no ring); forget clears pending starts.
+    var fired: [(String, Int, TimeInterval)] = []
+    ts.onCommandDone = { fired.append(($0, $1, $2)) }
+    ts.ingest(paneID: "c", chunk: Data("\u{1B}]133;C\u{07}building…\n".utf8))
+    ts.ingest(paneID: "c", chunk: Data("done\u{1B}]133;D;0\u{07}".utf8))
+    assert(fired.count == 1 && fired[0].0 == "c" && fired[0].1 == 0 && fired[0].2 >= 0, "C→D fires")
+    ts.ingest(paneID: "c", chunk: Data("\u{1B}]133;C\u{07}x\u{1B}]133;D;2\u{07}".utf8))
+    assert(fired.count == 2 && fired[1].1 == 2 && fired[1].2 < 1, "same-chunk C+D ≈ zero duration")
+    ts.ingest(paneID: "c", chunk: Data("\u{1B}]133;C\u{07}".utf8))
+    ts.forget("c")
+    ts.ingest(paneID: "c", chunk: Data("\u{1B}]133;D;0\u{07}".utf8))
+    assert(fired.count == 3 && fired[2].2 == 0, "forget cleared the pending start (dur 0)")
     // End-to-end: the EXACT bytes our generated zsh integration emits must parse. Uses the
     // shared source of truth (VestaShellIntegration.doneMark) so the script's mark and this
     // parser can't silently drift apart.
