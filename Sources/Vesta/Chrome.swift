@@ -153,6 +153,9 @@ final class VestaWindowController: NSWindowController {
     /// the only durable handle AppKit gives for the titlebar.
     private var rootGlass: GlassView?   // glass mode's behind-window material (root-level)
     static let heatAmber = NSColor(srgbRed: 0.88, green: 0.70, blue: 0.47, alpha: 1)  // unseen-failure rail
+    private var newProjectBtn: NSButton?         // titlebar +, pinned to the sidebar edge
+    private var plusLeading: NSLayoutConstraint?    // syncTitlebarLayout-driven
+    private var folderLeading: NSLayoutConstraint?  // syncTitlebarLayout-driven
     private var titlebarBand: NSView?   // glass mode's full-width titlebar tint strip
 
     func flattenTitlebar() {
@@ -422,6 +425,7 @@ final class VestaWindowController: NSWindowController {
         UserDefaults.standard.set(true, forKey: "VestaSidebarOpen")
         sidebar.superview?.layoutSubtreeIfNeeded()
         updateToggleTint()
+        syncTitlebarLayout()
     }
 
     private func makeSidebar() -> NSView {
@@ -515,22 +519,9 @@ final class VestaWindowController: NSWindowController {
 
     // MARK: – Row builders
 
-    /// PROJECTS section header with count + trailing "+" new-project button.
+    /// PROJECTS section header (count only — the + lives in the titlebar now).
     private func makeProjHeaderRow(count: Int) -> NSView {
-        let countStr = String(format: "%02d", count)
-        let header = sectionLabel("PROJECTS", count: countStr)
-
-        let plus = tinyButton(symbol: "plus", label: "Add project") { [weak self] in self?.onNewProject() }
-        plus.translatesAutoresizingMaskIntoConstraints = false
-
-        header.addSubview(plus)
-        NSLayoutConstraint.activate([
-            plus.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
-            plus.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            plus.widthAnchor.constraint(equalToConstant: 16),
-            plus.heightAnchor.constraint(equalToConstant: 16),
-        ])
-        return header
+        sectionLabel("PROJECTS", count: String(format: "%02d", count))
     }
 
     /// Project DIVIDER: ▾ name ── hairline ── (count | +). Projects are grouping labels,
@@ -939,11 +930,16 @@ final class VestaWindowController: NSWindowController {
 
         // ONE line: status left (truncates, full text in tooltip), update + version right —
         // the footer never stacks, so plugin status can't grow it into a column of clutter.
-        let rows = NSStackView(views: [footer, upd, version])
+        let rows = NSStackView()
         rows.orientation = .horizontal
         rows.alignment = .centerY
         rows.spacing = 10
         rows.translatesAutoresizingMaskIntoConstraints = false
+        // Gravity split: status hugs the left, update badge + version ANCHOR to the
+        // sidebar's right edge instead of trailing the status text.
+        rows.addView(footer, in: .leading)
+        rows.addView(upd, in: .trailing)
+        rows.addView(version, in: .trailing)
 
         block.addSubview(topHair)
         block.addSubview(rows)
@@ -1036,9 +1032,32 @@ final class VestaWindowController: NSWindowController {
         host.addSubview(pill)
         prefixPill = pill
 
+        // New-project +, promoted from the PROJECTS header — pinned (via syncTitlebarLayout)
+        // to the sidebar's right edge so it reads as the sidebar's own titlebar action.
+        let plus = BlockButton(action: { [weak self] in self?.onNewProject() })
+        plus.translatesAutoresizingMaskIntoConstraints = false
+        plus.isBordered = false
+        plus.bezelStyle = .regularSquare
+        plus.title = ""
+        plus.imagePosition = .imageOnly
+        plus.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add project")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .regular))
+        plus.contentTintColor = txt(.dim)
+        plus.toolTip = "Add project"
+        newProjectBtn = plus
+
         host.addSubview(btn)
+        host.addSubview(plus)
         host.addSubview(folder)
         host.addSubview(dirLabel)
+
+        // Dynamic constants (set by syncTitlebarLayout): the accessory host doesn't know
+        // where the sidebar edge is — it starts after the traffic lights — so the folder+path
+        // cluster and the + are positioned by live sidebar width minus the host's own origin.
+        let plusLead = plus.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 140)
+        let folderLead = folder.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 180)
+        plusLeading = plusLead
+        folderLeading = folderLead
 
         NSLayoutConstraint.activate([
             btn.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 6),
@@ -1046,7 +1065,12 @@ final class VestaWindowController: NSWindowController {
             btn.widthAnchor.constraint(equalToConstant: 22),
             btn.heightAnchor.constraint(equalToConstant: 22),
 
-            folder.leadingAnchor.constraint(equalTo: btn.trailingAnchor, constant: 8),
+            plusLead,
+            plus.centerYAnchor.constraint(equalTo: host.centerYAnchor),
+            plus.widthAnchor.constraint(equalToConstant: 18),
+            plus.heightAnchor.constraint(equalToConstant: 18),
+
+            folderLead,
             folder.centerYAnchor.constraint(equalTo: host.centerYAnchor),
             folder.widthAnchor.constraint(equalToConstant: 13),
             folder.heightAnchor.constraint(equalToConstant: 13),
@@ -1071,6 +1095,19 @@ final class VestaWindowController: NSWindowController {
         titlebarAccessory = host
         window?.addTitlebarAccessoryViewController(acc)
         buildBellAccessory()
+        DispatchQueue.main.async { [weak self] in self?.syncTitlebarLayout() }  // after first layout
+    }
+
+    /// Track the sidebar edge from the titlebar: the + hugs the sidebar's right edge and
+    /// the folder+path cluster starts at the TERMINAL's left edge. Host coords differ from
+    /// window coords (traffic lights sit before the accessory), so subtract the host origin.
+    func syncTitlebarLayout() {
+        guard let host = titlebarAccessory, host.window != nil else { return }
+        let hostX = host.convert(NSPoint.zero, to: nil).x
+        let w = sidebarOpen ? openWidth : 0
+        newProjectBtn?.isHidden = !sidebarOpen        // collapsed: no sidebar edge to hug
+        plusLeading?.constant = max(40, w - hostX - 28)
+        folderLeading?.constant = max(40, w - hostX + 14)
     }
 
     /// The notifications bell, in its OWN trailing titlebar accessory so it pins to the
@@ -1187,6 +1224,7 @@ final class VestaWindowController: NSWindowController {
             sidebar.superview?.layoutSubtreeIfNeeded()
         }
         updateToggleTint()
+        syncTitlebarLayout()
     }
 
     private func updateToggleTint() {
