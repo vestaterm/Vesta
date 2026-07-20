@@ -239,6 +239,10 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
         tv.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticSpellingCorrectionEnabled = false
+        // Pin the editor to the semantic text color — never the theme/plugin accent.
+        tv.textColor = .textColor
+        tv.insertionPointColor = .textColor
+        tv.typingAttributes[.foregroundColor] = NSColor.textColor
         tv.string = currentConfigText()
         tv.delegate = self   // dirty tracking → ⌘S save + edited indicator
         scroll.documentView = tv
