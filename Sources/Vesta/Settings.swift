@@ -116,9 +116,11 @@ final class SettingsWindowController: NSWindowController {
         let glassBox = check(cfg.glassSidebar, #selector(glassChanged(_:)),
             tip: "Translucent sidebar with a behind-window blur; colors become tints.")
         let sidebarOpacity = slider(Double(cfg.sidebarOpacity), 0, 1, #selector(sidebarOpacityChanged(_:)))
+        sidebarOpacity.isContinuous = false   // onReload is heavy (re-runs plugins) — apply on release
         sidebarOpacity.toolTip = "Sidebar tint strength in glass mode (0…1)."
         let bgOpacity = slider(Double(cfg.terminalOpacity), 0.3, 1, #selector(bgOpacityChanged(_:)))
-        bgOpacity.toolTip = "Terminal translucency (ghostty background-opacity); separate from the sidebar."
+        bgOpacity.isContinuous = false        // onReload is heavy (re-runs plugins) — apply on release
+        bgOpacity.toolTip = "Terminal translucency (ghostty background-opacity); separate from the sidebar. Floor 0.3 keeps text readable."
         addSection("Glass", [
             row("Glass sidebar", glassBox, key: "vesta-glass-sidebar"),
             caption("Takes full effect on relaunch."),
@@ -148,9 +150,9 @@ final class SettingsWindowController: NSWindowController {
             tip: "Inject zsh OSC 133 marks so card heat (✓/✗) works out of the box.")
         addSection("Sessions", [
             row("Persist shells", persistBox, key: "vesta-persist"),
-            caption("Shells survive quitting the app."),
+            caption("Shells survive quitting the app. Off: new sessions are plain shells — nothing survives quit, and daemon features (heat, in-place updates) are off."),
             row("Persist scrollback", scrollbackBox, key: "vesta-persist-scrollback"),
-            caption("Off by default: terminal output can contain passwords, API tokens, and SSH keys — enable only if you accept that on disk. Applies on the next daemon start."),
+            caption("Off by default: terminal output can contain passwords, API tokens, and SSH keys — enable only if you accept that on disk. Applies on the next daemon start.", tone: .dim),
             row("Shell integration", shellBox, key: "vesta-shell-integration"),
             caption("Exit-status marks drive session-card heat; injected into zsh."),
         ])
@@ -309,10 +311,10 @@ final class SettingsWindowController: NSWindowController {
     }
 
     /// Dim wrapping caption, in the instrument font — for the sub-notes under rows.
-    private func caption(_ s: String) -> NSTextField {
+    private func caption(_ s: String, tone: Tier = .faint) -> NSTextField {
         let l = NSTextField(wrappingLabelWithString: s)
         l.font = Fonts.inst(10.5)
-        l.textColor = txt(.faint)
+        l.textColor = txt(tone)   // security-critical captions pass .dim for legibility
         l.preferredMaxLayoutWidth = 360
         return l
     }
@@ -330,8 +332,8 @@ final class SettingsWindowController: NSWindowController {
     /// daemon owns and VestaConfig doesn't surface). Quotes stripped; "false"/"0" = off.
     private func settingBool(_ key: String, default def: Bool) -> Bool {
         guard let v = GhosttyApp.shared.settings[key]?
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\" ")) else { return def }
-        return v != "false" && v != "0"
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\" ")), !v.isEmpty else { return def }
+        return v == "true" || v == "1" || v == "yes"   // mirror Daemon.boolConfig exactly
     }
 
     private func card(_ rows: [NSView]) -> NSView {
