@@ -14,6 +14,7 @@ final class SettingsWindowController: NSWindowController {
     private var accent: NSColor = .controlAccentColor   // selection rings in the icon grid
     private var iconCells: [IconCell] = []
     private var pluginBoxes: [NSButton] = []   // for the plugin filter field
+    private var lockRows: [(key: String, control: NSView, badge: NSTextField)] = []   // Lua-ownable rows
 
     init(theme: Theme,
          onSidebarWidth: @escaping (CGFloat) -> Void,
@@ -32,6 +33,7 @@ final class SettingsWindowController: NSWindowController {
         win.minSize = NSSize(width: 460, height: 520)
         super.init(window: win)
         build(theme: theme)
+        refreshLocks()
         win.center()
     }
     required init?(coder: NSCoder) { fatalError("no xib") }
@@ -288,16 +290,30 @@ final class SettingsWindowController: NSWindowController {
         l.alignment = .left
         l.widthAnchor.constraint(equalToConstant: 104).isActive = true
         var views: [NSView] = [l, control]
-        // Lua wins: if init.lua sets this key, it's Lua-owned — disable the control and badge it.
-        if let key, luaConfigOverrides[key] != nil {
-            (control as? NSControl)?.isEnabled = false
-            let badge = NSTextField(labelWithString: "· set by init.lua")
+        // Lua wins: a key set via vesta.set is Lua-owned — disable the control and badge
+        // it with the owning script. Evaluated in refreshLocks (not here) so a reload
+        // that drops the override (plugin disabled, line removed) unlocks live.
+        if let key {
+            let badge = NSTextField(labelWithString: "")
             badge.font = .systemFont(ofSize: 10); badge.textColor = .secondaryLabelColor
             views.append(badge)
+            lockRows.append((key, control, badge))
         }
         let r = NSStackView(views: views)
         r.orientation = .horizontal; r.spacing = 10; r.alignment = .centerY
         return r
+    }
+
+    /// Re-evaluate which rows are Lua-owned. Called at build and after every config
+    /// reload — overrides are rebuilt from the scripts that actually ran, so a
+    /// disabled plugin's lock disappears without an app restart.
+    func refreshLocks() {
+        for (key, control, badge) in lockRows {
+            let owner = luaConfigOverrideOwner[key]
+            (control as? NSControl)?.isEnabled = owner == nil
+            badge.stringValue = owner.map { "· set by \($0)" } ?? ""
+            badge.isHidden = owner == nil
+        }
     }
     private func slider(_ v: Double, _ lo: Double, _ hi: Double, _ action: Selector) -> NSSlider {
         let s = NSSlider(value: v, minValue: lo, maxValue: hi, target: self, action: action)

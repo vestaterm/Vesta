@@ -35,6 +35,7 @@ nonisolated(unsafe) var luaClearPanels: () -> Void = {}                         
 nonisolated(unsafe) var luaShowPrompt: (String, String, Int32) -> Void = { _, _, _ in }    // vesta.prompt(msg[, default], fn)
 nonisolated(unsafe) var luaShowConfirm: (String, Int32) -> Void = { _, _ in }              // vesta.confirm
 nonisolated(unsafe) var luaConfigOverrides: [String: String] = [:]                         // vesta.set (Lua wins)
+nonisolated(unsafe) var luaConfigOverrideOwner: [String: String] = [:]                     // key → "init.lua" | plugin name (Settings badge)
 
 // ── Plugin sandboxing ───────────────────────────────────────────────────────
 // Origin tracking: while a plugin's init.lua runs, luaCurrentPlugin names it, so the
@@ -194,6 +195,7 @@ private func l_vesta_set(_ L: OpaquePointer?) -> Int32 {
     if let vc = lua_tolstring(L, 2, nil) { val = String(cString: vc) }   // string / number
     else { val = lua_toboolean(L, 2) != 0 ? "true" : "false" }            // boolean
     luaConfigOverrides[key] = val
+    luaConfigOverrideOwner[key] = luaCurrentPlugin ?? "init.lua"
     return 0
 }
 /// vesta.plugin("owner/repo" [, { ref = "v1.2.0", priority = 10 }]) — declare a plugin,
@@ -550,7 +552,7 @@ final class LuaRuntime {
         if let old = luaState { lua_close(old); luaState = nil }
         // Drop refs/timers from the previous load (reload re-registers everything fresh).
         luaCommands.removeAll(); luaEvents.removeAll(); luaBinds.removeAll(); luaPluginSpecs.removeAll()
-        luaConfigOverrides.removeAll()
+        luaConfigOverrides.removeAll(); luaConfigOverrideOwner.removeAll()
         luaRefOwner.removeAll(); luaPluginErrors.removeAll(); luaCurrentPlugin = nil   // sandbox state
         luaClearTimers(); luaClearPanels()
         guard let L = luaL_newstate() else { return }
