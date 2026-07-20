@@ -10,7 +10,10 @@ final class GlassView: NSVisualEffectView {}
 /// transient layer only ("glass moments").
 @MainActor
 func installGlass(_ panel: NSView, tint: NSColor, alpha: CGFloat = 0.45, corner: CGFloat = 9,
-                  blending: NSVisualEffectView.BlendingMode = .withinWindow) {
+                  blending: NSVisualEffectView.BlendingMode = .behindWindow) {
+    // behindWindow, not withinWindow: within-window blur cannot sample the terminal's
+    // Metal layer, so AppKit paints a mismatched fallback rectangle behind the panel
+    // ("two backgrounds"). Desktop sampling composites correctly over everything.
     panel.wantsLayer = true
     panel.layer?.backgroundColor = NSColor.clear.cgColor
 
