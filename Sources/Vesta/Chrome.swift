@@ -538,7 +538,7 @@ final class VestaWindowController: NSWindowController {
         nameLabel.textColor = p.active ? tint : tint.withAlphaComponent(0.75)
         nameLabel.lineBreakMode = .byTruncatingTail
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        if let branch = p.branch { nameLabel.toolTip = "\(p.name) · ⎇ \(branch)" }
+        if let branch = p.branch { nameLabel.toolTip = "\(p.name) · ⎇ \(branch) — click to expand/collapse" }
 
         let hairline = NSView()
         hairline.translatesAutoresizingMaskIntoConstraints = false
@@ -563,6 +563,7 @@ final class VestaWindowController: NSWindowController {
         let slot = NSView()
         slot.translatesAutoresizingMaskIntoConstraints = false
         slot.setContentHuggingPriority(.required, for: .horizontal)
+        slot.toolTip = "sessions in \(p.name) — hover: new session"
         slot.addSubview(count)
         slot.addSubview(addBtn)
         NSLayoutConstraint.activate([
@@ -602,6 +603,7 @@ final class VestaWindowController: NSWindowController {
             row.heightAnchor.constraint(equalToConstant: 26),
         ])
 
+        row.toolTip = "click to expand/collapse"   // covers dividers without a branch label
         row.onClick = { [weak self] in self?.onToggleExpand(pi) }
         row.menu = makeProjectMenu(pi, name: p.name, hasColor: p.color != nil)
         return row
@@ -622,14 +624,23 @@ final class VestaWindowController: NSWindowController {
         label.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         // Chip-free meta: ⊞panes · ●dirty · :port · age — one dim run of text.
+        // metaTip is composed from the SAME conditionals so the legend explains exactly
+        // the parts that are present — nothing more, nothing less.
         var meta: [String] = []
-        if sess.paneCount > 1 { meta.append("⊞\(sess.paneCount)") }
-        if sess.dirty > 0 { meta.append("●\(sess.dirty)") }
-        if let port = sess.ports.first { meta.append(":\(port)") }
+        var metaTip: [String] = []
+        if sess.paneCount > 1 { meta.append("⊞\(sess.paneCount)"); metaTip.append("⊞\(sess.paneCount) — panes in this session") }
+        if sess.dirty > 0 { meta.append("●\(sess.dirty)"); metaTip.append("●\(sess.dirty) — uncommitted changes") }
+        if let port = sess.ports.first { meta.append(":\(port)"); metaTip.append(":\(port) — listening port") }
         switch sess.heat {
-        case .need: meta.append(sess.heatAge ?? "●")
-        case .warn: meta.append("✗ · \(sess.heatAge ?? "now")")
-        case .ok:   meta.append("✓ · \(sess.heatAge ?? "now")")
+        case .need:
+            meta.append(sess.heatAge ?? "●")
+            metaTip.append("\(sess.heatAge ?? "●") — rang while in background (unseen; click to clear)")
+        case .warn:
+            meta.append("✗ · \(sess.heatAge ?? "now")")
+            metaTip.append("✗ · \(sess.heatAge ?? "now") — last command failed \(sess.heatAge ?? "just now") ago (unseen; click to clear)")
+        case .ok:
+            meta.append("✓ · \(sess.heatAge ?? "now")")
+            metaTip.append("✓ · \(sess.heatAge ?? "now") — last command succeeded \(sess.heatAge ?? "just now") ago (unseen; click to clear)")
         case .none: break
         }
         var titleViews: [NSView] = [label]
@@ -637,7 +648,9 @@ final class VestaWindowController: NSWindowController {
         // ponytail: count-based grid, not real topology — read PaneTree.serializeLayout
         // and draw the true split tree if anyone asks.
         if VestaConfig.shared.sidebarPanes, sess.paneCount > 1 {
-            titleViews.insert(PaneSchematic(count: sess.paneCount, accent: theme.accent, dim: txt(.faint)), at: 0)
+            let schematic = PaneSchematic(count: sess.paneCount, accent: theme.accent, dim: txt(.faint))
+            schematic.toolTip = "split layout — focused pane highlighted (vesta-sidebar-panes)"
+            titleViews.insert(schematic, at: 0)
         }
         if !meta.isEmpty {
             let m = NSTextField(labelWithString: meta.joined(separator: " · "))
@@ -649,6 +662,7 @@ final class VestaWindowController: NSWindowController {
             }
             m.setContentCompressionResistancePriority(.required, for: .horizontal)
             m.setContentHuggingPriority(.required, for: .horizontal)
+            m.toolTip = metaTip.joined(separator: " · ")   // built-in legend for the glyph run
             titleViews.append(m)
             // Reserve the top-right corner so the revealed × never covers the meta text.
             let pad = NSView()
@@ -685,6 +699,7 @@ final class VestaWindowController: NSWindowController {
             tail.orientation = .horizontal
             tail.alignment = .top
             tail.spacing = 7
+            tail.toolTip = "last output of this session's focused pane (vesta-sidebar-tails)"
             rule.heightAnchor.constraint(equalTo: tailStack.heightAnchor).isActive = true
             rows.append(tail)
         }
@@ -719,6 +734,13 @@ final class VestaWindowController: NSWindowController {
         row.layer?.borderColor = hair(active ? 0.16 : 0.07).cgColor
         row.layer?.backgroundColor = active ? theme.accent.withAlphaComponent(0.07).cgColor : NSColor.clear.cgColor
         row.onHover = { [weak closeBtn] inside in closeBtn?.alphaValue = inside ? 1 : 0 }
+        // Row-level legend for the heat paint (rail + tinted meta) — only when it's lit.
+        switch sess.heat {
+        case .need: row.toolTip = "rang while in background — click to open"
+        case .warn: row.toolTip = "last command failed (exit shown on the amber rail) — unseen since \(sess.heatAge ?? "just now")"
+        case .ok:   row.toolTip = "last command succeeded — unseen since \(sess.heatAge ?? "just now")"
+        case .none: break
+        }
 
         row.addSubview(bar); row.addSubview(content); row.addSubview(closeBtn)
         NSLayoutConstraint.activate([
@@ -904,6 +926,7 @@ final class VestaWindowController: NSWindowController {
         c.textColor = txt(.faint).withAlphaComponent(0.7)
         c.alignment = .center
         c.translatesAutoresizingMaskIntoConstraints = false
+        c.toolTip = "projects"
         projCount = c   // pinned header builds this once; setProjects updates its value
 
         let row = NSView()
@@ -944,6 +967,7 @@ final class VestaWindowController: NSWindowController {
         version.translatesAutoresizingMaskIntoConstraints = false
         version.font = Fonts.inst(9.5)
         version.textColor = txt(.faint)
+        version.toolTip = "vesta version — updates appear here"
         version.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         // Update indicator (hidden until an update is available / downloading / ready).
