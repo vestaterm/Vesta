@@ -187,7 +187,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let dismiss: () -> Void = { [weak self] in self?.pickerHost.close() }
         guard let overlay = make(dismiss) else { return }
-        pickerHost.present(overlay, over: parent)
+        // Parent resize/close tears the overlay down without a pick — free the Lua refs
+        // so a waiting plugin flow doesn't leak (mirrors the cancel path's cleanup).
+        pickerHost.present(overlay, over: parent, onAutoClose: { refs.forEach { luaUnref($0) } })
     }
 
     /// vesta.pick: single-select (rich rows); call the ref with the chosen label.
@@ -402,7 +404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 dismiss()
                 luaUnref(ref)
             })
-        pickerHost.present(overlay, over: parent)
+        pickerHost.present(overlay, over: parent, onAutoClose: { luaUnref(ref) })
     }
 
     /// vesta.confirm: compact yes/no dialog; call the Lua ref with a boolean (Esc/scrim → false).
@@ -420,7 +422,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             luaCallBool(ref: ref, yes)
             luaUnref(ref)
         }
-        confirmHost.present(overlay, over: parent)
+        // Torn down by a parent-window event → resolve as "no" (Esc semantics), don't hang.
+        confirmHost.present(overlay, over: parent, onAutoClose: {
+            luaCallBool(ref: ref, false)
+            luaUnref(ref)
+        })
     }
 
     // In-app notification history (behind the titlebar bell). Ephemeral — last 50, not persisted.

@@ -65,10 +65,16 @@ extension NSWindow {
 final class ChildOverlay {
     private var window: NSWindow?
     private var obs: [NSObjectProtocol] = []
+    private var onAutoClose: (() -> Void)?
     var isOpen: Bool { window != nil }
 
-    func present(_ view: NSView, over parent: NSWindow) {
+    /// `onAutoClose` runs ONLY when the overlay is torn down by a parent-window event
+    /// (resize/minimize/close) — presenters pass their cancel semantics here so a Lua
+    /// confirm/pick/prompt still resolves (and frees its refs) instead of hanging when
+    /// its overlay silently vanishes. Direct dismissals go through close(), which skips it.
+    func present(_ view: NSView, over parent: NSWindow, onAutoClose: (() -> Void)? = nil) {
         close()
+        self.onAutoClose = onAutoClose
         let w = OverlayWindow(contentRect: parent.frame, styleMask: .borderless,
                               backing: .buffered, defer: false)
         w.isOpaque = false
@@ -83,12 +89,18 @@ final class ChildOverlay {
                      NSWindow.willCloseNotification] {
             obs.append(NotificationCenter.default.addObserver(
                 forName: name, object: parent, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.close() }
+                    MainActor.assumeIsolated {
+                        guard let self, self.isOpen else { return }
+                        let cancel = self.onAutoClose
+                        self.close()
+                        cancel?()
+                    }
                 })
         }
     }
 
     func close() {
+        onAutoClose = nil
         obs.forEach { NotificationCenter.default.removeObserver($0) }
         obs = []
         guard let w = window else { return }
