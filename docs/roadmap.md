@@ -77,8 +77,8 @@ own socket — used for that test, kept because it's generally useful.
   URL already works.
 - **Onboarding** — _mostly done_ (feat/plugin-onboarding): shipped
   `examples/starter/` (a runnable tour plugin) + `docs/writing-plugins.md` (full
-  API reference). Remaining: refresh the live `vesta-site` docs.html to match, and
-  sidebar empty states.
+  API reference). Remaining: sidebar empty states. _(The live `vesta-site`
+  docs.html refresh has shipped.)_
   - **First-open intro animation** _(shipped — `OnboardingOverlay.swift`)_: a
     first-launch sequence reusing the landing page's pixelated V-flame corruption
     → white reveal. A window-only "clean slate" overlay (titlebar shows only the

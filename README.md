@@ -37,10 +37,32 @@ and an agent-control CLI on top.
   won't ring the attention dot (its shell keeps running under the daemon
   regardless, and plugin `pane-output` taps still work).
 - **Projects → sessions sidebar** — vertical, drag-resizable. Each project owns
-  sessions; rename / recolor / remove from the right-click menu.
+  sessions; rename / recolor / remove from the right-click menu. Projects render
+  as full-width dividers, with the session count and the **+** new-session
+  control sharing one trailing slot.
+- **Session cards** — each card shows an output tail (the last ~4 rendered
+  lines of its focused pane, Claude Code-aware: anchored on the last `⏺` block,
+  input-box chrome filtered), pane counts (`⊞N`, or a tiny split-schematic with
+  `vesta-sidebar-panes`), and **heat**: an unseen failure flips the card amber
+  with `✗` + how long ago, an unseen success gets a `✓` — driven by OSC 133
+  marks, which Vesta injects into zsh out of the box (`vesta-shell-integration`);
+  the bell/attention rail stays brightest. Actions like close reveal on hover —
+  no always-visible close buttons.
+- **Glass** — ephemeral chrome (command palette, confirms, toasts) always
+  renders on native blur ("glass moments"). Opt in further with
+  `vesta-glass-sidebar` (translucent sidebar, surface color as tint,
+  `vesta-sidebar-opacity` for strength) and ghostty's own `background-opacity`
+  for terminal translucency — two independent knobs, each with a matching
+  titlebar band.
 - **Native splits** — `⌘D` / `⌘⇧D`, click-to-focus, zoom, drag dividers.
 - **Command palette** — `⌘⇧P` opens a searchable list of every action (splits,
-  sessions, browser pane, settings…) plus your plugins' `vesta.command` entries.
+  sessions, browser pane, settings…) plus your plugins' `vesta.command` entries,
+  auto-scaling as you filter.
+- **Default terminal** — **Vesta ▸ Make Vesta the Default Terminal** registers
+  it as the Shell-role handler for unix executables (the same mechanism as
+  Ghostty/iTerm2).
+- **Drag & drop** — drop files onto a pane and their paths insert shell-escaped,
+  space-separated (Terminal.app behavior); dropped text inserts as-is.
 - **Scriptable** — the `vesta` CLI drives and reads the live UI over a Unix
   socket, so agents can orchestrate it.
 - **Notifications** — `vesta.notify` from a plugin shows a stacking in-app toast,
@@ -172,7 +194,13 @@ look, so an untouched config changes nothing.
 | `vesta-divider-width` | 8 | split divider grab width (1px hairline drawn) |
 | `vesta-projects` | — | comma-separated project paths to preload |
 | `vesta-persist` | true | run shells under `vestad` (survive quit); `false` = plain shells |
-| `vesta-persist-scrollback` | false | mirror scrollback to disk so it survives a daemon restart. **Off by default** — terminal output can contain secrets (see [SECURITY.md](SECURITY.md)) |
+| `vesta-persist-scrollback` | false | mirror scrollback to disk so it survives a daemon restart — or a reboot. **Off by default** — terminal output can contain secrets (see [SECURITY.md](SECURITY.md)) |
+| `vesta-sidebar-tails` | true | session cards show the last ~4 rendered lines of their focused pane (content-aware for TUI agents: anchors on Claude Code's last `⏺` block, filters its input box). Also gates background materialization of restored sessions at launch |
+| `vesta-sidebar-panes` | false | tiny split-schematic on multi-pane session cards; off = a dim `⊞N` count still shows |
+| `vesta-glass-sidebar` | false | translucent sidebar — behind-window blur with the surface color as a tint; titlebar over the sidebar matches. Applies on relaunch |
+| `vesta-sidebar-opacity` | 0.55 | sidebar tint strength in glass mode (0..1) |
+| `vesta-shell-integration` | true | inject zsh OSC 133 marks into daemon-spawned shells so card heat (✓/✗) works out of the box; `false` = opt out |
+| `background-opacity` | 1 | ghostty key (no `vesta-` prefix): terminal translucency, e.g. `0.9` — independent of the sidebar; the titlebar strip over the terminal matches the terminal's color and opacity |
 | `vesta-prefix` | ctrl+b | prefix key for tmux-style mode; empty = disabled |
 | `vesta-prefix-bind` | — | override prefix bindings: `key:action, …` |
 
@@ -201,6 +229,10 @@ to rename / recolor / remove it. `⌘W` closes the focused pane; `⌘⇧W` close
 - `PaneTree.swift` — tmux-style splits as nested `NSSplitView`s.
 - `Tabs.swift` — the `Workspace` model: projects own sessions.
 - `Chrome.swift` — window, titlebar, sidebar rendering.
+- `TailStore.swift` — cleaned per-pane output tails (ANSI-stripped, OSC 133
+  exit marks parsed) feeding the session cards.
+- `Glass.swift` — native-blur base for ephemeral chrome ("glass moments") and
+  the glass sidebar.
 - `Control.swift` — the `vesta` CLI + socket server.
 - `GhosttyConfig.swift` — `Theme` + `VestaConfig` (the `vesta-*` keys).
 - `Git.swift` — branch / status, shelled out off-main.
@@ -209,7 +241,8 @@ to rename / recolor / remove it. `⌘W` closes the focused pane; `⌘⇧W` close
   output ring, replayed on attach. No terminal parsing (ghostty does that).
 - `Sources/vesta-attach/` — the per-pane relay ghostty spawns as its command;
   a dumb byte pump between the pane and the daemon over a `0600` unix socket.
-- `Sources/VestaMux/` — shared wire protocol (`MuxProtocol`) + paths (`MuxPaths`).
+- `Sources/VestaMux/` — shared wire protocol (`MuxProtocol`) + paths (`MuxPaths`)
+  + `ShellIntegration.swift` (the zsh OSC 133 injection, via a ZDOTDIR swap).
 
 ## Roadmap
 
@@ -217,9 +250,9 @@ Designs live in `docs/superpowers/specs/`. Shipped: **persistent sessions**
 (`2026-06-25-mux-rawring-rewrite.md`) — `vestad`/`vesta-attach` raw-ring
 multiplexer, prefix mode. Deferred there: mirroring (one session in two panes),
 remote attach (`vesta attach ssh://`), and inline-image replay across detach.
-(Disk-spill scrollback later shipped as `vesta-persist-scrollback`.) Also in flight: **cmux parity**
-(`2026-06-22-cmux-parity-design.md`) — worktree-isolated sessions, attention
-rings, richer sidebar, embedded browser pane.
+(Disk-spill scrollback later shipped as `vesta-persist-scrollback`.) Also shipped: **cmux parity**
+(`2026-06-22-cmux-parity-design.md`) — worktree-isolated sessions (`vesta worktree`),
+attention rings, the richer sidebar (cards with tails/heat), embedded browser pane.
 
 ## Self-checks
 
