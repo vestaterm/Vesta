@@ -6,6 +6,10 @@ import Darwin
 
 final class Daemon {
     private var listenFD: Int32 = -1
+    // Single-instance lock fd. Held for the process lifetime AND across a self-exec upgrade
+    // (CLOEXEC cleared before execv, re-adopted by the new image), so the swap window never
+    // exposes the lock to a competing lazy-spawned daemon.
+    private var lockFD: Int32 = -1
     private var sessions: [String: Session] = [:]
     private var clientBufs: [Int32: Data] = [:]   // partial inbound frames per client fd
     // Per-connection state: fd → the paneID it attached to.
@@ -50,33 +54,79 @@ final class Daemon {
         // Generate our zsh OSC 133 integration once (write-if-changed). Skipped when opted
         // out — then spawned shells simply won't have ZDOTDIR swapped (graceful degradation).
         if shellIntegration { VestaShellIntegration.ensure() }
-        // Single-instance: hold an exclusive lock so concurrent lazy-spawns (one per
-        // pane at launch) don't race to unlink/clobber each other's live socket. A
-        // redundant vestad exits cleanly; the relays then all connect to the winner.
-        // lockFD intentionally stays open for the process lifetime (releases on exit).
-        let lockFD = open(MuxPaths.base + "/vestad.lock", O_CREAT | O_RDWR, 0o600)
-        guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { exit(0) }
-        setCloseOnExec(lockFD)   // held for the process lifetime — must not leak into forked shells
+        acquireLock()   // single-instance; exits(0) if another daemon already holds it
+        serve()
+    }
+
+    /// Adopt fds + sessions inherited across a self-exec upgrade, then serve. On any snapshot
+    /// problem (missing/corrupt/version-mismatch file) fall back to a fresh start — shells are
+    /// lost, but the daemon comes up clean rather than hanging. `lockFD` is the inherited
+    /// single-instance lock (held continuously across the exec); if it's invalid we acquire
+    /// one fresh (belt-and-suspenders — the upgrade path always passes a valid one).
+    func resume(statePath: String, lockFD adoptedLock: Int32) {
+        MuxPaths.ensureDirs()
+        if shellIntegration { VestaShellIntegration.ensure() }
+        if adoptedLock >= 0 {
+            self.lockFD = adoptedLock
+            setCloseOnExec(adoptedLock)   // re-arm: a normal future exit/exec must not leak it
+        } else {
+            acquireLock()
+        }
+        guard let state = readUpgradeState(statePath) else {
+            fputs("vestad --resume: unreadable/incompatible state file — starting fresh\n", stderr)
+            unlink(statePath)
+            serve()
+            return
+        }
+        for ss in state.sessions {
+            sessions[ss.paneID] = Session(adopting: ss, logEnabled: logEnabled)
+        }
+        unlink(statePath)   // adopted → the snapshot has done its job
+        serve()
+    }
+
+    /// Acquire the exclusive single-instance lock. A redundant vestad exits(0) cleanly; the
+    /// relays then all connect to the winner. The lock fd stays open for the process lifetime.
+    private func acquireLock() {
+        let lock = open(MuxPaths.base + "/vestad.lock", O_CREAT | O_RDWR, 0o600)
+        guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { exit(0) }
+        setCloseOnExec(lock)   // held for the process lifetime — must not leak into forked shells
+        lockFD = lock
+    }
+
+    /// Bind the listen socket and enter the select loop. Called by both run() (fresh) and
+    /// resume() (post-upgrade) — the lock is already held by the time we get here.
+    private func serve() {
+        guard bindListenSocket() else { return }   // bind failure → exit (releases the lock)
+        loop()
+    }
+
+    /// (Re)bind the daemon's unix listen socket. Also used to re-bind after an execv that
+    /// FAILED (fail-safe path in performUpgrade). Returns false if socket/bind/listen failed.
+    @discardableResult
+    private func bindListenSocket() -> Bool {
         let path = MuxPaths.daemonSocket
         unlink(path)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        setCloseOnExec(fd)   // listen socket must not leak into forked shells
+        if fd < 0 { return false }
+        setCloseOnExec(fd)   // listen socket must not leak into forked shells (or a successful exec)
         var addr = makeSockaddrUn(path)
         let len = socklen_t(MemoryLayout<sockaddr_un>.size)
         let bound = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, len) }
         }
         let lr = listen(fd, 16)
-        guard bound == 0, lr == 0 else { close(fd); return }
+        guard bound == 0, lr == 0 else { close(fd); return false }
         chmod(path, 0o600)            // owner-only: this socket carries keystrokes + scrollback
         listenFD = fd
-        loop()
+        return true
     }
 
     private func loop() {
         while true {
-            var rset = fd_set(); __darwin_fd_set(listenFD, &rset)
-            var maxFD = listenFD
+            var rset = fd_set()
+            var maxFD: Int32 = 0
+            if listenFD >= 0 { __darwin_fd_set(listenFD, &rset); maxFD = listenFD }
             for (_, s) in sessions { __darwin_fd_set(s.masterFD, &rset); maxFD = max(maxFD, s.masterFD) }
             for fd in clientBufs.keys { __darwin_fd_set(fd, &rset); maxFD = max(maxFD, fd) }
             var tv = timeval(tv_sec: 5, tv_usec: 0)
@@ -91,7 +141,7 @@ final class Daemon {
             }
             reapDeadShells()
             if sessions.isEmpty && clientBufs.isEmpty && idleExpired() { break }  // idle-exit
-            if __darwin_fd_isset(listenFD, &rset) != 0 { acceptClient() }
+            if listenFD >= 0 && __darwin_fd_isset(listenFD, &rset) != 0 { acceptClient() }
             // Drain every PTY (even with zero clients → no backpressure).
             for (_, s) in sessions where __darwin_fd_isset(s.masterFD, &rset) != 0 { drainPTY(s) }
             // Read client frames.
@@ -256,7 +306,60 @@ final class Daemon {
             if let s = sessions[paneID] { s.addSubscriber(fd: fd) }
             else { pendingSubscribers[paneID, default: []].append(fd) }
             if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion))) { closeClient(fd) }
+        case let .upgrade(path):
+            performUpgrade(newBinary: path, replyTo: fd)
         }
+    }
+
+    /// Zero-downtime self-exec upgrade: swap this daemon to `newBinary` WITHOUT killing the
+    /// shells it hosts. Fail-safe at every step — any problem aborts the upgrade, keeps the
+    /// daemon running, and reports the reason over the socket. On success the daemon execs the
+    /// new image (this socket closes → the client sees EOF, the success signal).
+    ///
+    /// Failure modes & fallbacks (all keep the daemon serving):
+    ///  - new binary missing / not executable     → error reply, no change
+    ///  - identical binary (same SHA-256)          → error reply (no-op upgrade refused)
+    ///  - state-file write fails                   → error reply, no change
+    ///  - execv itself fails (bad arch/ENOEXEC)    → re-arm CLOEXEC, re-bind socket, error reply
+    private func performUpgrade(newBinary: String, replyTo fd: Int32) {
+        func fail(_ msg: String) {
+            fputs("vestad upgrade refused: \(msg)\n", stderr)
+            if !sendFrame(fd, encode(ServerFrame.upgradeResult(ok: false, message: msg))) { closeClient(fd) }
+        }
+        // 1. Validate the target.
+        guard FileManager.default.isExecutableFile(atPath: newBinary) else {
+            fail("new binary is missing or not executable: \(newBinary)"); return
+        }
+        // 2. Refuse a no-op upgrade to a byte-identical binary (SHA-256 of file contents).
+        let curPath = currentExecutablePath()
+        if let a = sha256OfFile(curPath), let b = sha256OfFile(newBinary), a == b {
+            fail("new binary is identical to the running one (SHA-256 match) — no-op upgrade refused"); return
+        }
+        // 3. Snapshot every session (paneID/master-fd/pid/size/cwd/name/ring) to a 0600 file.
+        let state = UpgradeState(lockFD: lockFD, sessions: sessions.values.map { $0.snapshotState() })
+        guard writeUpgradeState(state) else { fail("failed to write the upgrade state file"); return }
+        // 4. Clear CLOEXEC on the pty masters + the lock fd so they survive execv by number.
+        clearCloseOnExec(lockFD)
+        for s in sessions.values { clearCloseOnExec(s.masterFD) }
+        // 5. Close the listen socket cleanly (the new image re-binds it). Keep `fd` open so we
+        //    can still report an execv failure; other client fds are CLOEXEC → a successful
+        //    exec closes them, and those panes reconnect (vesta-attach) to the new daemon.
+        if listenFD >= 0 { close(listenFD); listenFD = -1 }
+        // 6. execv in place. argv[0] = newBinary so the new image's self-identity resolves to
+        //    itself for future upgrades; --resume <state> --lockfd <n> hands off the fds.
+        let argv: [String] = [newBinary, "--resume", upgradeStatePath, "--lockfd", String(lockFD)]
+        let cargv: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) } + [nil]
+        _ = execv(newBinary, cargv)
+        // 7. execv returned → it FAILED. Fail safe: re-arm CLOEXEC, drop the stale state file,
+        //    re-bind the socket, keep serving, and tell the client. (Nearly impossible after
+        //    the isExecutableFile check — reached only on ENOEXEC / arch mismatch.)
+        let err = String(cString: strerror(errno))
+        for p in cargv where p != nil { free(p) }
+        setCloseOnExec(lockFD)
+        for s in sessions.values { setCloseOnExec(s.masterFD) }
+        unlink(upgradeStatePath)
+        _ = bindListenSocket()
+        fail("exec of new binary failed: \(err)")
     }
 
     /// Write a whole length-prefixed frame to `fd`. Returns true if every byte was
