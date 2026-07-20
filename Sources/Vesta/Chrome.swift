@@ -1142,21 +1142,22 @@ final class TaggedRow: NSView {
         // mouseEntered, which would leave the hover-revealed ×/+ invisible-forever. Re-assert.
         if let w = window {
             let p = convert(w.mouseLocationOutsideOfEventStream, from: nil)
-            if bounds.contains(p), bounds.width > 0 { mouseEntered(with: NSEvent()) }
+            if bounds.contains(p), bounds.width > 0 { setHovered(true) }
         }
     }
-    override func mouseEntered(with event: NSEvent) {
-        onHover?(true)
-        if hoverHighlight, (layer?.backgroundColor.flatMap { $0.alpha } ?? 0) < 0.01 {
+    /// Single hover implementation — the mouseEntered/Exited overrides and the
+    /// rebuild re-assert all funnel here, so no path ever needs a synthetic NSEvent.
+    private func setHovered(_ inside: Bool) {
+        onHover?(inside)
+        guard hoverHighlight else { return }
+        if inside, (layer?.backgroundColor.flatMap { $0.alpha } ?? 0) < 0.01 {
             layer?.backgroundColor = NSColor(white: 1, alpha: 0.04).cgColor
-        }
-    }
-    override func mouseExited(with event: NSEvent) {
-        onHover?(false)
-        if hoverHighlight, let bg = layer?.backgroundColor, bg.alpha <= 0.05 {
+        } else if !inside, let bg = layer?.backgroundColor, bg.alpha <= 0.05 {
             layer?.backgroundColor = NSColor.clear.cgColor
         }
     }
+    override func mouseEntered(with event: NSEvent) { setHovered(true) }
+    override func mouseExited(with event: NSEvent) { setHovered(false) }
 }
 
 /// Tiny split-topology schematic on a session card (vesta-sidebar-panes): up to four

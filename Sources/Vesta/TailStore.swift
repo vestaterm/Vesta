@@ -44,8 +44,9 @@ final class TailStore {
         }
         if lines.count > Self.maxLines { lines.removeFirst(lines.count - Self.maxLines) }
         tails[paneID] = lines
-        // Keep the unterminated remainder (usually the prompt) RAW — see lines(). Bounded;
-        // trimming the FRONT can only drop already-rendered bytes, never split a fresh escape.
+        // Keep the unterminated remainder (usually the prompt) RAW — see lines(). Bounded:
+        // a >1KB no-newline line can cut mid-escape at the FRONT, but the dominant case is a
+        // \r progress bar, whose CR handling wipes anything before the last \r anyway.
         partial[paneID] = String(rest.suffix(1024))
         lastActivity[paneID] = Date()
         scheduleNotify()
