@@ -312,7 +312,8 @@ final class VestaWindowController: NSWindowController {
                 let prow = makeProjectRow(pi, proj)
                 stack.addArrangedSubview(prow)
                 // Stretch project row to full stack width (constraint added after insertion).
-                prow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -8).isActive = true
+                // Dividers run the full sidebar width — the count/+ slot IS the right edge.
+                prow.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
                 var last: NSView = prow
                 if proj.expanded {
                     stack.setCustomSpacing(3, after: prow)   // tighter gap before nested sessions
@@ -582,9 +583,11 @@ final class VestaWindowController: NSWindowController {
         row.wantsLayer = true
         row.layer?.cornerRadius = 5
         row.hoverHighlight = false   // dividers don't need a hover wash; the + reveal is enough
+        // Direct alpha (no animator): rows rebuild ≤1/s under streaming output, and the
+        // hover re-assert would otherwise re-fade the count in and out every rebuild.
         row.onHover = { [weak addBtn, weak count] inside in
-            addBtn?.animator().alphaValue = inside ? 1 : 0   // + reveals
-            count?.animator().alphaValue = inside ? 0 : 1    // count hides — same slot
+            addBtn?.alphaValue = inside ? 1 : 0   // + reveals
+            count?.alphaValue = inside ? 0 : 1    // count hides — same slot
         }
 
         row.addSubview(content)
@@ -713,7 +716,7 @@ final class VestaWindowController: NSWindowController {
         row.layer?.borderWidth = 1
         row.layer?.borderColor = hair(active ? 0.16 : 0.07).cgColor
         row.layer?.backgroundColor = active ? theme.accent.withAlphaComponent(0.07).cgColor : NSColor.clear.cgColor
-        row.onHover = { [weak closeBtn] inside in closeBtn?.animator().alphaValue = inside ? 1 : 0 }
+        row.onHover = { [weak closeBtn] inside in closeBtn?.alphaValue = inside ? 1 : 0 }
 
         row.addSubview(bar); row.addSubview(content); row.addSubview(closeBtn)
         NSLayoutConstraint.activate([
@@ -897,6 +900,7 @@ final class VestaWindowController: NSWindowController {
         let c = NSTextField(labelWithString: count)
         c.font = Fonts.inst(9.5)
         c.textColor = txt(.faint).withAlphaComponent(0.7)
+        c.alignment = .center
         c.translatesAutoresizingMaskIntoConstraints = false
         projCount = c   // pinned header builds this once; setProjects updates its value
 
@@ -907,7 +911,9 @@ final class VestaWindowController: NSWindowController {
         NSLayoutConstraint.activate([
             l.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
             l.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            c.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -36), // leave room for + btn
+            // Same column as the divider rows' count/+ slot: 18pt centered, 10 from the edge.
+            c.widthAnchor.constraint(equalToConstant: 18),
+            c.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
             c.centerYAnchor.constraint(equalTo: row.centerYAnchor),
             row.heightAnchor.constraint(equalToConstant: 16),
         ])
