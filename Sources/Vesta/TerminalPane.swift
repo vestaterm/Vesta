@@ -107,6 +107,33 @@ import GhosttyKit
 
         let p = Unmanaged.passUnretained(self).toOpaque()
         TerminalPane.liveLock.lock(); TerminalPane.live.insert(p); TerminalPane.liveLock.unlock()
+
+        // See-through terminal: ghostty renders background-opacity into its layer's
+        // pixels (alpha < 255), but the layer composites OPAQUE by default, so the
+        // alpha is ignored and the pane stays solid. Un-paint it so the alpha lands.
+        applyTerminalOpacity()
+    }
+
+    /// Make ghostty's render layer honor its per-pixel alpha when the ghostty config
+    /// asks for a translucent background (`background-opacity < 1`). No-op at full
+    /// opacity. On macOS libghostty's Metal renderer REPLACES this view's own `layer`
+    /// with its IOSurface-backed CALayer (see ghostty renderer/Metal.zig — it assigns
+    /// `view.layer` then sets `wantsLayer`), and never marks it non-opaque; a non-opaque
+    /// CALayer whose IOSurface carries alpha is what actually blends onto the un-painted
+    /// window behind it.
+    private func applyTerminalOpacity() {
+        guard VestaConfig.shared.terminalOpacity < 1 else { return }
+        layer?.isOpaque = false
+        // Defensive: if a future libghostty adds the Metal surface as a SUBLAYER instead
+        // of replacing our layer, un-paint that too.
+        layer?.sublayers?.forEach { $0.isOpaque = false }
+        // ponytail: the renderer may swap in its layer just after ghostty_surface_new
+        // returns, so re-apply once on the next runloop turn to catch a late layer.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, VestaConfig.shared.terminalOpacity < 1 else { return }
+            self.layer?.isOpaque = false
+            self.layer?.sublayers?.forEach { $0.isOpaque = false }
+        }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
@@ -124,6 +151,7 @@ import GhosttyKit
     func updateConfig(_ cfg: ghostty_config_t) {
         guard let surface else { return }
         ghostty_surface_update_config(surface, cfg)
+        applyTerminalOpacity()   // background-opacity may have just changed on live reload
     }
 
     // MARK: - Public API (contract)
@@ -513,6 +541,7 @@ import GhosttyKit
         // Trigger a backing-properties pass so scale/size/display are correct
         // once we're attached to a window.
         viewDidChangeBackingProperties()
+        applyTerminalOpacity()   // layer is guaranteed present once attached to a window
     }
 
     override func updateTrackingAreas() {
