@@ -111,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.reconcileDisplay()
             self.scheduleSave()
         }
+        store.renderNow = { [weak self] in self?.windows.forEach { $0.renderSidebarNow() } }
         let ctx = WindowContext(
             theme: theme, store: store, hydrateFrom: hydrateFrom,
             onBecomeKey: { [weak self] c in
