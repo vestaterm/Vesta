@@ -311,7 +311,9 @@ final class SettingsWindowController: NSWindowController {
         for (key, control, badge) in lockRows {
             let owner = luaConfigOverrideOwner[key]
             (control as? NSControl)?.isEnabled = owner == nil
-            badge.stringValue = owner.map { "· set by \($0)" } ?? ""
+            // "overridden", not "set": the control may still show the FILE's value — the
+            // Lua override wins at merge time but the well isn't re-synced to it.
+            badge.stringValue = owner.map { "· overridden by \($0)" } ?? ""
             badge.isHidden = owner == nil
         }
     }
