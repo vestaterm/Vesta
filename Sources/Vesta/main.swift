@@ -987,6 +987,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let t = GhosttyApp.shared.reloadConfig()  // re-read file + merge Lua overrides (Lua wins)
         theme = t
         windows.forEach { $0.applyTheme(t) }
+        settingsWC?.refreshLocks()  // Lua-owned rows may have (un)locked (e.g. plugin toggled)
         // Re-parse the prefix from the merged settings (Lua may have set vesta-prefix).
         let s = GhosttyApp.shared.settings
         prefix = parsePrefixSpec(s["vesta-prefix"] ?? "ctrl+b")
