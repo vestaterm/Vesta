@@ -238,7 +238,7 @@ outer: while true {
         if k > 0, !send(.input(Data(tmp[0..<k]))) {
             // Input write failed → the daemon socket broke. Reconnect and resend this chunk on
             // the new fd so the keystrokes aren't lost; only tear down if reconnect exhausts.
-            if !reconnect() { break outer }
+            if !reconnect() { writeErr("vesta-attach: daemon unreachable after retries — detaching\r\n"); break outer }
             _ = send(.input(Data(tmp[0..<k])))
         }
     }
@@ -248,7 +248,11 @@ outer: while true {
         let k = read(sock, &tmp, tmp.count)
         // Daemon closed the socket (restart/crash/blip). Don't treat as session death:
         // reconnect + re-hello, resuming the relay. Only exit if the retries exhaust.
-        if k == 0 { if reconnect() { continue } else { break outer } }
+        if k == 0 {
+            if reconnect() { continue }
+            writeErr("vesta-attach: daemon unreachable after retries — detaching\r\n")
+            break outer
+        }
         // sock is non-blocking: a spurious EAGAIN/EWOULDBLOCK (or EINTR) is transient,
         // so don't treat it as EOF and don't process stale bytes. A real error → reconnect.
         if k < 0 {
