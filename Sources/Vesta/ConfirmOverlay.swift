@@ -76,6 +76,9 @@ final class ConfirmOverlay: NSView {
             panel.topAnchor.constraint(equalTo: topAnchor, constant: 120),
             panel.centerXAnchor.constraint(equalTo: centerXAnchor),
             panel.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+            // Fit small windows: never wider than the overlay, never past its bottom.
+            panel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.92),
+            panel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -16),
             label.topAnchor.constraint(equalTo: panel.topAnchor, constant: 16),
             label.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 18),
             label.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -18),
