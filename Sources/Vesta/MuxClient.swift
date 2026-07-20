@@ -1,10 +1,68 @@
 import Foundation
 import VestaMux
+import CryptoKit
 #if canImport(Darwin)
 import Darwin
 #endif
 
 enum MuxClient {
+    /// Outcome of an in-place daemon upgrade request.
+    enum UpgradeOutcome: Equatable {
+        case success            // the daemon exec'd the new binary (socket EOF, no error frame)
+        case failure(String)    // the daemon refused/failed and kept running (reason)
+        case unreachable        // daemon down or unresponsive — nothing to upgrade
+    }
+
+    /// SHA-256 (hex) of a file's contents, or nil if unreadable. Used to compare the bundled
+    /// vestad against the running daemon's own executable identity.
+    static func sha256OfFile(_ path: String) -> String? {
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Ask the running daemon for its own executable SHA-256. Returns nil if the daemon is
+    /// down OR doesn't answer `info` (an older daemon predating in-place upgrade — we then
+    /// leave it alone). Bounded read so a wedged daemon can't stall launch.
+    static func daemonExecutableSHA() -> String? {
+        guard let fd = connect() else { return nil }
+        defer { close(fd) }
+        guard send(fd, .info) else { return nil }
+        var tv = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var buf = Data()
+        var tmp = [UInt8](repeating: 0, count: 4096)
+        for _ in 0..<8 {   // a couple of reads is plenty for one small reply frame
+            let n = read(fd, &tmp, tmp.count)
+            if n <= 0 { break }
+            buf.append(Data(tmp[0..<n]))
+            if let f = decodeServerFrame(from: &buf), case let .info(sha) = f { return sha }
+        }
+        return nil
+    }
+
+    /// Request an in-place upgrade to the binary at `path`. Success is signalled by the daemon
+    /// exec'ing → this socket EOFs with no error frame; a refusal/failure arrives as
+    /// upgradeResult(ok:false). Bounded read (exec+adopt takes a moment) so a wedged daemon
+    /// can't beachball the caller.
+    static func upgradeDaemon(to path: String) -> UpgradeOutcome {
+        guard let fd = connect() else { return .unreachable }
+        defer { close(fd) }
+        guard send(fd, .upgrade(path: path)) else { return .unreachable }
+        var tv = timeval(tv_sec: 10, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var buf = Data()
+        var tmp = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let n = read(fd, &tmp, tmp.count)
+            if n == 0 { return .success }        // clean EOF, no error frame → the daemon exec'd
+            if n < 0 { return .unreachable }      // timeout/error before any verdict
+            buf.append(Data(tmp[0..<n]))
+            while let f = decodeServerFrame(from: &buf) {
+                if case let .upgradeResult(ok, msg) = f, !ok { return .failure(msg) }
+            }
+        }
+    }
+
     /// Connect to the daemon socket (no lazy-spawn — if the daemon is down there
     /// are no detached sessions). Returns the connected fd or nil.
     static func connect() -> Int32? {

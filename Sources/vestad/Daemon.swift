@@ -10,6 +10,9 @@ final class Daemon {
     // (CLOEXEC cleared before execv, re-adopted by the new image), so the swap window never
     // exposes the lock to a competing lazy-spawned daemon.
     private var lockFD: Int32 = -1
+    // SHA-256 of our own executable, computed once at startup. The app probes this (`info`)
+    // and compares it against its bundled vestad to decide whether to auto-upgrade in place.
+    private lazy var selfExeSHA: String = sha256OfFile(currentExecutablePath()) ?? ""
     private var sessions: [String: Session] = [:]
     private var clientBufs: [Int32: Data] = [:]   // partial inbound frames per client fd
     // Per-connection state: fd → the paneID it attached to.
@@ -97,6 +100,7 @@ final class Daemon {
     /// Bind the listen socket and enter the select loop. Called by both run() (fresh) and
     /// resume() (post-upgrade) — the lock is already held by the time we get here.
     private func serve() {
+        _ = selfExeSHA   // force the once-at-startup hash before we start serving `info`
         guard bindListenSocket() else { return }   // bind failure → exit (releases the lock)
         loop()
     }
@@ -308,6 +312,8 @@ final class Daemon {
             if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion))) { closeClient(fd) }
         case let .upgrade(path):
             performUpgrade(newBinary: path, replyTo: fd)
+        case .info:
+            if !sendFrame(fd, encode(ServerFrame.info(sha: selfExeSHA))) { closeClient(fd) }
         }
     }
 

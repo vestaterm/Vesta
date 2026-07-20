@@ -100,7 +100,7 @@ final class PaneOutputTap: @unchecked Sendable {
                 // Belt-and-suspenders: the daemon doesn't send subscribers `.exited`
                 // (only attached clients); we normally learn of death via EOF above.
                 drop(pid); return
-            case .sessions, .upgradeResult:
+            case .sessions, .upgradeResult, .info:
                 break
             }
         }
