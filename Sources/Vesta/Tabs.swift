@@ -68,6 +68,7 @@ final class Workspace {
     // Sessions that have rung the bell / fired a desktop notification while not active.
     private var attention: Set<ObjectIdentifier> = []
     private var attentionAt: [ObjectIdentifier: Date] = [:]   // when it rang (card heat age)
+    private weak var lastShown: PaneTree?   // previously-active session (outgoing markSeen)
 
     /// True if `tree` has pending attention (bell/notification while backgrounded).
     /// Exposed for `sessions --json` / `pane status`.
@@ -660,6 +661,10 @@ final class Workspace {
 
     private func showActive() {
         store.lastActive = (activeP, activeS)   // remember for reopen-after-close
+        // Outgoing session first: exits that finished while it was ACTIVE were watched —
+        // they must not light up as "unseen" heat the moment you switch away.
+        if let prev = lastShown, prev !== activeTree { TailStore.shared.markSeen(prev.paneIDs) }
+        lastShown = activeTree
         mountLive()
         let cleared = ObjectIdentifier(activeTree)                // clear ring for the focused session
         attention.remove(cleared); attentionAt[cleared] = nil

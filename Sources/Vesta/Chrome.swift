@@ -152,6 +152,7 @@ final class VestaWindowController: NSWindowController {
     /// and the accessory + traffic lights are lifted back above it. ponytail: view grafts are
     /// the only durable handle AppKit gives for the titlebar.
     private var rootGlass: GlassView?   // glass mode's behind-window material (root-level)
+    static let heatAmber = NSColor(srgbRed: 0.88, green: 0.70, blue: 0.47, alpha: 1)  // unseen-failure rail
     private var titlebarBand: NSView?   // glass mode's full-width titlebar tint strip
 
     func flattenTitlebar() {
@@ -628,7 +629,7 @@ final class VestaWindowController: NSWindowController {
             m.font = Fonts.mono(9.5)
             m.textColor = switch sess.heat {
             case .need, .ok: theme.accent
-            case .warn: NSColor(srgbRed: 0.88, green: 0.70, blue: 0.47, alpha: 1)
+            case .warn: Self.heatAmber
             case .none: txt(.faint)
             }
             m.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -688,7 +689,7 @@ final class VestaWindowController: NSWindowController {
         // amber = unseen failure, soft accent = unseen success.
         let railColor: NSColor = switch sess.heat {
         case .need: theme.accent
-        case .warn: NSColor(srgbRed: 0.88, green: 0.70, blue: 0.47, alpha: 1)
+        case .warn: Self.heatAmber
         case .ok:   theme.accent.withAlphaComponent(0.45)
         case .none: .clear
         }
