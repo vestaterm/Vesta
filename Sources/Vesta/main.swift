@@ -856,6 +856,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         maybeShowOnboarding()
+        scheduleBackgroundMaterialize()   // fill dormant sessions' sidebar tails after first paint
+    }
+
+    /// Background-materialize dormant restored sessions so their sidebar output tails
+    /// (PaneTree.tailLines reads the LIVE ghostty viewport → empty while dormant) fill in
+    /// without the user clicking each one. Staggered — one every ~200ms after a ~1.5s
+    /// warm-up — so we don't fire a thundering herd of vesta-attach spawns + surface
+    /// creations against first paint. Gated on vesta-sidebar-tails: the tails are the only
+    /// consumer, so skip the cost entirely when they're off.
+    ///
+    /// Materializing an off-screen tree is safe: TerminalPane starts setSurfaceFocus(false),
+    /// and materialize()'s restyle→focusContent() no-ops while root has no window — so no
+    /// background pane steals first-responder or starts a blinking cursor. materialize() is
+    /// guarded on dormantLayout, so a session the user clicks (or that already went live)
+    /// mid-stagger just no-ops here.
+    private func scheduleBackgroundMaterialize() {
+        guard VestaConfig.shared.sidebarTails else { return }
+        // Re-scan the shared pool each tick (covers all projects, incl. collapsed) and
+        // materialize the next still-dormant tree; stop when none remain.
+        func step() {
+            guard let tree = store.projs.flatMap(\.sessions).first(where: { $0.isDormant }) else {
+                windows.forEach { $0.refresh() }   // all live → tails/heat now render
+                return
+            }
+            tree.materialize()   // also broadcasts (restyle→onFocusChange) → sidebar refresh
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: step)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: step)
     }
 
     var onboardingActive = false
