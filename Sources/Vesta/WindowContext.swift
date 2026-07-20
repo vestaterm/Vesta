@@ -99,7 +99,9 @@ final class WindowContext {
                                                 if r == .OK, let url = panel.url { ws.setProjectDir(ws.activeP, url.path) }
                                             }
                                             if let win = ws.container.window { panel.beginSheetModal(for: win, completionHandler: pick) }
-                                            else { pick(panel.runModal()) } })
+                                            else { pick(panel.runModal()) } },
+            onReorderProject:  { [weak ws] from, gap, id in ws?.moveProject(from: from, gap: gap, id: id) },
+            onReorderSession:  { [weak ws] p, from, gap, id in ws?.moveSession(p, from: from, gap: gap, id: id) })
 
         // self is fully initialized past this point. Cross-window refresh + persistence
         // flow through store.broadcast (wired by AppDelegate), not a per-window onChange.
