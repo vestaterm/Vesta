@@ -22,6 +22,7 @@ if argv.first == "selfcheck" {
     prefixKeytableSelfCheck()
     sessionNameSelfCheck()
     dormantLayoutSelfCheck()
+    tailFocusSelfCheck()
     focusOwnerSelfCheck()
     muxProtocolSelfCheck()
     muxPathsSelfCheck()
