@@ -8,6 +8,10 @@ struct SidebarSession {
     var ports: [Int] = []   // listening TCP ports of the session's foreground process tree
     var dirty: Int = 0      // uncommitted changes in the session's cwd (git status --porcelain)
     var attention: Bool = false  // bell/desktop-notification fired while session was not active
+    var attentionAge: String? = nil  // "3m" since attention rang (heat age on the card)
+    var paneCount: Int = 1
+    var focusedPaneID: String? = nil  // tail lookup key (filled by WindowContext)
+    var tail: [String] = []           // last cleaned output lines (TailStore)
 }
 
 struct SidebarProject {
@@ -59,6 +63,7 @@ final class Workspace {
 
     // Sessions that have rung the bell / fired a desktop notification while not active.
     private var attention: Set<ObjectIdentifier> = []
+    private var attentionAt: [ObjectIdentifier: Date] = [:]   // when it rang (card heat age)
 
     /// True if `tree` has pending attention (bell/notification while backgrounded).
     /// Exposed for `sessions --json` / `pane status`.
@@ -250,7 +255,8 @@ final class Workspace {
     func selectSession(_ p: Int, _ s: Int) {
         guard projs.indices.contains(p), projs[p].sessions.indices.contains(s) else { return }
         activeP = p; activeS = s
-        attention.remove(ObjectIdentifier(activeTree))
+        let k = ObjectIdentifier(activeTree)
+        attention.remove(k); attentionAt[k] = nil
         showActive()
         luaFire("focus-changed", activeTree.paneID)
     }
@@ -324,14 +330,21 @@ final class Workspace {
             let sessions = proj.sessions.enumerated().map { (si, tree) in
                 // Disambiguate sibling sessions (otherwise every ~ shell reads "nuh").
                 let base = tree.name ?? tree.focusedLabel
-                let panes = tree.paneCount
                 var label = base
-                if panes > 1 { label += " · \(panes) panes" }
                 if multi { label = "\(si + 1). \(label)" }
                 // Prefer worktree branch tag when available.
                 if let br = worktreeBranch[ObjectIdentifier(tree)] { label = "⎇ \(br)" }
+                let oid = ObjectIdentifier(tree)
+                let attn = attention.contains(oid)
+                var age: String? = nil
+                if attn, let at = attentionAt[oid] {
+                    let m = Int(Date().timeIntervalSince(at) / 60)
+                    age = m < 1 ? "now" : (m < 60 ? "\(m)m" : "\(m / 60)h")
+                }
                 return SidebarSession(label: label, active: pi == activeP && si == activeS,
-                                     attention: attention.contains(ObjectIdentifier(tree)))
+                                     attention: attn, attentionAge: age,
+                                     paneCount: tree.paneCount,
+                                     focusedPaneID: tree.isDormant ? nil : tree.focusedPaneID)
             }
             return SidebarProject(
                 name: proj.name,
@@ -575,7 +588,8 @@ final class Workspace {
     func selectSessionInActiveProject(_ i: Int) {
         guard projs.indices.contains(activeP), projs[activeP].sessions.indices.contains(i - 1) else { return }
         activeS = i - 1
-        attention.remove(ObjectIdentifier(activeTree))
+        let k = ObjectIdentifier(activeTree)
+        attention.remove(k); attentionAt[k] = nil
         showActive()
     }
 
@@ -590,7 +604,8 @@ final class Workspace {
     /// session (you're already looking at it).
     func markAttention(_ tree: PaneTree) {
         guard tree !== activeTree else { return }
-        attention.insert(ObjectIdentifier(tree))
+        let k = ObjectIdentifier(tree)
+        attention.insert(k); attentionAt[k] = attentionAt[k] ?? Date()
         handleChange()
     }
 
@@ -616,7 +631,9 @@ final class Workspace {
             guard let self, let tree else { return }
             // Only ring if this session isn't the one you're looking at.
             if tree !== self.activeTree {
-                self.attention.insert(ObjectIdentifier(tree)); self.handleChange()
+                let k = ObjectIdentifier(tree)
+                self.attention.insert(k); self.attentionAt[k] = self.attentionAt[k] ?? Date()
+                self.handleChange()
             }
         }
         return tree
@@ -625,7 +642,8 @@ final class Workspace {
     private func showActive() {
         store.lastActive = (activeP, activeS)   // remember for reopen-after-close
         mountLive()
-        attention.remove(ObjectIdentifier(activeTree))   // clear ring for the focused session
+        let cleared = ObjectIdentifier(activeTree)                // clear ring for the focused session
+        attention.remove(cleared); attentionAt[cleared] = nil
         handleChange()                                   // broadcast → other windows reconcile
     }
 

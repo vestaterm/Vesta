@@ -41,7 +41,10 @@ final class PaneOutputTap: @unchecked Sendable {
     /// Reconcile the open taps against the set of live pane IDs. Call on the main thread.
     /// Self-gates: closes everything unless a `pane-output` handler exists and persist is on.
     @MainActor func reconcile(_ paneIDs: Set<String>) {
-        let enabled = luaHasPaneOutputHandler() && VestaConfig.shared.persist
+        // Sidebar tails need the same passive byte feed as the Lua event, so the taps
+        // stay open whenever either consumer wants them (and persist is on).
+        let enabled = (luaHasPaneOutputHandler() || VestaConfig.shared.sidebarTails)
+            && VestaConfig.shared.persist
         let want = enabled ? paneIDs : []
         q.async { [weak self] in self?._reconcile(want) }
     }
@@ -111,7 +114,10 @@ final class PaneOutputTap: @unchecked Sendable {
 
     @MainActor private func deliver() {
         lock.lock(); let batch = pending; pending.removeAll(); deliveryScheduled = false; lock.unlock()
-        for (pid, data) in batch where !data.isEmpty { luaFirePaneOutput(paneID: pid, chunk: data) }
+        for (pid, data) in batch where !data.isEmpty {
+            if VestaConfig.shared.sidebarTails { TailStore.shared.ingest(paneID: pid, chunk: data) }
+            luaFirePaneOutput(paneID: pid, chunk: data)
+        }
     }
 
     /// Connect to the daemon and send a subscribe frame for `paneID`. The fd is

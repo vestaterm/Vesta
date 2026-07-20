@@ -14,6 +14,7 @@ if argv.first == "selfcheck" {
     gitSelfCheck()
     portsSelfCheck()
     windowRefreshSelfCheck()
+    tailStoreSelfCheck()
     workspaceSelfCheck()
     windowsFormatSelfCheck()
     worktreeSelfCheck()
@@ -744,6 +745,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.mainMenu = makeMainMenu(target: self)  // bundle-less binary: build the menu bar
         restoreWindows()  // saved windows (or one fresh window)
+        // Output-tail ticks re-render the sidebar cards (refresh() self-debounces to ≤1/s).
+        // Deliberately NOT store.broadcast — that path also persists windows.json.
+        TailStore.shared.onChange = { [weak self] in self?.windows.forEach { $0.refresh() } }
 
         server = ControlServer(workspaceProvider: { [weak self] in self?.active?.workspace })
         server.onReload = { [weak self] in self?.reloadConfig() }

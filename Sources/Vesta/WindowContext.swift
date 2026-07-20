@@ -181,6 +181,9 @@ final class WindowContext {
                     projs[i].sessions[si].ports = meta.ports
                     projs[i].sessions[si].dirty = meta.dirty
                 }
+                if VestaConfig.shared.sidebarTails, let pid = projs[i].sessions[si].focusedPaneID {
+                    projs[i].sessions[si].tail = TailStore.shared.lines(pid)
+                }
             }
         }
         controller.setProjects(projs)
