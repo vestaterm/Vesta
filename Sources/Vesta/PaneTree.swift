@@ -245,15 +245,38 @@ final class PaneTree {
         return PaneTree.lastLines(f.capture(scrollback: false), max: TailStore.maxLines)
     }
 
-    /// Last ≤max non-empty lines of a text block, whitespace-trimmed.
+    /// Last ≤max non-empty, non-chrome lines of a viewport, anchored on the latest activity.
+    /// A plain shell just yields its last lines. A TUI agent (Claude Code) paints its own chrome
+    /// at the viewport bottom — bordered input box, status bars — so we drop those lines, then, if
+    /// any surviving line is a ⏺ message/tool marker, start the tail at the LAST such marker. That
+    /// pins the sidebar card to the newest real conversation instead of the empty prompt box.
     nonisolated static func lastLines(_ text: String, max: Int) -> [String] {
-        var out: [String] = []
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false).reversed() {
+        var kept: [String] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let t = line.trimmingCharacters(in: .whitespaces)
-            if !t.isEmpty { out.append(t) }
-            if out.count == max { break }
+            if t.isEmpty || isChrome(t) { continue }
+            kept.append(t)
         }
-        return out.reversed()
+        if let anchor = kept.lastIndex(where: { $0.hasPrefix("⏺") }) {
+            kept = Array(kept[anchor...])
+        }
+        return Array(kept.suffix(max))
+    }
+
+    /// ponytail: a cheap heuristic, not a parser — flag a rendered viewport line as TUI "chrome"
+    /// (Claude Code's bordered input box + status bars) so the sidebar tail can skip it. Two
+    /// signals: the line is mostly box-drawing/block glyphs (U+2500–257F, U+2580–259F), or it
+    /// carries a known status fragment. Spinner lines (✳ ✻ ✶) are deliberately NOT chrome —
+    /// they're live activity and should show through.
+    nonisolated static func isChrome(_ line: String) -> Bool {
+        if line.hasPrefix("⏵") { return true }
+        if line.contains("ctx [") || line.contains("(shift+tab") || line.contains("? for shortcuts") {
+            return true
+        }
+        let glyphs = line.unicodeScalars.filter { !$0.properties.isWhitespace }
+        guard !glyphs.isEmpty else { return false }
+        let boxy = glyphs.filter { (0x2500...0x257F).contains($0.value) || (0x2580...0x259F).contains($0.value) }
+        return boxy.count * 2 >= glyphs.count
     }
 
     // MARK: Split + attach (shared core for terminal and browser splits)
@@ -642,6 +665,46 @@ func dormantLayoutSelfCheck() {
     assert(PaneTree.layoutLeafCount(flat) == 1, "flat layout is one leaf")
     assert(PaneTree.firstLeafCwd(flat) == "/tmp", "flat layout cwd")
     print("dormantLayoutSelfCheck OK")
+}
+
+/// Pure checks of the content-aware tail (PaneTree.lastLines / isChrome): a Claude-Code viewport
+/// anchors on its last ⏺ block and drops the input box + status bars; a plain shell is untouched;
+/// box-drawing-only rows are dropped; spinner rows are kept as live activity.
+func tailFocusSelfCheck() {
+    // Claude-like viewport: two ⏺ markers, then a tool result, then the input box + status bars.
+    let claude = """
+    ⏺ I'll read the file now.
+    ⏺ Read(PaneTree.swift)
+      ⎿ Read 40 lines
+    Done reading the file.
+    ╭──────────────────────────╮
+    │ >                        │
+    ╰──────────────────────────╯
+      ⏵⏵ auto mode on (shift+tab to cycle)
+    ctx [▓▓▓   ] 52% +118/-11
+    ? for shortcuts
+    """
+    let ct = PaneTree.lastLines(claude, max: 4)
+    assert(ct == ["⏺ Read(PaneTree.swift)", "⎿ Read 40 lines", "Done reading the file."],
+           "anchors on last ⏺ block, drops input box + status bars: \(ct)")
+    assert(!ct.contains { $0.contains("ctx [") || $0.hasPrefix("⏵") || $0.contains("shortcuts") },
+           "no chrome survives")
+
+    // Plain shell viewport: no chrome, no ⏺ — last ≤max lines unchanged.
+    let shell = "$ ls\nfile1.txt file2.txt\n$ echo hi\nhi"
+    assert(PaneTree.lastLines(shell, max: 4) == ["$ ls", "file1.txt file2.txt", "$ echo hi", "hi"],
+           "plain shell tail is unchanged")
+
+    // Box-drawing-only rows are dropped, real text kept.
+    let boxy = "some text\n──────────────\n│││││││\nmore text"
+    assert(PaneTree.lastLines(boxy, max: 4) == ["some text", "more text"], "box-drawing lines dropped")
+
+    // Spinner is live activity, not chrome — it stays.
+    let spin = "Working on it.\n✳ Perusing… (4m 6s · ↓ 12.7k tokens)"
+    assert(PaneTree.lastLines(spin, max: 4) == ["Working on it.", "✳ Perusing… (4m 6s · ↓ 12.7k tokens)"],
+           "spinner line kept")
+    assert(!PaneTree.isChrome("✳ Perusing… (4m 6s · ↓ 12.7k tokens)"), "spinner is not chrome")
+    print("tailFocusSelfCheck OK")
 }
 
 func sessionNameSelfCheck() {
