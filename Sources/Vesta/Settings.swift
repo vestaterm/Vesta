@@ -22,9 +22,9 @@ final class SettingsWindowController: NSWindowController {
     private enum Tier { case full, dim, faint }
     private func txt(_ tier: Tier) -> NSColor {
         switch tier {
-        case .full:  return NSColor(white: 0.93, alpha: 1)
-        case .dim:   return NSColor(white: 0.66, alpha: 1)
-        case .faint: return NSColor(white: 0.46, alpha: 1)
+        case .full:  return NSColor(white: 0.95, alpha: 1)
+        case .dim:   return NSColor(white: 0.78, alpha: 1)
+        case .faint: return NSColor(white: 0.52, alpha: 1)
         }
     }
 
@@ -57,7 +57,7 @@ final class SettingsWindowController: NSWindowController {
         // Dark, app-consistent chrome: the same near-black surface the rest of Vesta
         // paints (ghostty `background` / vesta-surface), never a generic gray.
         window?.appearance = NSAppearance(named: .darkAqua)
-        window?.backgroundColor = cfg.surface ?? theme.background
+        window?.backgroundColor = NSColor(white: 0.16, alpha: 1)   // match the About window
 
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -303,7 +303,7 @@ final class SettingsWindowController: NSWindowController {
         // Same tiny uppercase instrument label the sidebar uses for its section titles.
         let l = NSTextField(labelWithString: s)
         l.attributedStringValue = NSAttributedString(string: s.uppercased(), attributes: [
-            .font: Fonts.inst(9.5),
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
             .foregroundColor: txt(.faint),
             .kern: 1.3,
         ])
@@ -313,7 +313,7 @@ final class SettingsWindowController: NSWindowController {
     /// Dim wrapping caption, in the instrument font — for the sub-notes under rows.
     private func caption(_ s: String, tone: Tier = .faint) -> NSTextField {
         let l = NSTextField(wrappingLabelWithString: s)
-        l.font = Fonts.inst(10.5)
+        l.font = .systemFont(ofSize: 11)
         l.textColor = txt(tone)   // security-critical captions pass .dim for legibility
         l.preferredMaxLayoutWidth = 360
         return l
@@ -364,7 +364,7 @@ final class SettingsWindowController: NSWindowController {
 
     private func row(_ label: String, _ control: NSView, key: String? = nil) -> NSView {
         let l = NSTextField(labelWithString: label)
-        l.font = Fonts.mono(12)
+        l.font = .systemFont(ofSize: 12)
         l.textColor = txt(.dim)
         l.alignment = .left
         l.widthAnchor.constraint(equalToConstant: 118).isActive = true
@@ -374,7 +374,7 @@ final class SettingsWindowController: NSWindowController {
         // that drops the override (plugin disabled, line removed) unlocks live.
         if let key {
             let badge = NSTextField(labelWithString: "")
-            badge.font = Fonts.inst(9.5); badge.textColor = txt(.faint)
+            badge.font = .systemFont(ofSize: 10); badge.textColor = .secondaryLabelColor
             views.append(badge)
             lockRows.append((key, control, badge))
         }
