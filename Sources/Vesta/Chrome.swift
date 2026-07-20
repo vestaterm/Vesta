@@ -150,6 +150,9 @@ final class VestaWindowController: NSWindowController {
     /// the only durable handle AppKit gives for the titlebar.
     func flattenTitlebar() {
         window?.titlebarSeparatorStyle = .none
+        // Glass mode WANTS the system titlebar material — the whole point of flattening
+        // is to kill it, so skip everything (backing stays uninstalled).
+        guard !VestaConfig.shared.glassSidebar else { return }
         guard let bar = window?.standardWindowButton(.closeButton)?.superview else { return }
         let backing = titlebarBacking ?? {
             let b = TitlebarBackingView()
@@ -183,6 +186,7 @@ final class VestaWindowController: NSWindowController {
         // Belt-and-suspenders: hide the material/background and the decoration hairline.
         if let frame = window?.contentView?.superview {
             func hide(_ v: NSView) {
+                if v is GlassView { return }   // OUR glass (overlays / glass mode) is never prey
                 let n = "\(type(of: v))"
                 if v !== backing,
                    v is NSVisualEffectView || n.contains("Separator")
@@ -217,8 +221,11 @@ final class VestaWindowController: NSWindowController {
     func applyTheme(_ t: Theme) {
         theme = t
         surface = t.background
-        window?.backgroundColor = surface
-        sidebar?.layer?.backgroundColor = surface.cgColor
+        let glass = VestaConfig.shared.glassSidebar
+        window?.isOpaque = !glass
+        window?.backgroundColor = glass ? .clear : surface
+        sidebar?.layer?.backgroundColor = glass
+            ? surface.withAlphaComponent(0.55).cgColor : surface.cgColor
         if let projScroll { applyScrollAppearance(projScroll) }
         flattenTitlebarSoon()
         prefixPill?.textColor = t.accent
@@ -293,7 +300,10 @@ final class VestaWindowController: NSWindowController {
     private func buildContent(content: NSView) {
         let root = NSView()
         root.wantsLayer = true
-        root.layer?.backgroundColor = surface.cgColor
+        // Glass mode: the root must not paint under the translucent sidebar; the terminal
+        // side stays opaque via the workspace container's own background.
+        root.layer?.backgroundColor = VestaConfig.shared.glassSidebar
+            ? NSColor.clear.cgColor : surface.cgColor
 
         sidebar = makeSidebar()
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -353,8 +363,26 @@ final class VestaWindowController: NSWindowController {
         let v = NSView()
         v.translatesAutoresizingMaskIntoConstraints = false
         v.wantsLayer = true
-        v.layer?.backgroundColor = surface.cgColor
         v.clipsToBounds = true
+        if VestaConfig.shared.glassSidebar {
+            // Glass mode: desktop blur behind the window, surface color demoted to a tint.
+            // (Terminal translucency is separate — ghostty's background-opacity key.)
+            let fx = GlassView()
+            fx.material = .sidebar
+            fx.blendingMode = .behindWindow
+            fx.state = .active
+            fx.translatesAutoresizingMaskIntoConstraints = false
+            v.addSubview(fx)
+            NSLayoutConstraint.activate([
+                fx.topAnchor.constraint(equalTo: v.topAnchor),
+                fx.bottomAnchor.constraint(equalTo: v.bottomAnchor),
+                fx.leadingAnchor.constraint(equalTo: v.leadingAnchor),
+                fx.trailingAnchor.constraint(equalTo: v.trailingAnchor),
+            ])
+            v.layer?.backgroundColor = surface.withAlphaComponent(0.55).cgColor
+        } else {
+            v.layer?.backgroundColor = surface.cgColor
+        }
 
         // single right-edge hairline (white @0.07)
         let edge = NSView()

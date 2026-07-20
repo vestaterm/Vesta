@@ -527,6 +527,10 @@ func printUsage() {
       vesta-font-mono = MartianMono  instrument-label family
       vesta-font-size = 13           base UI font size
       vesta-divider-width = 8        split divider grab width
+      vesta-sidebar-tails = true     output-tail lines on session cards
+      vesta-sidebar-panes = false    split schematic on session cards
+      vesta-glass-sidebar = false    translucent sidebar (colors become tints)
+      background-opacity = 0.85      ghostty key: terminal translucency (separate from sidebar)
     Colors also sync from your ghostty background/foreground/palette.
 
     Socket: ~/Library/Application Support/vesta/control.sock
