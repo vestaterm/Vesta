@@ -613,6 +613,49 @@ final class Workspace {
         showActive()
     }
 
+    // MARK: - Drag-reorder (sidebar)
+
+    /// Number of row midpoints sitting ABOVE the cursor (window coords, y-up) — the
+    /// insertion "gap" index (0…count) the sidebar drag drops into. Pure; selfchecked.
+    nonisolated static func dropGap(midYs: [CGFloat], cursorY: CGFloat) -> Int {
+        midYs.filter { $0 > cursorY }.count
+    }
+
+    /// Reordered [oldIndex] list after lifting the element at `from` and dropping it at
+    /// insertion gap `gap` (0…count, computed with the dragged row still present, so
+    /// gap==from and gap==from+1 both collapse to a no-op). Pure; selfchecked.
+    nonisolated static func movedOrder(count: Int, from: Int, gap: Int) -> [Int] {
+        var order = Array(0..<count)
+        guard order.indices.contains(from) else { return order }
+        let insertAt = min(max(gap > from ? gap - 1 : gap, 0), order.count - 1)
+        let m = order.remove(at: from)
+        order.insert(m, at: insertAt)
+        return order
+    }
+
+    /// Move a whole project block from `from` to drop-gap `gap`. Keeps activeP on the same
+    /// project, persists project order (projects.json + windows.json), refreshes all windows.
+    func moveProject(from: Int, gap: Int) {
+        guard projs.indices.contains(from) else { return }
+        let order = Self.movedOrder(count: projs.count, from: from, gap: gap)
+        guard order != Array(projs.indices) else { return }   // no-op drop
+        projs = order.map { projs[$0] }
+        activeP = order.firstIndex(of: activeP) ?? activeP
+        saveProjects()
+        handleChange()
+    }
+
+    /// Reorder a session WITHIN its project (`p`) from `from` to drop-gap `gap`. Keeps the
+    /// active session pinned; order persists via windows.json (serialize writes session order).
+    func moveSession(_ p: Int, from: Int, gap: Int) {
+        guard projs.indices.contains(p), projs[p].sessions.indices.contains(from) else { return }
+        let order = Self.movedOrder(count: projs[p].sessions.count, from: from, gap: gap)
+        guard order != Array(projs[p].sessions.indices) else { return }   // no-op drop
+        projs[p].sessions = order.map { projs[p].sessions[$0] }
+        if activeP == p { activeS = order.firstIndex(of: activeS) ?? activeS }
+        handleChange()
+    }
+
     // MARK: - Private helpers
 
     private func makeProj(name: String, path: String, expanded: Bool, id: String = "") -> Proj {
@@ -854,6 +897,23 @@ func workspaceSelfCheck() {
     assert(r1.cwd == "/tmp" && r1.paneID == "PID-1" && r1.name == "build", "reads new dict entry")
     let r2 = readSession("/legacy/path")   // pre-M2 format
     assert(r2.cwd == "/legacy/path" && r2.paneID == nil && r2.name == nil, "reads legacy string entry")
+
+    // ── Drag-reorder: dropGap counts midpoints above the cursor (window y-up) ──────
+    // Three rows at y = 90 (top), 60, 30 (bottom).
+    let midYs: [CGFloat] = [90, 60, 30]
+    assert(Workspace.dropGap(midYs: midYs, cursorY: 100) == 0, "cursor above all → gap 0 (top)")
+    assert(Workspace.dropGap(midYs: midYs, cursorY: 75)  == 1, "cursor between row0/row1 → gap 1")
+    assert(Workspace.dropGap(midYs: midYs, cursorY: 45)  == 2, "cursor between row1/row2 → gap 2")
+    assert(Workspace.dropGap(midYs: midYs, cursorY: 10)  == 3, "cursor below all → gap 3 (bottom)")
+
+    // ── Drag-reorder: movedOrder — gap==from and gap==from+1 are both no-ops ───────
+    assert(Workspace.movedOrder(count: 4, from: 1, gap: 1) == [0, 1, 2, 3], "self gap → no-op")
+    assert(Workspace.movedOrder(count: 4, from: 1, gap: 2) == [0, 1, 2, 3], "self+1 gap → no-op")
+    assert(Workspace.movedOrder(count: 4, from: 0, gap: 2) == [1, 0, 2, 3], "move top down one slot")
+    assert(Workspace.movedOrder(count: 4, from: 0, gap: 4) == [1, 2, 3, 0], "move top to bottom")
+    assert(Workspace.movedOrder(count: 4, from: 3, gap: 1) == [0, 3, 1, 2], "move bottom up")
+    assert(Workspace.movedOrder(count: 4, from: 3, gap: 0) == [3, 0, 1, 2], "move bottom to top")
+    assert(Workspace.movedOrder(count: 1, from: 0, gap: 0) == [0], "single element is inert")
 
     print("workspaceSelfCheck OK")
 }
