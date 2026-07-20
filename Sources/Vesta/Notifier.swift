@@ -60,6 +60,9 @@ final class NotificationsPanel: NSView {
     private var heightC: NSLayoutConstraint!          // scroll height = content (capped); set after layout
     private let onDelete: (UUID) -> Void
     private let onClear: () -> Void
+    /// Set by the presenter (closes the hosting child window). Fallback: plain subview removal.
+    var onDismiss: (() -> Void)?
+    private func dismiss() { onDismiss != nil ? onDismiss!() : removeFromSuperview() }
 
     init(theme: Theme, notes: [VestaNote], onDelete: @escaping (UUID) -> Void, onClear: @escaping () -> Void) {
         self.onDelete = onDelete; self.onClear = onClear
@@ -229,7 +232,7 @@ final class NotificationsPanel: NSView {
 
     // Click outside the panel (or Esc) dismisses.
     override func mouseDown(with event: NSEvent) {
-        if !panel.frame.contains(convert(event.locationInWindow, from: nil)) { removeFromSuperview() }
+        if !panel.frame.contains(convert(event.locationInWindow, from: nil)) { dismiss() }
     }
     override var acceptsFirstResponder: Bool { true }
     override func viewDidMoveToWindow() {
@@ -243,7 +246,7 @@ final class NotificationsPanel: NSView {
         DispatchQueue.main.async { [weak self] in guard let self else { return }; self.window?.makeFirstResponder(self) }
     }
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { removeFromSuperview() } else { super.keyDown(with: event) }
+        if event.keyCode == 53 { dismiss() } else { super.keyDown(with: event) }
     }
 }
 

@@ -43,3 +43,59 @@ func installGlass(_ panel: NSView, tint: NSColor, alpha: CGFloat = 0.45, corner:
         ])
     }
 }
+
+/// Borderless child window that can still take keyboard focus (Esc / typing in overlays).
+final class OverlayWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+}
+
+extension NSWindow {
+    /// True while a transient glass overlay (palette/prompt/confirm/notifications) covers
+    /// this window as a child OverlayWindow — used to keep pane focus/click handlers from
+    /// stealing first-responder out from under it.
+    var hasModalOverlay: Bool { childWindows?.contains { $0 is OverlayWindow } == true }
+}
+
+/// Hosts one transient glass overlay (palette, prompt, confirm, notifications) in a
+/// borderless CHILD window over the main one. Two wins over the old subview hosting:
+/// behind-window blur samples the terminal underneath (a subview's blur reaches past
+/// the window to the desktop), and no constraint chain can ever resize the main window.
+/// Closes itself when the parent resizes/minimizes/closes (popover behavior).
+@MainActor
+final class ChildOverlay {
+    private var window: NSWindow?
+    private var obs: [NSObjectProtocol] = []
+    var isOpen: Bool { window != nil }
+
+    func present(_ view: NSView, over parent: NSWindow) {
+        close()
+        let w = OverlayWindow(contentRect: parent.frame, styleMask: .borderless,
+                              backing: .buffered, defer: false)
+        w.isOpaque = false
+        w.backgroundColor = .clear
+        w.hasShadow = false
+        w.isReleasedWhenClosed = false
+        w.contentView = view
+        parent.addChildWindow(w, ordered: .above)
+        w.makeKeyAndOrderFront(nil)
+        window = w
+        for name in [NSWindow.didResizeNotification, NSWindow.willMiniaturizeNotification,
+                     NSWindow.willCloseNotification] {
+            obs.append(NotificationCenter.default.addObserver(
+                forName: name, object: parent, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.close() }
+                })
+        }
+    }
+
+    func close() {
+        obs.forEach { NotificationCenter.default.removeObserver($0) }
+        obs = []
+        guard let w = window else { return }
+        window = nil
+        let parent = w.parent
+        parent?.removeChildWindow(w)
+        w.orderOut(nil)
+        parent?.makeKey()   // hand focus straight back to the terminal
+    }
+}

@@ -177,7 +177,7 @@ import GhosttyKit
         // Don't steal first-responder from a modal picker/confirm overlay covering the
         // window — otherwise restyle()/focusActivePane()/plugin focus calls yank focus
         // off the picker and its arrow/Esc keys leak through to the terminal.
-        if window.contentView?.subviews.contains(where: { $0 is PickerOverlay || $0 is ConfirmOverlay }) == true { return }
+        if window.hasModalOverlay { return }
         window.makeFirstResponder(self)
     }
 
