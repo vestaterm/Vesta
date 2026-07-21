@@ -1,0 +1,47 @@
+# Watches upstream ghostty for a new stable tag and opens an issue with the
+# GhosttyKit bump checklist. Ghostty ships stables as git tags (its only GitHub
+# "release" is the rolling `tip`), so we compare the highest v* tag against the
+# pin in .ghostty-version — which records the newest stable our current
+# GhosttyKit.xcframework build already contains.
+name: ghostty watch
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"   # Mondays 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare newest ghostty stable tag to our pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest=$(gh api "repos/ghostty-org/ghostty/tags?per_page=30" -q '.[].name' \
+                   | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          pin=$(tr -d '[:space:]' < .ghostty-version)
+          echo "upstream: $latest  pinned: $pin"
+          newest=$(printf '%s\n%s\n' "$latest" "$pin" | sort -V | tail -1)
+          [ "$newest" = "$pin" ] && { echo "up to date"; exit 0; }
+          title="ghostty $latest is out — consider a GhosttyKit bump (pinned: $pin)"
+          if gh issue list --state open --search "in:title \"$title\"" --json number -q '.[].number' | grep -q .; then
+            echo "issue already open"; exit 0
+          fi
+          body="Upstream ghostty tagged **$latest** (we're pinned at **$pin** — the newest stable our current GhosttyKit build contains). Release notes: https://ghostty.org/docs/install/release-notes
+
+          Bump cycle:
+          - [ ] Rebuild \`GhosttyKit.xcframework\` from the \`$latest\` tag (macOS arm64+x86_64, iOS slices stripped)
+          - [ ] Publish it as the next \`ghostkit-N\` release asset
+          - [ ] Bump the binaryTarget URL + checksum in \`Package.swift\`
+          - [ ] Update \`.ghostty-version\` to \`$latest\`
+          - [ ] \`swift build\` + \`vesta selfcheck\` green
+          - [ ] Sandbox smoke: splits, persist relay reattach, OSC 133 heat, glass/transparency, drag-drop
+          - [ ] Normal PR + review + merge"
+          gh issue create --title "$title" --body "$body"
