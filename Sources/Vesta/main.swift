@@ -109,13 +109,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.windows.forEach { $0.refresh() }
             self.reconcileDisplay()
-            // Broadcasts are user-action-bound (toggle/select/close/new/reorder/focus) —
-            // render the sidebar NOW so the click lands this frame instead of riding
-            // refresh()'s ≤1s debounce (which still gates the heavy git/ports work).
-            // The skip-identical-snapshots gate keeps the extra render free.
-            self.windows.forEach { $0.renderSidebarNow() }
             self.scheduleSave()
         }
+        // NOT folded into broadcast: onFocusChange broadcasts on program-driven title/cwd
+        // escapes at unbounded frequency, and renderSidebar's per-session viewport capture
+        // runs before the skip-identical gate — only handleChange (discrete user actions)
+        // gets the undebounced render.
+        store.renderNow = { [weak self] in self?.windows.forEach { $0.renderSidebarNow() } }
         let ctx = WindowContext(
             theme: theme, store: store, hydrateFrom: hydrateFrom,
             onBecomeKey: { [weak self] c in

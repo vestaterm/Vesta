@@ -50,6 +50,13 @@ struct Proj {
 final class SessionStore {
     var projs: [Proj] = []
     var broadcast: () -> Void = {}
+    /// Immediate sidebar render in every window, no debounce. Fired by handleChange —
+    /// i.e. DISCRETE USER MUTATIONS only (toggle/select/close/new/rename/reorder).
+    /// Deliberately NOT part of broadcast: onFocusChange also broadcasts, and that path
+    /// fires on program-driven title/cwd escapes (OSC 0/2/7) at unbounded frequency —
+    /// the per-session viewport capture in renderSidebar must stay behind the ≤1s
+    /// debounce for those.
+    var renderNow: () -> Void = {}
     // Last active (project, session) selection — survives closing all windows, so reopening
     // returns to where you were instead of spawning a fresh project.
     var lastActive: (p: Int, s: Int) = (0, 0)
@@ -800,6 +807,9 @@ final class Workspace {
         // Shared pool changed → refresh every window's sidebar + persist (AppDelegate
         // wires store.broadcast). One path, so all windows stay in sync.
         store.broadcast()
+        // handleChange only ever runs from a discrete user action — render the click's
+        // result this frame instead of riding refresh()'s ≤1s debounce.
+        store.renderNow()
     }
 }
 
