@@ -50,8 +50,12 @@ struct Proj {
 final class SessionStore {
     var projs: [Proj] = []
     var broadcast: () -> Void = {}
-    /// Immediate sidebar re-render in every window, no debounce — for rare direct
-    /// manipulations (drag-reorder) where a ≤1s lag reads as a dropped gesture.
+    /// Immediate sidebar render in every window, no debounce. Fired by handleChange —
+    /// i.e. DISCRETE USER MUTATIONS only (toggle/select/close/new/rename/reorder).
+    /// Deliberately NOT part of broadcast: onFocusChange also broadcasts, and that path
+    /// fires on program-driven title/cwd escapes (OSC 0/2/7) at unbounded frequency —
+    /// the per-session viewport capture in renderSidebar must stay behind the ≤1s
+    /// debounce for those.
     var renderNow: () -> Void = {}
     // Last active (project, session) selection — survives closing all windows, so reopening
     // returns to where you were instead of spawning a fresh project.
@@ -653,8 +657,7 @@ final class Workspace {
         projs = order.map { projs[$0] }
         activeP = order.firstIndex(of: activeP) ?? activeP
         saveProjects()
-        handleChange()
-        store.renderNow()   // the drop should land visually now, not on the next ≤1s tick
+        handleChange()   // renders immediately (handleChange → store.renderNow)
     }
 
     /// Reorder a session WITHIN its project (`p`) from `from` to drop-gap `gap`. Keeps the
@@ -669,7 +672,6 @@ final class Workspace {
         projs[p].sessions = order.map { projs[p].sessions[$0] }
         if activeP == p { activeS = order.firstIndex(of: activeS) ?? activeS }
         handleChange()
-        store.renderNow()
     }
 
     // MARK: - Private helpers
@@ -684,8 +686,10 @@ final class Workspace {
     func markAttention(_ tree: PaneTree) {
         guard tree !== activeTree else { return }
         let k = ObjectIdentifier(tree)
-        attention.insert(k); attentionAt[k] = attentionAt[k] ?? Date()
-        handleChange()
+        attentionAt[k] = attentionAt[k] ?? Date()
+        // Only a state CHANGE re-renders — a process spamming bells doesn't get an
+        // undebounced render per \a once its ring is already lit.
+        if attention.insert(k).inserted { handleChange() }
     }
 
     private func makeTree(cwd: String?, paneID: String = UUID().uuidString, name: String? = nil) -> PaneTree {
@@ -711,8 +715,9 @@ final class Workspace {
             // Only ring if this session isn't the one you're looking at.
             if tree !== self.activeTree {
                 let k = ObjectIdentifier(tree)
-                self.attention.insert(k); self.attentionAt[k] = self.attentionAt[k] ?? Date()
-                self.handleChange()
+                self.attentionAt[k] = self.attentionAt[k] ?? Date()
+                // Bell spam is free after the first ring (see markAttention).
+                if self.attention.insert(k).inserted { self.handleChange() }
             }
         }
         return tree
@@ -805,6 +810,9 @@ final class Workspace {
         // Shared pool changed → refresh every window's sidebar + persist (AppDelegate
         // wires store.broadcast). One path, so all windows stay in sync.
         store.broadcast()
+        // handleChange only ever runs from a discrete user action — render the click's
+        // result this frame instead of riding refresh()'s ≤1s debounce.
+        store.renderNow()
     }
 }
 

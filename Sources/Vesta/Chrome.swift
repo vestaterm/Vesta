@@ -1031,7 +1031,7 @@ final class VestaWindowController: NSWindowController {
             // frozen index is still the one that was picked up, else aborts as a no-op.
             if row.isSessionRow { self.onReorderSession(row.tag1, row.tag2, gap, row.identity) }
             else { self.onReorderProject(row.tag1, gap, row.identity) }
-            // The reorder renders immediately via store.renderNow (no ≤1s debounce lag).
+            // The reorder renders immediately (handleChange → store.renderNow).
         }
 
         // Teardown paths that can't animate (window closing) finalize synchronously.

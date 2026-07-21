@@ -111,6 +111,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.reconcileDisplay()
             self.scheduleSave()
         }
+        // NOT folded into broadcast: onFocusChange broadcasts on program-driven title/cwd
+        // escapes at unbounded frequency, and renderSidebar's per-session viewport capture
+        // runs before the skip-identical gate — only handleChange (discrete user actions)
+        // gets the undebounced render.
         store.renderNow = { [weak self] in self?.windows.forEach { $0.renderSidebarNow() } }
         let ctx = WindowContext(
             theme: theme, store: store, hydrateFrom: hydrateFrom,

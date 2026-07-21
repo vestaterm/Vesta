@@ -230,9 +230,9 @@ final class WindowContext {
         key != lastKey || now.timeIntervalSince(lastAt) >= interval
     }
 
-    /// Undebounced sidebar render — store.renderNow uses it so a drag-reorder drop lands
-    /// visually at once instead of on the next ≤1s tick. Cheap when nothing changed (the
-    /// renderer skips identical snapshots).
+    /// Undebounced sidebar render — store.broadcast uses it so user actions (toggle/
+    /// select/close/reorder) land visually this frame instead of on the next ≤1s tick.
+    /// Cheap when nothing changed (the renderer skips identical snapshots).
     func renderSidebarNow() { renderSidebar() }
 
     /// The heavy refresh: rebuild the sidebar and (off-main) recompute git status + ports.
