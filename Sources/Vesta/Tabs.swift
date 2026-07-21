@@ -50,9 +50,6 @@ struct Proj {
 final class SessionStore {
     var projs: [Proj] = []
     var broadcast: () -> Void = {}
-    /// Immediate sidebar re-render in every window, no debounce — for rare direct
-    /// manipulations (drag-reorder) where a ≤1s lag reads as a dropped gesture.
-    var renderNow: () -> Void = {}
     // Last active (project, session) selection — survives closing all windows, so reopening
     // returns to where you were instead of spawning a fresh project.
     var lastActive: (p: Int, s: Int) = (0, 0)
@@ -653,8 +650,7 @@ final class Workspace {
         projs = order.map { projs[$0] }
         activeP = order.firstIndex(of: activeP) ?? activeP
         saveProjects()
-        handleChange()
-        store.renderNow()   // the drop should land visually now, not on the next ≤1s tick
+        handleChange()   // broadcast renders immediately (see store.broadcast wiring)
     }
 
     /// Reorder a session WITHIN its project (`p`) from `from` to drop-gap `gap`. Keeps the
@@ -669,7 +665,6 @@ final class Workspace {
         projs[p].sessions = order.map { projs[p].sessions[$0] }
         if activeP == p { activeS = order.firstIndex(of: activeS) ?? activeS }
         handleChange()
-        store.renderNow()
     }
 
     // MARK: - Private helpers
