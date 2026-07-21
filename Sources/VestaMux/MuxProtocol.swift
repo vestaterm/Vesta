@@ -23,6 +23,7 @@ public enum ClientFrame: Equatable {
     case subscribe(paneID: String)   // v5: passive output-only reader (GUI pane-output tap)
     case upgrade(path: String)       // v6: swap the daemon to a new binary in place (self-exec)
     case info                        // v6: probe the daemon's own executable identity (SHA-256)
+    case pids                        // paneID → shell-pid map (additive; no version gate — unknown tags are consumed safely)
 }
 
 public enum ServerFrame: Equatable {
@@ -37,6 +38,7 @@ public enum ServerFrame: Equatable {
     // execs the new binary, which closes this socket → the client sees EOF (success signal).
     case upgradeResult(ok: Bool, message: String)
     case info(sha: String)           // v6: reply to `info` — the daemon's own exe SHA-256 (hex)
+    case pids([String: Int32])       // reply to `pids` — alive sessions' shell pids (additive, ungated)
 }
 
 // ── byte helpers ────────────────────────────────────────────────────────
@@ -84,6 +86,7 @@ public func encode(_ f: ClientFrame) -> Data {
     case let .upgrade(path):
         putStr(path, into: &p); return frame(0x08, p)
     case .info: return frame(0x09, p)
+    case .pids: return frame(0x0a, p)
     }
 }
 
@@ -107,6 +110,10 @@ public func encode(_ f: ServerFrame) -> Data {
         p.append(ok ? 1 : 0); putStr(message, into: &p); return frame(0x18, p)
     case let .info(sha):
         putStr(sha, into: &p); return frame(0x19, p)
+    case let .pids(map):
+        putU32(UInt32(map.count), into: &p)
+        for (id, pid) in map { putStr(id, into: &p); putU32(UInt32(bitPattern: pid), into: &p) }
+        return frame(0x1a, p)
     }
 }
 
@@ -158,6 +165,7 @@ public func decodeClientFrame(from buf: inout Data) -> ClientFrame? {
     case 0x07: return .subscribe(paneID: r.str())
     case 0x08: return .upgrade(path: r.str())
     case 0x09: return .info
+    case 0x0a: return .pids
     default:   return nil
     }
 }
@@ -180,6 +188,11 @@ public func decodeServerFrame(from buf: inout Data) -> ServerFrame? {
         return .sessions(list)
     case 0x18: return .upgradeResult(ok: r.byte() == 1, message: r.str())
     case 0x19: return .info(sha: r.str())
+    case 0x1a:
+        let n = Int(r.u32())
+        var map: [String: Int32] = [:]
+        for _ in 0..<n { let id = r.str(); map[id] = Int32(bitPattern: r.u32()) }
+        return .pids(map)
     default: return nil
     }
 }
@@ -195,6 +208,7 @@ public func muxProtocolSelfCheck() {
         .subscribe(paneID: "sub-1"),
         .upgrade(path: "/Applications/Vesta.app/Contents/MacOS/vestad"),
         .info,
+        .pids,
     ]
     for f in clientCases {
         var buf = encode(f)
@@ -212,6 +226,8 @@ public func muxProtocolSelfCheck() {
         .upgradeResult(ok: false, message: "new binary not executable"),
         .upgradeResult(ok: true, message: ""),
         .info(sha: "3acca5829d4db4a21f9cda77d2baf8f1345ec651aebe50bd990f92328ae4c9da"),
+        .pids(["p1": 4242, "p2": 99]),
+        .pids([:]),
     ]
     for f in serverCases {
         var buf = encode(f)

@@ -314,6 +314,12 @@ final class Daemon {
             performUpgrade(newBinary: path, replyTo: fd)
         case .info:
             if !sendFrame(fd, encode(ServerFrame.info(sha: selfExeSHA))) { closeClient(fd) }
+        case .pids:
+            // paneID → login-shell pid, alive sessions only. The GUI's port scan walks
+            // descendants from these (ghostty's own foreground pid is just the relay).
+            let map = Dictionary(uniqueKeysWithValues:
+                sessions.values.filter(\.alive).map { ($0.paneID, Int32($0.pid)) })
+            if !sendFrame(fd, encode(ServerFrame.pids(map))) { closeClient(fd) }
         }
     }
 
