@@ -21,6 +21,17 @@ final class Daemon {
     private var subscriberSession: [Int32: String] = [:]
     // Subscribers that arrived before their session existed, waiting to be bound on .hello.
     private var pendingSubscribers: [String: [Int32]] = [:]
+    // Grace-delayed scrollback-log deletes: paneID → the monotone-ish deadline at which the
+    // dead session's on-disk log may be removed. A shell exit schedules a delete ~5s out
+    // instead of deleting now, so a logout/reboot (which TERM-kills the shells AND the daemon
+    // near-simultaneously) dies before the timer fires → the log survives → next boot's
+    // reattach seeds scrollback as designed. A user-typed `exit` still cleans up 5s later.
+    private var pendingDeletes: [String: Date] = [:]
+    private static let deleteGrace: TimeInterval = 5
+    // Sessions the user explicitly killed via the mux `.kill` verb (closed the session in the
+    // UI). Their logs are deleted IMMEDIATELY on reap — no resurrection is expected, so the
+    // grace delay (which exists only to survive a racing daemon death) doesn't apply.
+    private var explicitKills: Set<String> = []
     // Persist scrollback to disk? Off by default; read once from config at startup.
     private let logEnabled = Daemon.scrollbackEnabled()
     // Inject our zsh shell integration (OSC 133 command marks → sidebar heat)? On by default;
@@ -57,6 +68,7 @@ final class Daemon {
         // Generate our zsh OSC 133 integration once (write-if-changed). Skipped when opted
         // out — then spawned shells simply won't have ZDOTDIR swapped (graceful degradation).
         if shellIntegration { VestaShellIntegration.ensure() }
+        sweepStaleLogs()   // cold-start orphan bound: drop session logs untouched for 30+ days
         acquireLock()   // single-instance; exits(0) if another daemon already holds it
         serve()
     }
@@ -144,6 +156,7 @@ final class Daemon {
                 break
             }
             reapDeadShells()
+            processPendingDeletes()   // fire any grace-delayed log deletes whose deadline passed
             if sessions.isEmpty && clientBufs.isEmpty && idleExpired() { break }  // idle-exit
             if listenFD >= 0 && __darwin_fd_isset(listenFD, &rset) != 0 { acceptClient() }
             // Drain every PTY (even with zero clients → no backpressure).
@@ -200,9 +213,51 @@ final class Daemon {
             for c in s.clients where !sendFrame(c, frame) { stuck.append(c) }
             let subs = s.subscribers            // their session is gone → close them too
             sessions[id] = nil
-            Session.deleteLog(id)               // session ended cleanly → drop its on-disk scrollback
+            // Drop the on-disk scrollback. An explicit UI kill deletes now (no resurrection);
+            // a plain shell exit is grace-delayed so a racing daemon death at logout can't take
+            // the log with it (see pendingDeletes).
+            if explicitKills.remove(id) != nil {
+                Session.deleteLog(id)
+                pendingDeletes[id] = nil
+            } else {
+                pendingDeletes[id] = Date().addingTimeInterval(Daemon.deleteGrace)
+            }
             for c in stuck { closeClient(c) }   // drop stuck clients after iterating + removing session
             for c in subs { closeClient(c) }
+        }
+    }
+
+    /// Delete the scrollback logs whose grace period has elapsed. Called every loop iteration
+    /// (select wakes at least every 5s), so a normal shell exit's log is gone within ~5–10s —
+    /// but a logout/reboot kills this process before the deadline, leaving the log for the next
+    /// boot to reattach and reseed from. Deleting a paneID from `sessions` is not required here:
+    /// reap already removed it, and a reattach that recreates it cancels the pending delete.
+    private func processPendingDeletes() {
+        guard !pendingDeletes.isEmpty else { return }
+        let now = Date()
+        for (id, deadline) in pendingDeletes where deadline <= now {
+            Session.deleteLog(id)
+            pendingDeletes[id] = nil
+        }
+    }
+
+    /// Startup orphan sweep: delete session logs untouched for ScrollbackSweep.maxAgeSeconds
+    /// (30 days). A grace-delayed delete lost to a daemon death strands a log; if its session
+    /// never comes back, nothing else removes it. Dumb + safe: mtime only, best-effort, no
+    /// per-session bookkeeping. Runs on a cold start (run()), before any session exists, so it
+    /// can never race a live pane's log. Unconditional (not gated on logEnabled) so old logs
+    /// still age out after the user turns persistence back off.
+    private func sweepStaleLogs() {
+        let dir = MuxPaths.base + "/sessions"
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return }
+        let now = Date().timeIntervalSince1970
+        for name in names where name.hasSuffix(".log") {
+            let path = dir + "/" + name
+            guard let attrs = try? fm.attributesOfItem(atPath: path),
+                  let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970,
+                  ScrollbackSweep.isStale(mtime: mtime, now: now) else { continue }
+            try? fm.removeItem(atPath: path)
         }
     }
 
@@ -267,6 +322,10 @@ final class Daemon {
                     return
                 }
                 sessions[paneID] = fresh; s = fresh
+                // A fresh session reopened/reseeded this paneID's log — cancel any pending
+                // grace-delete left over from a prior shell exit so we don't delete it out
+                // from under the new shell 5s later.
+                pendingDeletes[paneID] = nil
             }
             // Bind any subscribers that arrived before this session existed (review finding B).
             if let waiting = pendingSubscribers.removeValue(forKey: paneID) {
@@ -295,7 +354,11 @@ final class Daemon {
         case .detach:
             closeClient(fd)   // removes this client (no PTY reap — shell lives on)
         case .kill:
-            if let paneID = clientSession[fd], let s = sessions[paneID] { kill(s.pid, SIGKILL); s.markDead() }
+            // Deliberate UI close: SIGKILL the shell and mark its log for IMMEDIATE deletion on
+            // reap (explicitKills) — unlike a plain exit, no reboot-survival grace applies.
+            if let paneID = clientSession[fd], let s = sessions[paneID] {
+                explicitKills.insert(paneID); kill(s.pid, SIGKILL); s.markDead()
+            }
         case .list:
             let infos = sessions.values.map { SessionInfo(id: $0.paneID, name: $0.name, cwd: $0.cwd,
                 alive: $0.alive, attachedCount: $0.clients.count) }
