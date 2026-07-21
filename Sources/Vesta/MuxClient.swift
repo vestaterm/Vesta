@@ -63,6 +63,28 @@ enum MuxClient {
         }
     }
 
+    /// paneID → login-shell pid for every alive daemon session, one round trip. nil when
+    /// the daemon is down or predates the `pids` verb (unknown tag is silently consumed —
+    /// no reply ever comes — so the bounded read just times out).
+    static func shellPIDs() -> [String: pid_t]? {
+        guard let fd = connect() else { return nil }
+        defer { close(fd) }
+        guard send(fd, .pids) else { return nil }
+        var tv = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var buf = Data()
+        var tmp = [UInt8](repeating: 0, count: 4096)
+        for _ in 0..<8 {
+            let n = read(fd, &tmp, tmp.count)
+            if n <= 0 { break }
+            buf.append(Data(tmp[0..<n]))
+            if let f = decodeServerFrame(from: &buf), case let .pids(map) = f {
+                return map.mapValues { pid_t($0) }
+            }
+        }
+        return nil
+    }
+
     /// Connect to the daemon socket (no lazy-spawn — if the daemon is down there
     /// are no detached sessions). Returns the connected fd or nil.
     static func connect() -> Int32? {

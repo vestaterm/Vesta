@@ -220,6 +220,25 @@ final class WindowContext {
         fullRefresh()
     }
 
+    /// Shell pid per pane from the daemon, cached — a session's login-shell pid never
+    /// changes, and paneIDs are UUIDs (no reuse), so one `pids` round trip per unknown
+    /// pane suffices. nonisolated + lock: called from the utility-queue port scan.
+    /// Panes not in the daemon (vesta-persist off) miss here and fall back to ghostty's pid.
+    private nonisolated(unsafe) static var shellPIDCache: [String: pid_t] = [:]
+    private nonisolated static let shellPIDLock = NSLock()
+    nonisolated static func daemonShellPID(_ paneID: String) -> pid_t? {
+        shellPIDLock.lock()
+        let hit = shellPIDCache[paneID]
+        shellPIDLock.unlock()
+        if let hit { return hit }
+        guard let all = MuxClient.shellPIDs() else { return nil }
+        shellPIDLock.lock()
+        shellPIDCache.merge(all) { _, new in new }
+        let v = shellPIDCache[paneID]
+        shellPIDLock.unlock()
+        return v
+    }
+
     /// Focus key for the debounce short-circuit: the git/ports work depends only on the focused
     /// pane's cwd + pid, so an unchanged key means an unchanged heavy result.
     nonisolated static func refreshKey(cwd: String?, pid: pid_t?) -> String { "\(cwd ?? "")|\(pid ?? 0)" }
@@ -257,12 +276,17 @@ final class WindowContext {
         let activeTreeID = ObjectIdentifier(workspace.activeTree)
         let activeCwd = workspace.activeTree.focusedCwd
         let activePID = workspace.activeTree.focusedPID
+        let activePaneID = workspace.activeTree.focused?.paneID
         let statusCwd = activeCwd ?? FileManager.default.currentDirectoryPath
         DispatchQueue.global(qos: .utility).async { [weak self] in
             // One git spawn set (status --porcelain runs once, yields both the footer text AND
             // the dirty count) plus one ports lookup, instead of two parallel git dispatches.
             let (text, dirty) = Git.statusAndDirty(statusCwd)
-            let ports = activePID.map { Ports.forShell(pid: $0) } ?? []
+            // Under vesta-persist, ghostty's foreground pid is only the vesta-attach relay
+            // (a childless process) — scanning from it made the :port chip permanently blank.
+            // The real login shell lives under vestad; scan from ITS pid when available.
+            let scanPID = activePaneID.flatMap { Self.daemonShellPID($0) } ?? activePID
+            let ports = scanPID.map { Ports.forShell(pid: $0) } ?? []
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
