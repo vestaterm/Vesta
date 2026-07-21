@@ -44,7 +44,7 @@ and an agent-control CLI on top.
   the order persists across restarts.
 - **Session cards** — each card shows an output tail (the last ~4 rendered
   lines of its focused pane, Claude Code-aware: anchored on the last `⏺` block,
-  input-box chrome filtered), pane counts (`⊞N`, or a tiny split-schematic with
+  input-box chrome filtered), pane counts (`⊞N`, or the real split topology — nested ratios, focused pane lit — with
   `vesta-sidebar-panes`), and **heat**: an unseen failure flips the card amber
   with `✗` + how long ago, an unseen success gets a `✓` — driven by OSC 133
   marks, which Vesta injects into zsh out of the box (`vesta-shell-integration`);
@@ -198,7 +198,7 @@ look, so an untouched config changes nothing.
 | `vesta-persist` | true | run shells under `vestad` (survive quit); `false` = plain shells |
 | `vesta-persist-scrollback` | false | mirror scrollback to disk so it survives a daemon restart — or a reboot. **Off by default** — terminal output can contain secrets (see [SECURITY.md](SECURITY.md)) |
 | `vesta-sidebar-tails` | true | session cards show the last ~4 rendered lines of their focused pane (content-aware for TUI agents: anchors on Claude Code's last `⏺` block, filters its input box). Also gates background materialization of restored sessions at launch |
-| `vesta-sidebar-panes` | false | tiny split-schematic on multi-pane session cards; off = a dim `⊞N` count still shows |
+| `vesta-sidebar-panes` | false | multi-pane cards draw their real split layout (focused pane highlighted); off = a dim `⊞N` count still shows |
 | `vesta-glass-sidebar` | false | translucent sidebar — behind-window blur with the surface color as a tint; titlebar over the sidebar matches. Applies on relaunch |
 | `vesta-sidebar-opacity` | 0.55 | sidebar tint strength in glass mode (0..1) |
 | `vesta-shell-integration` | true | inject zsh OSC 133 marks into daemon-spawned shells so card heat (✓/✗) works out of the box; `false` = opt out |
