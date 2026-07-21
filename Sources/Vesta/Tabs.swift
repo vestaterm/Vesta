@@ -657,7 +657,7 @@ final class Workspace {
         projs = order.map { projs[$0] }
         activeP = order.firstIndex(of: activeP) ?? activeP
         saveProjects()
-        handleChange()   // broadcast renders immediately (see store.broadcast wiring)
+        handleChange()   // renders immediately (handleChange → store.renderNow)
     }
 
     /// Reorder a session WITHIN its project (`p`) from `from` to drop-gap `gap`. Keeps the
@@ -686,8 +686,10 @@ final class Workspace {
     func markAttention(_ tree: PaneTree) {
         guard tree !== activeTree else { return }
         let k = ObjectIdentifier(tree)
-        attention.insert(k); attentionAt[k] = attentionAt[k] ?? Date()
-        handleChange()
+        attentionAt[k] = attentionAt[k] ?? Date()
+        // Only a state CHANGE re-renders — a process spamming bells doesn't get an
+        // undebounced render per \a once its ring is already lit.
+        if attention.insert(k).inserted { handleChange() }
     }
 
     private func makeTree(cwd: String?, paneID: String = UUID().uuidString, name: String? = nil) -> PaneTree {
@@ -713,8 +715,9 @@ final class Workspace {
             // Only ring if this session isn't the one you're looking at.
             if tree !== self.activeTree {
                 let k = ObjectIdentifier(tree)
-                self.attention.insert(k); self.attentionAt[k] = self.attentionAt[k] ?? Date()
-                self.handleChange()
+                self.attentionAt[k] = self.attentionAt[k] ?? Date()
+                // Bell spam is free after the first ring (see markAttention).
+                if self.attention.insert(k).inserted { self.handleChange() }
             }
         }
         return tree
