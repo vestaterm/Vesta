@@ -23,7 +23,7 @@ public enum ClientFrame: Equatable {
     case subscribe(paneID: String)   // v5: passive output-only reader (GUI pane-output tap)
     case upgrade(path: String)       // v6: swap the daemon to a new binary in place (self-exec)
     case info                        // v6: probe the daemon's own executable identity (SHA-256)
-    case pids                        // v7: paneID → login-shell pid map (port scan under persist)
+    case pids                        // paneID → shell-pid map (additive; no version gate — unknown tags are consumed safely)
 }
 
 public enum ServerFrame: Equatable {
@@ -38,7 +38,7 @@ public enum ServerFrame: Equatable {
     // execs the new binary, which closes this socket → the client sees EOF (success signal).
     case upgradeResult(ok: Bool, message: String)
     case info(sha: String)           // v6: reply to `info` — the daemon's own exe SHA-256 (hex)
-    case pids([String: Int32])       // v7: reply to `pids` — alive sessions' shell pids
+    case pids([String: Int32])       // reply to `pids` — alive sessions' shell pids (additive, ungated)
 }
 
 // ── byte helpers ────────────────────────────────────────────────────────

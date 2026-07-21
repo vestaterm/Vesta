@@ -225,12 +225,18 @@ final class WindowContext {
     /// pane suffices. nonisolated + lock: called from the utility-queue port scan.
     /// Panes not in the daemon (vesta-persist off) miss here and fall back to ghostty's pid.
     private nonisolated(unsafe) static var shellPIDCache: [String: pid_t] = [:]
+    private nonisolated(unsafe) static var lastPIDQuery = Date.distantPast
     private nonisolated static let shellPIDLock = NSLock()
     nonisolated static func daemonShellPID(_ paneID: String) -> pid_t? {
         shellPIDLock.lock()
-        let hit = shellPIDCache[paneID]
+        if let hit = shellPIDCache[paneID] { shellPIDLock.unlock(); return hit }
+        // Miss: throttle daemon round trips to one per 5s — a non-daemon pane would
+        // otherwise query every refresh tick forever, and a wedged daemon would eat its
+        // 2s timeout per tick. NOT a permanent negative cache: a just-spawned pane can
+        // race its daemon registration, and must resolve on a later query.
+        guard Date().timeIntervalSince(lastPIDQuery) >= 5 else { shellPIDLock.unlock(); return nil }
+        lastPIDQuery = Date()
         shellPIDLock.unlock()
-        if let hit { return hit }
         guard let all = MuxClient.shellPIDs() else { return nil }
         shellPIDLock.lock()
         shellPIDCache.merge(all) { _, new in new }
