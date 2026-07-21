@@ -39,7 +39,9 @@ and an agent-control CLI on top.
 - **Projects → sessions sidebar** — vertical, drag-resizable. Each project owns
   sessions; rename / recolor / remove from the right-click menu. Projects render
   as full-width dividers, with the session count and the **+** new-session
-  control sharing one trailing slot.
+  control sharing one trailing slot. Drag to reorder — sessions within their
+  project, projects as whole blocks — with neighbors sliding out of the way;
+  the order persists across restarts.
 - **Session cards** — each card shows an output tail (the last ~4 rendered
   lines of its focused pane, Claude Code-aware: anchored on the last `⏺` block,
   input-box chrome filtered), pane counts (`⊞N`, or a tiny split-schematic with
