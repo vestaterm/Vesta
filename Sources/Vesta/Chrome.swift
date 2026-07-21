@@ -74,8 +74,24 @@ final class VestaWindowController: NSWindowController {
     private var pendingProjects: [SidebarProject]?   // rebuild that arrived while suppressed
     private weak var dragRow: TaggedRow?
     private var dragGap = 0
-    private var dragLine: NSView?            // 2px accent insertion line
     private var dragEscMonitor: Any?
+    // Interactive drag: a bitmap snapshot of the grabbed row floats with the cursor while the
+    // real row (alpha 0) HOLDS the gap in the stack; neighbour rows slide as the stack's own
+    // arrangedSubview order is animated. See wireDrag/beginDrag for the full rationale.
+    private var dragSnapshot: NSView?
+    private var dragUnits: [[NSView]] = []   // lane rows grouped into reorder units (sessions: 1 row each; projects: divider + its sessions)
+    private var dragUnitFrom = 0             // index of the grabbed unit within the lane
+    private var dragRangeStart = 0           // arranged-subview index where the lane's units begin
+    private var dragMidYs: [CGFloat] = []    // candidate midpoints (window y-up) FROZEN at begin — gap math never reads the sliding live frames
+    private var dragOriginFrame: NSRect = .zero   // grabbed row's stack-coord frame at pickup (cancel target)
+    private var dragGrabOffset: CGFloat = 0       // snapshot-origin − cursor at pickup, so the float doesn't jump
+    private var dragLaneMinY: CGFloat = 0         // lane clamp (stack coords)
+    private var dragLaneMaxY: CGFloat = 0
+    private var dragSettling = false              // true while the drop/cancel settle animation runs
+    // The in-flight settle's finalize, stored so it can be flushed SYNCHRONOUSLY (new drag
+    // starting mid-settle, willClose) instead of waiting on the animation completion. Exactly
+    // once: flushSettle nils it before invoking, so whichever path fires first wins.
+    private var pendingFinalize: (() -> Void)?
 
     init(theme: Theme, content: NSView,
          onSelectSession: @escaping (Int, Int) -> Void = { _, _ in },
@@ -158,9 +174,14 @@ final class VestaWindowController: NSWindowController {
             MainActor.assumeIsolated { (win?.firstResponder as? TerminalPane)?.windowKeyChanged(false) }
         }
         // Window closing mid-drag: endDrag never runs from mouseUp, which would leak the
-        // Esc key monitor and strand the drag state. Cancel defensively (idempotent).
+        // Esc key monitor and strand the drag state. Flush an in-flight settle FIRST (its
+        // animation completion may never fire on a closing window — the stored finalize runs
+        // the drop's original commit synchronously), then cancel a still-live drag (idempotent).
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: win, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.endDrag(commit: false) }
+            MainActor.assumeIsolated {
+                self?.flushSettle()
+                self?.endDrag(commit: false, animated: false)
+            }
         }
     }
 
@@ -810,9 +831,12 @@ final class VestaWindowController: NSWindowController {
 
     // MARK: – Drag-to-reorder
 
-    /// 2px accent insertion line between rows (chosen over live row-moving: it leaves the
-    /// stack untouched during the drag, so nothing fights the suppressed rebuild). Projects
-    /// reorder as whole blocks; sessions reorder only within their own project's rows.
+    /// Interactive drag: the grabbed row floats and neighbours slide to open a same-size gap
+    /// (replacing the old static insertion line). Mechanism — a bitmap snapshot of the row
+    /// follows the cursor while the real row stays in the stack at alpha 0 to HOLD the gap; on
+    /// each midpoint crossing we animate the stack's OWN arrangedSubview reordering (never
+    /// hand-position arranged frames), so the drag can't desync from the layout NSStackView
+    /// reasserts. Projects reorder as whole blocks; sessions reorder only within their project.
     private func wireDrag(_ row: TaggedRow, isSession: Bool) {
         row.isSessionRow = isSession
         row.draggable = true
@@ -831,25 +855,80 @@ final class VestaWindowController: NSWindowController {
         if let p = pendingProjects { pendingProjects = nil; setProjects(p) }
     }
 
-    /// Rows eligible as drop neighbours for the dragged row, in visual (top→bottom) order:
-    /// same-project session rows for a session drag, all project dividers for a project drag.
-    private func dragCandidates(for row: TaggedRow) -> [TaggedRow] {
-        let rows = projectsStack.arrangedSubviews.compactMap { $0 as? TaggedRow }
-        return row.isSessionRow
-            ? rows.filter { $0.isSessionRow && $0.tag1 == row.tag1 }
-            : rows.filter { !$0.isSessionRow }
+    /// The drag lane split into reorder *units* (visual top→bottom), the grabbed unit's index,
+    /// and the arranged-subview index where the lane's units begin. A session drag's units are
+    /// single sibling rows; a project drag's units are whole blocks (divider + its session rows)
+    /// so the block moves together while only the divider floats. The lane's units are always a
+    /// contiguous span of arranged subviews, which is what lets moveDrag reorder them in place.
+    private func laneUnits(for row: TaggedRow) -> (units: [[NSView]], from: Int, rangeStart: Int) {
+        let arranged = projectsStack.arrangedSubviews
+        if row.isSessionRow {
+            let sib = arranged.compactMap { $0 as? TaggedRow }.filter { $0.isSessionRow && $0.tag1 == row.tag1 }
+            let units = sib.map { [$0] as [NSView] }
+            let from = sib.firstIndex { $0 === row } ?? 0
+            let start = sib.first.flatMap { first in arranged.firstIndex { $0 === first } } ?? 0
+            return (units, from, start)
+        }
+        // Project lane: group each divider with the session rows that follow it → one unit/block.
+        var units: [[NSView]] = []
+        var current: [NSView] = []
+        for v in arranged {
+            if let t = v as? TaggedRow, !t.isSessionRow {
+                if !current.isEmpty { units.append(current) }
+                current = [v]
+            } else {
+                current.append(v)
+            }
+        }
+        if !current.isEmpty { units.append(current) }
+        let dividers = arranged.compactMap { $0 as? TaggedRow }.filter { !$0.isSessionRow }
+        let from = dividers.firstIndex { $0 === row } ?? 0
+        return (units, from, 0)
     }
 
     private func beginDrag(_ row: TaggedRow) {
+        // A flick-and-re-grab can start a new drag while the previous drop's settle (≤0.16s)
+        // is still animating. Flush that settle's finalize synchronously FIRST — otherwise its
+        // completion would later nil this drag's state, strand the new row at alpha 0, and
+        // orphan its snapshot as a floating ghost. (Removing the old snapshot in finalize also
+        // ends its visible animation — nothing keeps animating against the new drag.)
+        flushSettle()
+        // The flush may have committed a reorder, whose rebuild replaced the rows and detached
+        // the one this press grabbed. Re-target the drag to the fresh row with the same
+        // identity so a fast consecutive drag isn't dead: mouse events still route to the old
+        // pressed row, but its drag closures only touch controller state (dragRow/…), so the
+        // swap is safe — and the fresh row carries the CORRECT post-commit tags for the drop.
+        var row = row
+        if row.superview !== projectsStack {
+            guard let fresh = projectsStack.arrangedSubviews
+                .compactMap({ $0 as? TaggedRow })
+                .first(where: { $0.identity == row.identity && $0.isSessionRow == row.isSessionRow })
+            else { return }   // the grabbed item vanished in the committed rebuild → no drag
+            row = fresh
+        }
         suppressRebuild = true
         dragRow = row
-        dragGap = 0
-        let line = NSView()
-        line.wantsLayer = true
-        line.layer?.cornerRadius = 1
-        line.layer?.backgroundColor = theme.accent.cgColor
-        projectsStack.addSubview(line)   // plain subview, NOT arranged → no stack reflow
-        dragLine = line
+        dragGap = row.isSessionRow ? row.tag2 : row.tag1   // its own slot → an un-moved drop is a no-op
+        let (units, from, rangeStart) = laneUnits(for: row)
+        dragUnits = units; dragUnitFrom = from; dragRangeStart = rangeStart
+        // Candidate anchor rows (the session row itself, or a block's divider) drive the gap math.
+        let anchors = units.compactMap { $0.first as? TaggedRow }
+        dragMidYs = anchors.map { $0.convert(NSPoint(x: 0, y: $0.bounds.midY), to: nil).y }
+        dragLaneMinY = anchors.map { $0.frame.minY }.min() ?? row.frame.minY
+        dragLaneMaxY = anchors.map { $0.frame.maxY }.max() ?? row.frame.maxY
+
+        // Float a bitmap snapshot; hide the real row (alpha 0, still arranged) so it holds the
+        // gap. addSubview — NOT arranged — so the float never reflows the stack.
+        dragOriginFrame = row.frame
+        let snap = makeDragSnapshot(of: row)
+        snap.frame = row.frame
+        projectsStack.addSubview(snap)
+        dragSnapshot = snap
+        row.alphaValue = 0
+
+        let cursorY = projectsStack.convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil).y
+        dragGrabOffset = row.frame.origin.y - cursorY
+
         // Esc cancels the drag (defensive teardown also lives in endDrag).
         dragEscMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             if e.keyCode == 53 { self?.endDrag(commit: false); return nil }   // 53 = Escape
@@ -858,44 +937,131 @@ final class VestaWindowController: NSWindowController {
     }
 
     private func moveDrag(to windowPoint: NSPoint) {
-        guard let row = dragRow, let line = dragLine else { return }
-        let candidates = dragCandidates(for: row)
-        guard !candidates.isEmpty else { return }
-        // Row centres in window coords (y-up) → count those above the cursor = drop gap.
-        let midYs = candidates.map { $0.convert(NSPoint(x: 0, y: $0.bounds.midY), to: nil).y }
-        let gap = Workspace.dropGap(midYs: midYs, cursorY: windowPoint.y)
-        dragGap = gap
-        // Place the line at the gap boundary, in stack coords (candidate frames live there).
-        let x = candidates[0].frame.minX, w = candidates[0].frame.width
-        let y: CGFloat
-        if gap == 0 { y = candidates[0].frame.maxY }                       // above the top row
-        else if gap >= candidates.count { y = candidates[candidates.count - 1].frame.minY }  // below the last
-        else { y = (candidates[gap - 1].frame.minY + candidates[gap].frame.maxY) / 2 }
-        line.frame = NSRect(x: x, y: y - 1, width: w, height: 2)
+        guard let snap = dragSnapshot else { return }
+        // Float the snapshot with the cursor, clamped to the lane (sessions can't leave their
+        // project's rows; a divider can't leave the divider column).
+        let cursorY = projectsStack.convert(windowPoint, from: nil).y
+        let clamped = min(max(cursorY + dragGrabOffset, dragLaneMinY), dragLaneMaxY - snap.frame.height)
+        snap.frame.origin.y = clamped
+
+        // Gap from the FROZEN original midpoints, never the live sliding ones — reading the
+        // animated positions would feed back and oscillate. Same dropGap contract as before.
+        guard !dragMidYs.isEmpty else { return }
+        let gap = Workspace.dropGap(midYs: dragMidYs, cursorY: windowPoint.y)
+        if gap != dragGap { dragGap = gap; setVisualGap(gap, animated: true) }
     }
 
-    private func endDrag(commit: Bool) {
-        guard suppressRebuild else { return }   // idempotent — Esc, mouseUp, window-close can all fire
-        suppressRebuild = false
-        dragLine?.removeFromSuperview(); dragLine = nil
-        if let m = dragEscMonitor { NSEvent.removeMonitor(m); dragEscMonitor = nil }
-        let row = dragRow; dragRow = nil
-        let pending = pendingProjects; pendingProjects = nil
-        guard commit, let row else {
-            setProjects(pending ?? lastProjects)   // cancelled → rebuild from latest truth
-            return
+    /// Reorder the lane's units so the grabbed unit lands at `gap` (Workspace.movedOrder — the
+    /// same pure permutation the model commits), then let NSStackView relayout. Wrapped in an
+    /// NSAnimationContext so neighbour frames glide instead of jumping. We reorder from the
+    /// pristine `dragUnits` every time, so the state is a pure function of `gap` (never drifts).
+    /// Known cosmetic wobble: the 10px custom group spacing follows the ORIGINAL rows during a
+    /// permutation — accepted; the committed rebuild in finalize restores the spacing exactly.
+    private func setVisualGap(_ gap: Int, animated: Bool) {
+        let mutate = { [self] in
+            let order = Workspace.movedOrder(count: dragUnits.count, from: dragUnitFrom, gap: gap)
+            let flat = order.flatMap { dragUnits[$0] }
+            for (i, v) in flat.enumerated() {
+                projectsStack.insertArrangedSubview(v, at: dragRangeStart + i)   // moves if already arranged
+            }
+            if let snap = dragSnapshot {   // keep the float above the reshuffled rows
+                projectsStack.addSubview(snap, positioned: .above, relativeTo: nil)
+            }
+            projectsStack.layoutSubtreeIfNeeded()
         }
-        // Replay the freshest stashed render FIRST: a no-op drop (gap==from, or the
-        // identity-mismatch abort — exactly the case where the store changed mid-drag)
-        // fires no broadcast, and the stash would otherwise be silently dropped. The
-        // model call below uses the frozen tags + identity, so rebuilding first is safe.
-        if let pending { setProjects(pending) }
-        // row.identity travels with the drop: the store can mutate mid-drag (another
-        // window, `vesta kill`, a shell exiting) — the model verifies the item at the
-        // frozen index is still the one that was picked up, else aborts as a no-op.
-        if row.isSessionRow { onReorderSession(row.tag1, row.tag2, dragGap, row.identity) }
-        else { onReorderProject(row.tag1, dragGap, row.identity) }
-        // The reorder renders immediately via store.renderNow (no ≤1s debounce lag).
+        guard animated else { mutate(); return }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            ctx.allowsImplicitAnimation = true
+            mutate()
+        }
+    }
+
+    /// Bitmap the row into a floating, layer-backed sibling with a soft lift shadow.
+    private func makeDragSnapshot(of view: NSView) -> NSView {
+        let img = NSImage(size: view.bounds.size)
+        if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: rep)
+            img.addRepresentation(rep)
+        }
+        let host = NSView()
+        host.wantsLayer = true
+        host.layer?.contents = img
+        host.layer?.contentsGravity = .resizeAspectFill
+        host.layer?.cornerRadius = view.layer?.cornerRadius ?? 0
+        host.layer?.shadowColor = NSColor.black.cgColor
+        host.layer?.shadowOpacity = 0.35
+        host.layer?.shadowRadius = 7
+        host.layer?.shadowOffset = CGSize(width: 0, height: -2)
+        host.alphaValue = 0.97
+        return host
+    }
+
+    private func endDrag(commit: Bool, animated: Bool = true) {
+        guard suppressRebuild, !dragSettling else { return }   // idempotent — Esc, mouseUp, window-close, settle can all fire
+        // Drop the Esc monitor synchronously — it must never leak, even if the settle is async.
+        if let m = dragEscMonitor { NSEvent.removeMonitor(m); dragEscMonitor = nil }
+
+        let row = dragRow
+        let snap = dragSnapshot
+        let gap = dragGap
+
+        // Finalize: tear down drag state, then replay the stash + commit EXACTLY as before.
+        let finalize = { [weak self] in
+            guard let self else { return }
+            snap?.removeFromSuperview(); self.dragSnapshot = nil
+            row?.alphaValue = 1
+            self.dragRow = nil
+            self.dragUnits = []
+            self.dragSettling = false
+            self.suppressRebuild = false
+            let pending = self.pendingProjects; self.pendingProjects = nil
+            guard commit, let row else {
+                self.setProjects(pending ?? self.lastProjects)   // cancelled → rebuild from latest truth
+                return
+            }
+            // Replay the freshest stashed render FIRST: a no-op drop (gap==from, or the
+            // identity-mismatch abort — exactly the case where the store changed mid-drag)
+            // fires no broadcast, and the stash would otherwise be silently dropped. The
+            // model call below uses the frozen tags + identity, so rebuilding first is safe.
+            if let pending { self.setProjects(pending) }
+            // row.identity travels with the drop: the store can mutate mid-drag (another
+            // window, `vesta kill`, a shell exiting) — the model verifies the item at the
+            // frozen index is still the one that was picked up, else aborts as a no-op.
+            if row.isSessionRow { self.onReorderSession(row.tag1, row.tag2, gap, row.identity) }
+            else { self.onReorderProject(row.tag1, gap, row.identity) }
+            // The reorder renders immediately via store.renderNow (no ≤1s debounce lag).
+        }
+
+        // Teardown paths that can't animate (window closing) finalize synchronously.
+        guard animated, let snap, let row else { finalize(); return }
+        dragSettling = true
+        // Stash the finalize so beginDrag (flick-and-re-grab) and willClose can flush it
+        // synchronously; the animation completion runs it only if still pending. flushSettle
+        // nils before invoking → exactly one finalize, on whichever path fires first.
+        pendingFinalize = finalize
+        // Settle the float into the gap (commit) or back to its origin (cancel), THEN finalize —
+        // the row visibly lands before the model rebuild swaps in the identical committed order.
+        let target = commit ? row.frame : dragOriginFrame
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.16
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            ctx.allowsImplicitAnimation = true
+            if !commit { self.setVisualGap(self.dragUnitFrom, animated: false) }   // slide neighbours home
+            snap.animator().frame = target
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated { self?.flushSettle() }   // completion arrives on main
+        })
+    }
+
+    /// Run the in-flight settle's finalize NOW (or no-op if none / already run). The single
+    /// funnel for the settle completion, a new drag's flush, and willClose — niling before
+    /// invoking is what makes the finalize exactly-once across all three.
+    private func flushSettle() {
+        guard let f = pendingFinalize else { return }
+        pendingFinalize = nil
+        f()
     }
 
     /// A 2px rounded accent left-edge bar (shared by project + session rows).
