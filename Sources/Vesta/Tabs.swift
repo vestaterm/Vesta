@@ -391,6 +391,7 @@ final class Workspace {
                     return m < 1 ? "now" : (m < 60 ? "\(m)m" : "\(m / 60)h")
                 }
                 let paneCount = tree.paneCount
+                let serialized = paneCount > 1 ? tree.serializeLayout() : nil
                 return SidebarSession(label: label, active: isActive,
                                      attention: attn, heat: heat, heatAge: age,
                                      paneCount: paneCount,
@@ -398,11 +399,11 @@ final class Workspace {
                                      treeID: tree.paneID,
                                      // Real topology for the schematic. Dormant sessions
                                      // focus their first leaf on materialize — mirror that.
-                                     layout: paneCount > 1 ? PaneTree.layoutGlyph(
-                                        tree.serializeLayout(),
+                                     layout: serialized.map { PaneTree.layoutGlyph(
+                                        $0,
                                         focusedPaneID: tree.isDormant
-                                            ? PaneTree.firstLeafID(tree.serializeLayout())
-                                            : tree.focusedPaneID) : nil)
+                                            ? PaneTree.firstLeafID($0)
+                                            : tree.focusedPaneID) })
             }
             return SidebarProject(
                 name: proj.name,
