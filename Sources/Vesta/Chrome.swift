@@ -88,6 +88,10 @@ final class VestaWindowController: NSWindowController {
     private var dragLaneMinY: CGFloat = 0         // lane clamp (stack coords)
     private var dragLaneMaxY: CGFloat = 0
     private var dragSettling = false              // true while the drop/cancel settle animation runs
+    // The in-flight settle's finalize, stored so it can be flushed SYNCHRONOUSLY (new drag
+    // starting mid-settle, willClose) instead of waiting on the animation completion. Exactly
+    // once: flushSettle nils it before invoking, so whichever path fires first wins.
+    private var pendingFinalize: (() -> Void)?
 
     init(theme: Theme, content: NSView,
          onSelectSession: @escaping (Int, Int) -> Void = { _, _ in },
@@ -170,9 +174,14 @@ final class VestaWindowController: NSWindowController {
             MainActor.assumeIsolated { (win?.firstResponder as? TerminalPane)?.windowKeyChanged(false) }
         }
         // Window closing mid-drag: endDrag never runs from mouseUp, which would leak the
-        // Esc key monitor and strand the drag state. Cancel defensively (idempotent).
+        // Esc key monitor and strand the drag state. Flush an in-flight settle FIRST (its
+        // animation completion may never fire on a closing window — the stored finalize runs
+        // the drop's original commit synchronously), then cancel a still-live drag (idempotent).
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: win, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.endDrag(commit: false, animated: false) }
+            MainActor.assumeIsolated {
+                self?.flushSettle()
+                self?.endDrag(commit: false, animated: false)
+            }
         }
     }
 
@@ -878,6 +887,25 @@ final class VestaWindowController: NSWindowController {
     }
 
     private func beginDrag(_ row: TaggedRow) {
+        // A flick-and-re-grab can start a new drag while the previous drop's settle (≤0.16s)
+        // is still animating. Flush that settle's finalize synchronously FIRST — otherwise its
+        // completion would later nil this drag's state, strand the new row at alpha 0, and
+        // orphan its snapshot as a floating ghost. (Removing the old snapshot in finalize also
+        // ends its visible animation — nothing keeps animating against the new drag.)
+        flushSettle()
+        // The flush may have committed a reorder, whose rebuild replaced the rows and detached
+        // the one this press grabbed. Re-target the drag to the fresh row with the same
+        // identity so a fast consecutive drag isn't dead: mouse events still route to the old
+        // pressed row, but its drag closures only touch controller state (dragRow/…), so the
+        // swap is safe — and the fresh row carries the CORRECT post-commit tags for the drop.
+        var row = row
+        if row.superview !== projectsStack {
+            guard let fresh = projectsStack.arrangedSubviews
+                .compactMap({ $0 as? TaggedRow })
+                .first(where: { $0.identity == row.identity && $0.isSessionRow == row.isSessionRow })
+            else { return }   // the grabbed item vanished in the committed rebuild → no drag
+            row = fresh
+        }
         suppressRebuild = true
         dragRow = row
         dragGap = row.isSessionRow ? row.tag2 : row.tag1   // its own slot → an un-moved drop is a no-op
@@ -927,6 +955,8 @@ final class VestaWindowController: NSWindowController {
     /// same pure permutation the model commits), then let NSStackView relayout. Wrapped in an
     /// NSAnimationContext so neighbour frames glide instead of jumping. We reorder from the
     /// pristine `dragUnits` every time, so the state is a pure function of `gap` (never drifts).
+    /// Known cosmetic wobble: the 10px custom group spacing follows the ORIGINAL rows during a
+    /// permutation — accepted; the committed rebuild in finalize restores the spacing exactly.
     private func setVisualGap(_ gap: Int, animated: Bool) {
         let mutate = { [self] in
             let order = Workspace.movedOrder(count: dragUnits.count, from: dragUnitFrom, gap: gap)
@@ -1007,6 +1037,10 @@ final class VestaWindowController: NSWindowController {
         // Teardown paths that can't animate (window closing) finalize synchronously.
         guard animated, let snap, let row else { finalize(); return }
         dragSettling = true
+        // Stash the finalize so beginDrag (flick-and-re-grab) and willClose can flush it
+        // synchronously; the animation completion runs it only if still pending. flushSettle
+        // nils before invoking → exactly one finalize, on whichever path fires first.
+        pendingFinalize = finalize
         // Settle the float into the gap (commit) or back to its origin (cancel), THEN finalize —
         // the row visibly lands before the model rebuild swaps in the identical committed order.
         let target = commit ? row.frame : dragOriginFrame
@@ -1016,7 +1050,18 @@ final class VestaWindowController: NSWindowController {
             ctx.allowsImplicitAnimation = true
             if !commit { self.setVisualGap(self.dragUnitFrom, animated: false) }   // slide neighbours home
             snap.animator().frame = target
-        }, completionHandler: finalize)
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated { self?.flushSettle() }   // completion arrives on main
+        })
+    }
+
+    /// Run the in-flight settle's finalize NOW (or no-op if none / already run). The single
+    /// funnel for the settle completion, a new drag's flush, and willClose — niling before
+    /// invoking is what makes the finalize exactly-once across all three.
+    private func flushSettle() {
+        guard let f = pendingFinalize else { return }
+        pendingFinalize = nil
+        f()
     }
 
     /// A 2px rounded accent left-edge bar (shared by project + session rows).
