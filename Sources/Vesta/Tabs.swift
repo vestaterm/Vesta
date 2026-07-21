@@ -5,6 +5,24 @@ import AppKit
 /// Card heat — paint only, never geometry: what a BACKGROUND session wants you to know.
 enum SessionHeat { case none, ok, warn, need }
 
+/// Compact split topology for the session card's schematic — the REAL layout (nested
+/// splits + ratios + which pane is focused), not the old count-based grid.
+// Not an `indirect enum` — that trips an opaque swiftc "circular reference" in this
+// module; the children Array supplies the boxing instead, factories keep call sites terse.
+struct PaneGlyph: Equatable {
+    enum Kind: Equatable {
+        case leaf(focused: Bool)
+        case split(vertical: Bool, ratio: Double)
+    }
+    var kind: Kind
+    var children: [PaneGlyph] = []   // exactly [a, b] for .split; empty for .leaf
+
+    static func leaf(focused: Bool) -> PaneGlyph { .init(kind: .leaf(focused: focused)) }
+    static func split(vertical: Bool, ratio: Double, a: PaneGlyph, b: PaneGlyph) -> PaneGlyph {
+        .init(kind: .split(vertical: vertical, ratio: ratio), children: [a, b])
+    }
+}
+
 // Equatable so the renderer can skip rebuilds when a 1Hz tick changed nothing (idle CPU).
 struct SidebarSession: Equatable {
     let label: String
@@ -18,6 +36,7 @@ struct SidebarSession: Equatable {
     var focusedPaneID: String? = nil  // tail lookup key (filled by WindowContext)
     var tail: [String] = []           // last cleaned output lines (TailStore)
     var treeID: String = ""           // stable PaneTree.paneID — drag-reorder identity guard
+    var layout: PaneGlyph? = nil      // real split topology (multi-pane sessions only)
 }
 
 struct SidebarProject: Equatable {
@@ -371,11 +390,19 @@ final class Workspace {
                     let m = Int(Date().timeIntervalSince($0) / 60)
                     return m < 1 ? "now" : (m < 60 ? "\(m)m" : "\(m / 60)h")
                 }
+                let paneCount = tree.paneCount
                 return SidebarSession(label: label, active: isActive,
                                      attention: attn, heat: heat, heatAge: age,
-                                     paneCount: tree.paneCount,
+                                     paneCount: paneCount,
                                      focusedPaneID: tree.isDormant ? nil : tree.focusedPaneID,
-                                     treeID: tree.paneID)
+                                     treeID: tree.paneID,
+                                     // Real topology for the schematic. Dormant sessions
+                                     // focus their first leaf on materialize — mirror that.
+                                     layout: paneCount > 1 ? PaneTree.layoutGlyph(
+                                        tree.serializeLayout(),
+                                        focusedPaneID: tree.isDormant
+                                            ? PaneTree.firstLeafID(tree.serializeLayout())
+                                            : tree.focusedPaneID) : nil)
             }
             return SidebarProject(
                 name: proj.name,

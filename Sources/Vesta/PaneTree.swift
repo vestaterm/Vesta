@@ -209,7 +209,7 @@ final class PaneTree {
 
     /// The first terminal leaf's paneID in a serialized layout (DFS, so it skips a
     /// browser top-left leaf — which has no paneID — and finds the next terminal).
-    private static func firstLeafID(_ node: [String: Any]) -> String? {
+    nonisolated static func firstLeafID(_ node: [String: Any]) -> String? {
         if let a = node["a"] as? [String: Any], let b = node["b"] as? [String: Any] {
             return firstLeafID(a) ?? firstLeafID(b)
         }
@@ -506,6 +506,20 @@ final class PaneTree {
         return (node["paneID"] as? String).map { [$0] } ?? []
     }
 
+    /// Real split topology for the sidebar schematic. Ratios quantize to 0.05 steps so
+    /// float jitter can't defeat the renderer's skip-identical-snapshots gate.
+    nonisolated static func layoutGlyph(_ node: [String: Any], focusedPaneID: String?) -> PaneGlyph {
+        if let a = node["a"] as? [String: Any], let b = node["b"] as? [String: Any] {
+            let raw = (node["ratio"] as? Double) ?? 0.5
+            return .split(vertical: (node["vertical"] as? Bool) ?? true,
+                          ratio: (raw * 20).rounded() / 20,
+                          a: layoutGlyph(a, focusedPaneID: focusedPaneID),
+                          b: layoutGlyph(b, focusedPaneID: focusedPaneID))
+        }
+        // Browser leaves carry no paneID — they draw unfocused unless nothing else is.
+        return .leaf(focused: focusedPaneID != nil && node["paneID"] as? String == focusedPaneID)
+    }
+
     /// Count leaves (terminal or browser) in a serialized layout — the sidebar's "· N panes".
     nonisolated static func layoutLeafCount(_ node: [String: Any]) -> Int {
         if let a = node["a"] as? [String: Any], let b = node["b"] as? [String: Any] {
@@ -688,6 +702,20 @@ func dormantLayoutSelfCheck() {
     assert(PaneTree.layoutPaneIDs(flat) == ["P9"], "flat layout paneID")
     assert(PaneTree.layoutLeafCount(flat) == 1, "flat layout is one leaf")
     assert(PaneTree.firstLeafCwd(flat) == "/tmp", "flat layout cwd")
+    // Schematic glyph: real topology, focused leaf marked, browser leaf never focused,
+    // ratio quantized to 0.05 steps.
+    let jittery = ["vertical": true, "ratio": 0.5238, "a": ["paneID": "P1"], "b": ["paneID": "P2"]] as [String: Any]
+    assert(PaneTree.layoutGlyph(jittery, focusedPaneID: "P2")
+           == .split(vertical: true, ratio: 0.5, a: .leaf(focused: false), b: .leaf(focused: true)),
+           "glyph quantizes ratio + marks focused leaf")
+    assert(PaneTree.layoutGlyph(layout, focusedPaneID: "P2")
+           == .split(vertical: true, ratio: 0.5,
+                     a: .leaf(focused: false),
+                     b: .split(vertical: false, ratio: 0.5,
+                               a: .leaf(focused: true), b: .leaf(focused: false))),
+           "glyph mirrors nested topology; browser leaf unfocused")
+    assert(PaneTree.layoutGlyph(flat, focusedPaneID: nil) == .leaf(focused: false),
+           "nil focus → no lit cell")
     print("dormantLayoutSelfCheck OK")
 }
 
