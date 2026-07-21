@@ -705,7 +705,10 @@ final class VestaWindowController: NSWindowController {
         // ponytail: count-based grid, not real topology — read PaneTree.serializeLayout
         // and draw the true split tree if anyone asks.
         if VestaConfig.shared.sidebarPanes, sess.paneCount > 1 {
-            let schematic = PaneSchematic(count: sess.paneCount, accent: theme.accent, dim: txt(.faint))
+            // Real topology; a missing glyph (shouldn't happen for paneCount > 1) just
+            // draws a single unfocused cell rather than lying with a count grid.
+            let schematic = PaneSchematic(layout: sess.layout ?? .leaf(focused: false),
+                                          accent: theme.accent, dim: txt(.faint))
             schematic.toolTip = "split layout — focused pane highlighted (vesta-sidebar-panes)"
             titleViews.insert(schematic, at: 0)
         }
@@ -1693,30 +1696,53 @@ final class TaggedRow: NSView {
 
 /// Tiny split-topology schematic on a session card (vesta-sidebar-panes): up to four
 /// cells, the first (focused) lit. ponytail: count-based layout, not the real split tree.
+/// The session card's split schematic: draws the REAL layout tree — nested splits at
+/// their (clamped) ratios, focused pane lit in accent. Deep trees produce slivers at
+/// 18×12; they still read as "many panes". ponytail: no minimum-cell redistribution.
 final class PaneSchematic: NSView {
-    init(count: Int, accent: NSColor, dim: NSColor) {
+    private let glyph: PaneGlyph
+    private let accent: NSColor
+    private let dim: NSColor
+
+    init(layout: PaneGlyph, accent: NSColor, dim: NSColor) {
+        self.glyph = layout
+        self.accent = accent
+        self.dim = dim
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
-        let n = min(count, 4)
-        let cols = n == 1 ? 1 : 2
-        let rowsN = n <= 2 ? 1 : 2
-        let w: CGFloat = 18, h: CGFloat = 12, gap: CGFloat = 1.5
-        let cw = (w - gap * CGFloat(cols - 1)) / CGFloat(cols)
-        let ch = (h - gap * CGFloat(rowsN - 1)) / CGFloat(rowsN)
-        for i in 0..<n {
-            let cell = CALayer()
-            let r = i / cols, c = i % cols
-            cell.frame = CGRect(x: CGFloat(c) * (cw + gap), y: CGFloat(rowsN - 1 - r) * (ch + gap),
-                                width: cw, height: ch)
-            cell.cornerRadius = 1.5
-            cell.backgroundColor = (i == 0 ? accent.withAlphaComponent(0.55) : dim.withAlphaComponent(0.35)).cgColor
-            layer?.addSublayer(cell)
-        }
-        widthAnchor.constraint(equalToConstant: w).isActive = true
-        heightAnchor.constraint(equalToConstant: h).isActive = true
+        widthAnchor.constraint(equalToConstant: 18).isActive = true
+        heightAnchor.constraint(equalToConstant: 12).isActive = true
     }
     required init?(coder: NSCoder) { fatalError("no xib") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        func paint(_ g: PaneGlyph, in r: NSRect) {
+            guard r.width >= 1, r.height >= 1 else { return }
+            switch g.kind {
+            case let .leaf(focused):
+                (focused ? accent.withAlphaComponent(0.55) : dim.withAlphaComponent(0.35)).setFill()
+                NSBezierPath(roundedRect: r, xRadius: 1.5, yRadius: 1.5).fill()
+            case let .split(vertical, ratio):
+                guard g.children.count == 2 else { return }
+                let (a, b) = (g.children[0], g.children[1])
+                // Clamp so a 90/10 real split still shows both cells at this size.
+                let t = CGFloat(min(max(ratio, 0.25), 0.75))
+                let gap: CGFloat = 1.5
+                if vertical {   // side by side; `a` is the left pane
+                    let aw = (r.width - gap) * t
+                    paint(a, in: NSRect(x: r.minX, y: r.minY, width: aw, height: r.height))
+                    paint(b, in: NSRect(x: r.minX + aw + gap, y: r.minY,
+                                        width: r.width - aw - gap, height: r.height))
+                } else {        // stacked; `a` is the TOP pane (flipped vs y-up drawing)
+                    let ah = (r.height - gap) * t
+                    paint(b, in: NSRect(x: r.minX, y: r.minY, width: r.width,
+                                        height: r.height - ah - gap))
+                    paint(a, in: NSRect(x: r.minX, y: r.maxY - ah, width: r.width, height: ah))
+                }
+            }
+        }
+        paint(glyph, in: bounds)
+    }
 }
 
 /// Opaque fill pinned over the titlebar to defeat AppKit's translucent material. Click-through
