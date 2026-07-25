@@ -267,7 +267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Split Vertical", "⌘D", { let ws = $0.workspace; ws.activeTree.splitFocused(.vertical, cwd: ws.activeTree.focusedCwd) }),
             ("Split Horizontal", "⌘⇧D", { let ws = $0.workspace; ws.activeTree.splitFocused(.horizontal, cwd: ws.activeTree.focusedCwd) }),
             ("Zoom Pane", "", { $0.workspace.activeTree.zoomFocused() }),
-            ("Close Pane", "⌘W", { $0.workspace.activeTree.closeFocused() }),
+            ("Close Pane", "⌘W", { $0.workspace.activeTree.killFocusedSession() }),
             ("Close Session", "⌘⇧W", { let ws = $0.workspace; ws.closeSession(ws.activeP, ws.activeS) }),
             ("New Session", "⌘T", { let ws = $0.workspace; ws.newSession(ws.activeP) }),
             ("New Window", "⌘N", { [weak self] _ in self?.newWindow() }),
@@ -1310,14 +1310,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     shift ? .horizontal : .vertical, cwd: ws.activeTree.focusedCwd)
                 return nil
             // ⌘W: pane → session → window (cascade). ⌘⇧W: close session.
-            // With vesta-persist on (M3), closing a pane/session only tears down the ghostty
-            // surface → the vesta-attach relay EOFs and detaches; the shell keeps running
-            // under vestad. Explicit kill is prefix-x / `vesta kill`, never Cmd-W.
+            // ⌘W KILLS the pane's shell. It used to only tear down the ghostty surface and
+            // leave the shell running under vestad — but ⌘W also drops the leaf from the tree
+            // AND the sidebar, so that shell's paneID was gone from PaneTree.paneIDs and
+            // nothing could ever reach it again (`vesta sessions` reads the sidebar, not the
+            // daemon). Result: every ⌘W stranded a live shell forever, still holding its
+            // ports. Detach-and-keep-the-shell is prefix-d, which is an explicit choice.
             case "w":
                 if shift {
                     ws.closeSession(ws.activeP, ws.activeS)
                 } else if ws.activeTree.paneCount > 1 {
-                    ws.activeTree.closeFocused()  // 1) close the pane
+                    ws.activeTree.killFocusedSession()  // 1) close the pane (kills its shell)
                 } else if ws.totalSessions > 1 {
                     ws.closeSession(ws.activeP, ws.activeS)  // 2) close the session
                 } else {

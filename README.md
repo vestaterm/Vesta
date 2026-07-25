@@ -137,10 +137,12 @@ What you get:
 
 - **Survive quit** — `⌘Q`, reopen Vesta: panes come back with their shells and
   recent output.
-- **Close ends the shell** — `⌘W` closes the focused pane (a non-last pane
-  detaches; the last pane closes **and kills** its session). `⌘⇧W` closes and
-  kills the session. Shells survive only across window-close / `⌘Q` quit, and
-  reattach on relaunch. To keep a shell but drop the pane, prefix-`d` (detach).
+- **Close ends the shell** — `⌘W` closes the focused pane **and kills its
+  shell**; `⌘⇧W` closes and kills the whole session. Closing a pane drops it
+  from the sidebar too, so a shell left running there would be unreachable
+  forever — anything it still held (a dev server's port, for one) would leak.
+  Shells survive only across window-close / `⌘Q` quit, and reattach on
+  relaunch. To keep a shell but drop the pane, prefix-`d` (detach).
 - **Prefix mode** — tmux muscle memory. Press the prefix (`ctrl+b` by default,
   `vesta-prefix`), then a key (table below). Empty `vesta-prefix` disables it.
 - **Explicit kill** — prefix-`x`, or `vesta kill <id>` — when you actually mean
@@ -221,8 +223,8 @@ look, so an untouched config changes nothing.
 | `ctrl+b` then a key | prefix mode (see Multiplexer & sessions) |
 
 Click a pane to focus it; click a project to expand it; right-click a project
-to rename / recolor / remove it. `⌘W` closes the focused pane; `⌘⇧W` closes
-**and kills** its session — see Multiplexer & sessions.
+to rename / recolor / remove it. `⌘W` closes the focused pane **and kills** its
+shell; `⌘⇧W` closes **and kills** its session — see Multiplexer & sessions.
 
 ## Architecture
 
