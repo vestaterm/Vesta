@@ -90,6 +90,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // we rebuild windows at launch; `savePending` coalesces rapid changes.
     private var restoring = false
     private var savePending = false
+    /// Set while Updater.relaunch is swapping this process for the freshly installed one.
+    /// Suppresses the quit confirm (the user already chose to update) and the terminate-time
+    /// window save (the incoming instance owns windows.json by then — see applicationWillTerminate).
+    var relaunchingForUpdate = false
     private var luaTimers: [Timer] = []  // vesta.timer schedules; cleared on reload
     // vesta.panel state is window-agnostic: specs are the source of truth; overlays are
     // rendered into windows per scope (active-only follows focus; all → every window).
@@ -714,7 +718,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ note: Notification) {
-        saveWindows()
+        // Do NOT save during an update relaunch. The incoming instance has already restored
+        // from windows.json and owns it now; writing this dying instance's layout on top
+        // clobbers what it restored, and the window count drifts by one every update.
+        if !relaunchingForUpdate { saveWindows() }
         #if DEBUG
         // DEV builds only: kill the session daemon on quit. vestad is single-instance per
         // user, so a stale dev daemon (ad-hoc signed, often under a TCC-protected path like
@@ -1031,6 +1038,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Confirm before quitting (⌘Q) — running sessions would be killed — unless
     /// the user ticked "Don't ask again".
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // An update relaunch is not a user-initiated quit: they already consented by clicking
+        // install. Prompting here also left BOTH instances running — old one blocked on the
+        // modal, new one already up — for as long as the alert sat there, with the two of them
+        // racing to write windows.json.
+        if relaunchingForUpdate { return .terminateNow }
         if UserDefaults.standard.bool(forKey: "VestaSkipQuitConfirm") { return .terminateNow }
         let a = NSAlert()
         a.messageText = "Quit Vesta?"

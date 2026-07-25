@@ -218,10 +218,25 @@ final class Updater: NSObject {
 
     func relaunch() {
         guard let app = stagedApp else { return }
+        let delegate = NSApp.delegate as? AppDelegate
+        // Flush the CURRENT layout before the new instance launches and restores from it.
+        // scheduleSave coalesces on a 0.6s timer, so without this the incoming app can restore
+        // a layout that is up to that stale — a window opened or closed just before clicking
+        // install would not be in the file yet.
+        delegate?.saveWindows()
+        // Mark the relaunch BEFORE launching: the moment the new instance is up, this one must
+        // quit silently and without writing windows.json again. Prompting kept both instances
+        // alive and both owning that file, which is how the window count drifted by one.
+        delegate?.relaunchingForUpdate = true
         let cfg = NSWorkspace.OpenConfiguration()
         cfg.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(at: app, configuration: cfg) { _, _ in
-            DispatchQueue.main.async { NSApp.terminate(nil) }
+        NSWorkspace.shared.openApplication(at: app, configuration: cfg) { _, err in
+            DispatchQueue.main.async {
+                // Launch failed → stay alive and usable rather than quitting into nothing;
+                // clear the flag so a later real ⌘Q still confirms and still saves.
+                if err != nil { delegate?.relaunchingForUpdate = false; return }
+                NSApp.terminate(nil)
+            }
         }
     }
 
