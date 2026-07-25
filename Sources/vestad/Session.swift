@@ -27,9 +27,11 @@ final class Session {
 
     /// Last N bytes of raw PTY output, replayed on attach. 256 KB ≈ a few
     /// screenfuls of scrollback + whatever a full-screen app last drew.
-    // ponytail: byte-bounded ring, so a reattach can replay a partial escape
-    // sequence at the very front (rare, ghostty resyncs past it). Add a
-    // disk-backed/screen-aware buffer only if that artifact actually bites.
+    // Byte-bounded, so both cut points realign to the next ESC/newline before replaying —
+    // see ringSuffixFromSafeBoundary. This used to say a partial escape sequence at the front
+    // was "rare, ghostty resyncs past it"; both halves were wrong. It was 2 of 6 panes on a
+    // real workspace, and the parser resyncing does not un-print the characters it already
+    // emitted — the user just sees `;2;215;119;87m` across the top of the pane.
     private static let ringCap = 256 * 1024
     private(set) var ring = Data()
 
@@ -136,7 +138,9 @@ final class Session {
         guard logEnabled else { return }   // opt-in: no on-disk scrollback by default
         let path = MuxPaths.sessionLog(paneID)
         if let data = FileManager.default.contents(atPath: path), !data.isEmpty {
-            ring = data.count > Session.ringCap ? Data(data.suffix(Session.ringCap)) : data
+            // Resume at the next ESC or newline, not wherever 256 KB happens to land — a
+            // mid-sequence cut replays as literal junk (`;2;215;119;87m`) across the pane.
+            ring = ringSuffixFromSafeBoundary(data, cap: Session.ringCap)
             logBytes = data.count
         }
         logFD = open(path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
@@ -147,7 +151,10 @@ final class Session {
     func ingest(_ bytes: Data) {
         ring.append(bytes)
         if ring.count > Session.ringCap {
-            ring.removeFirst(ring.count - Session.ringCap)   // O(n) trim; runs only when full
+            // Same escape-safe rule as the disk seed: trimming to an exact byte count would
+            // leave the ring starting mid-sequence, and every later reattach replays it.
+            let drop = ringDropCount(ring, cap: Session.ringCap)
+            if drop > 0 { ring.removeFirst(drop) }   // in place: no 256 KB copy per trim
         }
         writeLog(bytes)
     }
