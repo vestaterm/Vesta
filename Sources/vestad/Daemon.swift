@@ -357,7 +357,13 @@ final class Daemon {
             // Deliberate UI close: SIGKILL the shell and mark its log for IMMEDIATE deletion on
             // reap (explicitKills) — unlike a plain exit, no reboot-survival grace applies.
             if let paneID = clientSession[fd], let s = sessions[paneID] {
-                explicitKills.insert(paneID); kill(s.pid, SIGKILL); s.markDead()
+                // Kill the whole job tree, not just the shell. The shell is the PTY's session
+                // leader, so its death makes the kernel SIGHUP the FOREGROUND process group and
+                // revoke the tty — which does reach a plain `npm run dev`, but not a job that
+                // has left that terminal behind. Those get adopted by launchd and keep their
+                // ports bound with no handle left to reach them by. Collect while the tree is
+                // still intact (killProcessTree does this before signalling anything).
+                explicitKills.insert(paneID); killProcessTree(s.pid); s.markDead()
             }
         case .list:
             let infos = sessions.values.map { SessionInfo(id: $0.paneID, name: $0.name, cwd: $0.cwd,

@@ -27,6 +27,7 @@ if argv.first == "selfcheck" {
     muxProtocolSelfCheck()
     muxPathsSelfCheck()
     scrollbackSweepSelfCheck()
+    processTreeSelfCheck()
     upgradeStateSelfCheck()
     shellIntegrationSelfCheck()
     fdLimitSelfCheck()
