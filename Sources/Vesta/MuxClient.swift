@@ -127,19 +127,39 @@ enum MuxClient {
         // beachball the app. 2s is plenty for a local socket ack; on timeout read → -1 → false.
         var tv = timeval(tv_sec: 2, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-        // DRAIN until EOF — do NOT stop after one read. `hello` makes the daemon replay the
+        // Keep reading — do NOT stop after one read. `hello` makes the daemon replay the
         // session's whole scrollback ring (up to 256 KB) BEFORE it ever decodes the `kill`
         // frame sitting behind it in the same socket buffer. If we stop reading, the daemon's
         // replay send blocks, fails, and closeClient()s us — which throws away the still-
         // undecoded `kill`. The shell then survives the close, holding its port forever.
-        // Reading to EOF is what actually lets the kill land.
-        var acked = false
+        // Draining is what actually lets the kill land.
+        //
+        // Stop at `exited`, NOT at EOF: reapDeadShells closes only clients whose send FAILED
+        // plus subscribers, so a healthy draining client's fd is left open forever. Waiting
+        // for EOF would therefore always burn the full SO_RCVTIMEO — and closeSession kills
+        // panes serially on the main thread, so a 4-pane session would freeze the UI for ~8s.
+        // `exited` is sent only after the replay flushed and the kill was decoded and reaped,
+        // so it is the true ack and it arrives in milliseconds.
+        //
+        // Require helloAck BEFORE exited: when `hello` fails to create a session the daemon
+        // sends a bare exited(status:1) and never binds clientSession, so the kill is a silent
+        // no-op. Without this we would report that as success.
+        let deadline = Date().addingTimeInterval(3)   // absolute cap; SO_RCVTIMEO resets per read
+        var buf = Data()
         var tmp = [UInt8](repeating: 0, count: 65536)
-        while true {
+        var bound = false
+        while Date() < deadline {
             let n = read(fd, &tmp, tmp.count)
-            if n <= 0 { break }   // EOF (session gone) or timeout
-            acked = true
+            if n <= 0 { break }                        // timeout, error, or daemon vanished
+            buf.append(Data(tmp[0..<n]))
+            while let f = decodeServerFrame(from: &buf) {
+                switch f {
+                case .helloAck: bound = true
+                case .exited:   return bound           // reaped → the kill landed
+                default:        break                  // replay output; keep draining
+                }
+            }
         }
-        return acked
+        return false
     }
 }
