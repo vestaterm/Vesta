@@ -218,34 +218,10 @@ final class Updater: NSObject {
 
     func relaunch() {
         guard let app = stagedApp else { return }
-        let delegate = NSApp.delegate as? AppDelegate
-        // Flush the CURRENT layout before the new instance launches and restores from it.
-        // scheduleSave coalesces on a 0.6s timer, so without this the incoming app can restore
-        // a layout that is up to that stale — a window opened or closed just before clicking
-        // install would not be in the file yet.
-        delegate?.saveWindows()
         let cfg = NSWorkspace.OpenConfiguration()
         cfg.createsNewApplicationInstance = true
-        // Without this the spawned process takes the "an instance is already running → ask it
-        // for a new window and exit" shortcut at the top of main.swift (a GUI launch has empty
-        // argv, and the bundle executable is that same binary). The result was no new instance
-        // at all: one stray window in the OLD app, a quit prompt, then the app simply gone.
-        cfg.environment = ["VESTA_UPDATE_RELAUNCH": "1"]
-        NSWorkspace.shared.openApplication(at: app, configuration: cfg) { _, err in
-            DispatchQueue.main.async { MainActor.assumeIsolated {
-                // Launch failed → stay alive and usable rather than quitting into nothing, and
-                // say so: silently vanishing is what made the old behaviour so confusing.
-                if let err {
-                    delegate?.showToast("update installed, but relaunch failed — quit and reopen Vesta (\(err.localizedDescription))")
-                    return
-                }
-                // Set the flag HERE, immediately before terminating, not before the async
-                // launch: it suppresses the quit confirm and the terminate-time save, and a
-                // real ⌘Q arriving while the launch was still in flight would otherwise have
-                // quietly skipped both.
-                delegate?.relaunchingForUpdate = true
-                NSApp.terminate(nil)
-            } }
+        NSWorkspace.shared.openApplication(at: app, configuration: cfg) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
         }
     }
 

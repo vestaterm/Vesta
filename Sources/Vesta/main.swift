@@ -65,14 +65,7 @@ if let verb = argv.first {
 }
 // Bare `vesta` (no args): open a new window if an instance is already running, else
 // fall through to launch the GUI.
-//
-// EXCEPT during an update relaunch. A GUI launch also arrives with empty argv, and the app
-// bundle's executable IS this binary — so the process Updater.relaunch spawns landed here,
-// asked the OLD instance for a new window, and exited. The update therefore never started the
-// new build at all: the user saw a window appear (in the old app), then a quit prompt, then
-// nothing — and that stray window got persisted, growing the saved layout by one every update.
-// Updater sets this in the child's environment; nothing else does.
-if controlSocketAlive(), ProcessInfo.processInfo.environment["VESTA_UPDATE_RELAUNCH"] == nil {
+if controlSocketAlive() {
     exit(runControlCLI(["new-window"]))
 }
 
@@ -98,10 +91,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // we rebuild windows at launch; `savePending` coalesces rapid changes.
     private var restoring = false
     private var savePending = false
-    /// Set while Updater.relaunch is swapping this process for the freshly installed one.
-    /// Suppresses the quit confirm (the user already chose to update) and the terminate-time
-    /// window save (the incoming instance owns windows.json by then — see applicationWillTerminate).
-    var relaunchingForUpdate = false
     private var luaTimers: [Timer] = []  // vesta.timer schedules; cleared on reload
     // vesta.panel state is window-agnostic: specs are the source of truth; overlays are
     // rendered into windows per scope (active-only follows focus; all → every window).
@@ -695,10 +684,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Persist every window's projects + sessions-by-cwd. Coalesced so rapid
     /// changes (focus/git callbacks) don't write on every tick.
     private func scheduleSave() {
-        // relaunchingForUpdate too: this fires 0.6s late, so a save armed just before the
-        // relaunch would otherwise land after the incoming instance restored — the suppression
-        // in applicationWillTerminate alone is not enough to keep it from writing.
-        guard !restoring, !savePending, !relaunchingForUpdate else { return }
+        guard !restoring, !savePending else { return }
         savePending = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             self?.savePending = false
@@ -729,10 +715,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ note: Notification) {
-        // Do NOT save during an update relaunch. The incoming instance has already restored
-        // from windows.json and owns it now; writing this dying instance's layout on top
-        // clobbers what it restored, and the window count drifts by one every update.
-        if !relaunchingForUpdate { saveWindows() }
+        saveWindows()
         #if DEBUG
         // DEV builds only: kill the session daemon on quit. vestad is single-instance per
         // user, so a stale dev daemon (ad-hoc signed, often under a TCC-protected path like
@@ -1049,11 +1032,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Confirm before quitting (⌘Q) — running sessions would be killed — unless
     /// the user ticked "Don't ask again".
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // An update relaunch is not a user-initiated quit: they already consented by clicking
-        // install. Prompting here also left BOTH instances running — old one blocked on the
-        // modal, new one already up — for as long as the alert sat there, with the two of them
-        // racing to write windows.json.
-        if relaunchingForUpdate { return .terminateNow }
         if UserDefaults.standard.bool(forKey: "VestaSkipQuitConfirm") { return .terminateNow }
         let a = NSAlert()
         a.messageText = "Quit Vesta?"
