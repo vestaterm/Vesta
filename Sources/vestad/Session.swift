@@ -138,8 +138,8 @@ final class Session {
         guard logEnabled else { return }   // opt-in: no on-disk scrollback by default
         let path = MuxPaths.sessionLog(paneID)
         if let data = FileManager.default.contents(atPath: path), !data.isEmpty {
-            // Start at a line boundary, not wherever 256 KB happens to land — a mid-sequence
-            // cut replays as literal junk (`;2;215;119;87m`) across the top of the pane.
+            // Resume at the next ESC or newline, not wherever 256 KB happens to land — a
+            // mid-sequence cut replays as literal junk (`;2;215;119;87m`) across the pane.
             ring = ringSuffixFromSafeBoundary(data, cap: Session.ringCap)
             logBytes = data.count
         }
@@ -151,9 +151,10 @@ final class Session {
     func ingest(_ bytes: Data) {
         ring.append(bytes)
         if ring.count > Session.ringCap {
-            // Same line-boundary rule as the disk seed: trimming to an exact byte count would
-            // leave the ring starting mid-escape-sequence, and every later reattach replays it.
-            ring = ringSuffixFromSafeBoundary(ring, cap: Session.ringCap)   // O(n); only when full
+            // Same escape-safe rule as the disk seed: trimming to an exact byte count would
+            // leave the ring starting mid-sequence, and every later reattach replays it.
+            let drop = ringDropCount(ring, cap: Session.ringCap)
+            if drop > 0 { ring.removeFirst(drop) }   // in place: no 256 KB copy per trim
         }
         writeLog(bytes)
     }
