@@ -261,24 +261,6 @@ final class Daemon {
         }
     }
 
-    /// SIGKILL `pid` and every process descended from it, deepest first.
-    ///
-    /// Killing the login shell alone is not enough. The shell is the PTY's session leader, so
-    /// when it dies the kernel SIGHUPs the terminal's FOREGROUND process group and revokes the
-    /// tty — which does reach a plain `npm run dev`. It does NOT reach a job that has left that
-    /// terminal behind: anything re-parented away, or holding fds elsewhere, survives, gets
-    /// adopted by init, and keeps its ports bound with no handle left to reach it by.
-    /// Walk the tree while it is still intact (before the shell dies) and kill it outright.
-    ///
-    /// Children first, so a supervisor (npm, cargo-watch) can't respawn a worker after we pass.
-    // ponytail: proc_listchildpids snapshots one level at a time, so a process forked between
-    // levels is missed. A process-group or pid-namespace jail is the real fix; not worth it for
-    // a terminal multiplexer — the kernel's tty revoke still covers the common foreground case.
-    private func killTree(_ pid: pid_t) {
-        for child in childPIDs(of: pid) { killTree(child) }
-        kill(pid, SIGKILL)
-    }
-
     /// Block until `pid` is reaped, then decode the shell-convention exit code.
     /// Safe from hanging the select loop: called ONLY after the master PTY returned
     /// EOF/error (all the child's slave fds are closed → it has exited or is exiting)
@@ -375,7 +357,13 @@ final class Daemon {
             // Deliberate UI close: SIGKILL the shell and mark its log for IMMEDIATE deletion on
             // reap (explicitKills) — unlike a plain exit, no reboot-survival grace applies.
             if let paneID = clientSession[fd], let s = sessions[paneID] {
-                explicitKills.insert(paneID); killTree(s.pid); s.markDead()
+                // Kill the whole job tree, not just the shell. The shell is the PTY's session
+                // leader, so its death makes the kernel SIGHUP the FOREGROUND process group and
+                // revoke the tty — which does reach a plain `npm run dev`, but not a job that
+                // has left that terminal behind. Those get adopted by launchd and keep their
+                // ports bound with no handle left to reach them by. Collect while the tree is
+                // still intact (killProcessTree does this before signalling anything).
+                explicitKills.insert(paneID); killProcessTree(s.pid); s.markDead()
             }
         case .list:
             let infos = sessions.values.map { SessionInfo(id: $0.paneID, name: $0.name, cwd: $0.cwd,
