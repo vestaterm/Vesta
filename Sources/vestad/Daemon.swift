@@ -412,8 +412,15 @@ final class Daemon {
             fail("new binary is missing or not executable: \(newBinary)"); return
         }
         // 2. Refuse a no-op upgrade to a byte-identical binary (SHA-256 of file contents).
-        let curPath = currentExecutablePath()
-        if let a = sha256OfFile(curPath), let b = sha256OfFile(newBinary), a == b {
+        // Compare against selfExeSHA — the hash of the image we ACTUALLY booted, taken once at
+        // startup — never a fresh re-hash of currentExecutablePath(). _NSGetExecutablePath
+        // returns the exec-time path STRING, and the app updater swaps a new bundle into that
+        // exact path while we keep running from the old (now unlinked) inode. Re-hashing the
+        // path therefore reads the NEW binary, compares it against itself, and refuses forever:
+        // the app sees `info`'s stale startup SHA, asks for an upgrade every launch, and every
+        // launch we answer "identical". That deadlock is why a daemon could sit weeks out of
+        // date, silently swallowing client frames its build predates.
+        if !selfExeSHA.isEmpty, let b = sha256OfFile(newBinary), selfExeSHA == b {
             fail("new binary is identical to the running one (SHA-256 match) — no-op upgrade refused"); return
         }
         // 3. Snapshot every session (paneID/master-fd/pid/size/cwd/name/ring) to a 0600 file.
