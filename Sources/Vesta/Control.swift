@@ -210,7 +210,10 @@ final class ControlServer: @unchecked Sendable {
             tree.newPane(cwd: cwd)
             return ["ok": true]
         case "close":
-            tree.closeFocused()
+            // Kills the shell, like ⌘W. Dropping the leaf without killing strands the shell:
+            // its paneID leaves PaneTree.paneIDs and nothing can reach it again, so an agent
+            // scripting `vesta close` in a loop would quietly pile up live shells holding ports.
+            tree.killFocusedSession()
             return ["ok": true]
         case "focus":
             if let first = args.first, let id = Int(first) { tree.focus(id: id) }

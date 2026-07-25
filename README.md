@@ -137,12 +137,15 @@ What you get:
 
 - **Survive quit** — `⌘Q`, reopen Vesta: panes come back with their shells and
   recent output.
-- **Close ends the shell** — `⌘W` closes the focused pane **and kills its
-  shell**; `⌘⇧W` closes and kills the whole session. Closing a pane drops it
-  from the sidebar too, so a shell left running there would be unreachable
-  forever — anything it still held (a dev server's port, for one) would leak.
-  Shells survive only across window-close / `⌘Q` quit, and reattach on
-  relaunch. To keep a shell but drop the pane, prefix-`d` (detach).
+- **Close ends the shell** — `⌘W` cascades: it closes the focused pane **and
+  kills its shell**, or with one pane left closes the session (killing its
+  shells), or with one session left closes the window — and *that* last step
+  keeps the shells, so they reattach on relaunch. `⌘⇧W` always closes and kills
+  the session. Closing a pane drops it from the sidebar too, so a shell left
+  running there would be unreachable forever — anything it still held (a dev
+  server's port, for one) would leak. Shells survive only across window-close /
+  `⌘Q` quit. To keep a shell but drop the pane, prefix-`d` (detach) — note it
+  needs a second pane to detach from, since a session always keeps one.
 - **Prefix mode** — tmux muscle memory. Press the prefix (`ctrl+b` by default,
   `vesta-prefix`), then a key (table below). Empty `vesta-prefix` disables it.
 - **Explicit kill** — prefix-`x`, or `vesta kill <id>` — when you actually mean

@@ -267,7 +267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Split Vertical", "⌘D", { let ws = $0.workspace; ws.activeTree.splitFocused(.vertical, cwd: ws.activeTree.focusedCwd) }),
             ("Split Horizontal", "⌘⇧D", { let ws = $0.workspace; ws.activeTree.splitFocused(.horizontal, cwd: ws.activeTree.focusedCwd) }),
             ("Zoom Pane", "", { $0.workspace.activeTree.zoomFocused() }),
-            ("Close Pane", "⌘W", { $0.workspace.activeTree.killFocusedSession() }),
+            ("Close Pane", "⌘W", { [weak self] ctx in self?.closePaneCascade(ctx) }),
             ("Close Session", "⌘⇧W", { let ws = $0.workspace; ws.closeSession(ws.activeP, ws.activeS) }),
             ("New Session", "⌘T", { let ws = $0.workspace; ws.newSession(ws.activeP) }),
             ("New Window", "⌘N", { [weak self] _ in self?.newWindow() }),
@@ -1215,8 +1215,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func toggleSidebarMenu() { active?.controller.toggleSidebar() }
 
-    /// Explicit kill of the focused session's shell under vestad (menu / no key
-    /// equivalent — Cmd-W only detaches).
+    /// The ⌘W cascade: kill this pane → close this session → close the window.
+    ///
+    /// Shared by the key handler and the command palette's "Close Pane" row so the row
+    /// labelled ⌘W cannot drift from what ⌘W actually does. It drifted once: the palette
+    /// called killFocusedSession() directly, which fires MuxClient.kill BEFORE
+    /// closeFocused()'s `leaves.count > 1` guard. On a single-pane session that killed the
+    /// shell and then declined to close the pane, leaving a dead surface with no exit
+    /// feedback (suppressExit had already latched the exit event off).
+    @MainActor func closePaneCascade(_ ctx: WindowContext) {
+        let ws = ctx.workspace
+        if ws.activeTree.paneCount > 1 {
+            ws.activeTree.killFocusedSession()          // 1) close the pane (kills its shell)
+        } else if ws.totalSessions > 1 {
+            ws.closeSession(ws.activeP, ws.activeS)     // 2) close the session (kills its shells)
+        } else {
+            ctx.controller.window?.performClose(nil)    // 3) last one → close the window
+        }
+    }
+
+    /// Explicit kill of the focused pane's shell under vestad (menu / no key equivalent —
+    /// ⌘W runs the close cascade instead, which falls through to session/window close).
     @objc func killSessionMenu() { active?.workspace.activeTree.killFocusedSession() }
 
     // MARK: - "Default terminal" integration (open folders / Finder Services)
@@ -1317,15 +1336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // daemon). Result: every ⌘W stranded a live shell forever, still holding its
             // ports. Detach-and-keep-the-shell is prefix-d, which is an explicit choice.
             case "w":
-                if shift {
-                    ws.closeSession(ws.activeP, ws.activeS)
-                } else if ws.activeTree.paneCount > 1 {
-                    ws.activeTree.killFocusedSession()  // 1) close the pane (kills its shell)
-                } else if ws.totalSessions > 1 {
-                    ws.closeSession(ws.activeP, ws.activeS)  // 2) close the session
-                } else {
-                    ctx.controller.window?.performClose(nil)  // 3) last one → close the window
-                }
+                if shift { ws.closeSession(ws.activeP, ws.activeS) } else { closePaneCascade(ctx) }
                 return nil
             // ⌘F: in-terminal search (⌃⌘F is full screen — let that fall through)
             case "f" where !e.modifierFlags.contains(.control):
