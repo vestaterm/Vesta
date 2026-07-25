@@ -231,21 +231,55 @@ final class Updater: NSObject {
         // argv, and the bundle executable is that same binary). The result was no new instance
         // at all: one stray window in the OLD app, a quit prompt, then the app simply gone.
         cfg.environment = ["VESTA_UPDATE_RELAUNCH": "1"]
+        // Quitting used to hang off this completion handler, and that is why an update could
+        // leave TWO Vestas in the dock. The handler does not fire when the child process starts
+        // — it fires when the child has FINISHED launching, and that scales with the workspace:
+        // restoreWindows() runs synchronously on main and builds a ghostty surface per pane,
+        // each forking a relay that can spin up to 2s waiting for the daemon socket. On a real
+        // workspace the outgoing instance therefore sat visible for the whole restore; with no
+        // sessions it was instant, which is why this never reproduced in testing. Worse, on the
+        // error path it returned and stayed alive permanently, reporting only through a toast
+        // that goes to /dev/null in a bundled app and is covered by the incoming window anyway.
+        //
+        // So don't trust the callback for the quit decision. Watch for the replacement process
+        // directly and leave once it exists.
         NSWorkspace.shared.openApplication(at: app, configuration: cfg) { _, err in
-            DispatchQueue.main.async { MainActor.assumeIsolated {
-                // Launch failed → stay alive and usable rather than quitting into nothing, and
-                // say so: silently vanishing is what made the old behaviour so confusing.
-                if let err {
-                    delegate?.showToast("update installed, but relaunch failed — quit and reopen Vesta (\(err.localizedDescription))")
-                    return
-                }
-                // Set the flag HERE, immediately before terminating, not before the async
-                // launch: it suppresses the quit confirm and the terminate-time save, and a
-                // real ⌘Q arriving while the launch was still in flight would otherwise have
-                // quietly skipped both.
-                delegate?.relaunchingForUpdate = true
-                NSApp.terminate(nil)
-            } }
+            if let err { NSLog("[vesta] relaunch: openApplication reported \(err.localizedDescription)") }
+        }
+        waitForReplacementThenQuit(delegate)
+    }
+
+    /// Poll for another running instance of this bundle, then quit. Bounded: if no replacement
+    /// appears we stay alive and usable rather than quitting into nothing, and say so somewhere
+    /// that survives — NSLog, not just a toast.
+    // ponytail: poll on the main queue, no launch-completion handshake. asyncAfter keeps the
+    // main thread free, which matters because the incoming instance's own restore is what we
+    // are waiting on; blocking here would be waiting on work we are starving.
+    private func waitForReplacementThenQuit(_ delegate: AppDelegate?, attempt: Int = 0) {
+        let maxAttempts = 120          // 30s at 0.25s — well past a cold restore of a big workspace
+        if replacementIsRunning() {
+            // Set the flag only now, immediately before terminating. Setting it earlier means a
+            // real ⌘Q arriving mid-flight would skip both the confirm and the terminate-time save.
+            delegate?.relaunchingForUpdate = true
+            NSApp.terminate(nil)
+            return
+        }
+        guard attempt < maxAttempts else {
+            NSLog("[vesta] relaunch: no replacement instance appeared after 30s — staying alive")
+            delegate?.showToast("update installed, but relaunch failed — quit and reopen Vesta")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { MainActor.assumeIsolated {
+            self.waitForReplacementThenQuit(delegate, attempt: attempt + 1)
+        } }
+    }
+
+    /// True once a process other than this one is running our bundle identifier.
+    private func replacementIsRunning() -> Bool {
+        guard let id = Bundle.main.bundleIdentifier else { return false }
+        let me = getpid()
+        return NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == id && $0.processIdentifier != me
         }
     }
 
