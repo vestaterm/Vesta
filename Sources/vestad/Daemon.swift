@@ -428,8 +428,11 @@ final class Daemon {
         // opted into scrollback persistence; otherwise panes replay blank after the swap —
         // that's their privacy choice, honored here too. (File is 0600 + unlinked on adopt.)
         // Known ms-window: input a relay already wrote into our socket buffer but we haven't
-        // read yet is dropped by the exec (relay resend covers only failed sends). Upgrades
-        // fire at app launch, not mid-typing; quiescing client input isn't worth the machinery.
+        // read yet is dropped by the exec (relay resend covers only failed sends). This used to
+        // say "upgrades fire at app launch, not mid-typing" — no longer true: Updater hands the
+        // daemon over the moment the user clicks Download & Install, so this can land mid-
+        // keystroke. Still just dropped input, never a lost shell, so quiescing client input
+        // remains more machinery than it's worth — but don't reason from the old assumption.
         let state = UpgradeState(lockFD: lockFD,
                                  sessions: sessions.values.map { $0.snapshotState(includeRing: logEnabled) })
         guard writeUpgradeState(state) else { fail("failed to write the upgrade state file"); return }
