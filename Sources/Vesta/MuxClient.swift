@@ -127,8 +127,19 @@ enum MuxClient {
         // beachball the app. 2s is plenty for a local socket ack; on timeout read → -1 → false.
         var tv = timeval(tv_sec: 2, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-        // Wait for the daemon to act; 0/-1 (incl. timeout) means it vanished without acking.
-        var tmp = [UInt8](repeating: 0, count: 4096)
-        return read(fd, &tmp, tmp.count) > 0
+        // DRAIN until EOF — do NOT stop after one read. `hello` makes the daemon replay the
+        // session's whole scrollback ring (up to 256 KB) BEFORE it ever decodes the `kill`
+        // frame sitting behind it in the same socket buffer. If we stop reading, the daemon's
+        // replay send blocks, fails, and closeClient()s us — which throws away the still-
+        // undecoded `kill`. The shell then survives the close, holding its port forever.
+        // Reading to EOF is what actually lets the kill land.
+        var acked = false
+        var tmp = [UInt8](repeating: 0, count: 65536)
+        while true {
+            let n = read(fd, &tmp, tmp.count)
+            if n <= 0 { break }   // EOF (session gone) or timeout
+            acked = true
+        }
+        return acked
     }
 }
