@@ -233,41 +233,42 @@ final class Updater: NSObject {
         // a layout that is up to that stale — a window opened or closed just before clicking
         // install would not be in the file yet.
         delegate?.saveWindows()
-        let cfg = NSWorkspace.OpenConfiguration()
-        cfg.createsNewApplicationInstance = true
-        // Without this the spawned process takes the "an instance is already running → ask it
-        // for a new window and exit" shortcut at the top of main.swift (a GUI launch has empty
-        // argv, and the bundle executable is that same binary). The result was no new instance
-        // at all: one stray window in the OLD app, a quit prompt, then the app simply gone.
-        cfg.environment = ["VESTA_UPDATE_RELAUNCH": "1"]
-        NSWorkspace.shared.openApplication(at: app, configuration: cfg) { [weak self] running, err in
-            DispatchQueue.main.async { MainActor.assumeIsolated {
-                // `err == nil` alone does NOT mean a replacement exists. Measured: when the child
-                // starts and exits without ever becoming an app, this fires with err nil AND a
-                // nil NSRunningApplication. The old code read that as success and quit into
-                // nothing — the app simply gone, which is the report that started all of this.
-                //
-                // The handler is otherwise a fine signal: it fires when LaunchServices spawns the
-                // child (~0.1s measured), well before the child finishes launching, so waiting on
-                // it costs nothing even for a large workspace restore.
-                guard err == nil, let running, !running.isTerminated else {
-                    let why = err?.localizedDescription ?? "the new instance exited immediately"
-                    // Stay alive and usable rather than quitting into nothing, clear the guard so
-                    // the badge can be retried, and report somewhere that survives: showToast
-                    // falls back to stderr when no window is key, and that is /dev/null here.
-                    self?.relaunching = false
-                    NSLog("[vesta] relaunch failed: \(why)")
-                    delegate?.showToast("update installed, but relaunch failed — quit and reopen Vesta (\(why))")
-                    return
-                }
-                // Set the flag HERE, immediately before terminating, not before the async
-                // launch: it suppresses the quit confirm and the terminate-time save, and a
-                // real ⌘Q arriving while the launch was still in flight would otherwise have
-                // quietly skipped both.
-                delegate?.relaunchingForUpdate = true
-                NSApp.terminate(nil)
-            } }
+        // Relaunch AFTER this process is gone, never alongside it. Launching first made the
+        // replacement a SECOND simultaneous instance of the app, and the Dock gives a second
+        // instance its own tile — so an update left a Vesta sitting beside the pinned one, with
+        // the pinned tile idle, until the user quit it and reopened from the pin. Nothing about
+        // the app was wrong; it was simply never the instance the pin was bound to.
+        //
+        // A detached helper waits for our pid to disappear and then opens the app, so the
+        // replacement starts as the only instance and takes the pinned tile. It also removes the
+        // need for the VESTA_UPDATE_RELAUNCH gate on this path: by the time `open` runs, the
+        // control socket has no listener, so the bare-argv shortcut in main.swift falls through
+        // to a normal GUI launch on its own.
+        // ponytail: /bin/sh polling kill -0, not a bundled relaunch tool. The helper is orphaned
+        // to launchd when we exit, which is exactly the lifetime we need, and it retries `open`
+        // rather than leaving the user with no app if the first attempt loses a race with quit.
+        func q(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let script = "while kill -0 \(getpid()) 2>/dev/null; do sleep 0.2; done; "
+            + "for i in 1 2 3; do /usr/bin/open \(q(app.path)) && exit 0; sleep 1; done; exit 1"
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+        helper.arguments = ["-c", script]
+        do {
+            try helper.run()
+        } catch {
+            // Could not even start the helper — stay alive and usable rather than quitting into
+            // nothing, clear the guard so the badge can be retried, and report somewhere that
+            // survives: showToast falls back to stderr, which is /dev/null in a bundled app.
+            relaunching = false
+            NSLog("[vesta] relaunch failed: could not start the relaunch helper (\(error.localizedDescription))")
+            delegate?.showToast("update installed, but relaunch failed — quit and reopen Vesta")
+            return
         }
+        // Set the flag immediately before terminating, not earlier: it suppresses the quit
+        // confirm and the terminate-time save, and a real Cmd-Q arriving while we were still
+        // setting up would otherwise have quietly skipped both.
+        delegate?.relaunchingForUpdate = true
+        NSApp.terminate(nil)
     }
 
     private func fail() { working = false; progressObs = nil; set(.failed) }
