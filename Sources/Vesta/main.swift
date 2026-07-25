@@ -64,7 +64,14 @@ if let verb = argv.first {
 }
 // Bare `vesta` (no args): open a new window if an instance is already running, else
 // fall through to launch the GUI.
-if controlSocketAlive() {
+//
+// EXCEPT during an update relaunch. A GUI launch also arrives with empty argv, and the app
+// bundle's executable IS this binary — so the process Updater.relaunch spawns landed here,
+// asked the OLD instance for a new window, and exited. The update therefore never started the
+// new build at all: the user saw a window appear (in the old app), then a quit prompt, then
+// nothing — and that stray window got persisted, growing the saved layout by one every update.
+// Updater sets this in the child's environment; nothing else does.
+if controlSocketAlive(), ProcessInfo.processInfo.environment["VESTA_UPDATE_RELAUNCH"] == nil {
     exit(runControlCLI(["new-window"]))
 }
 
@@ -687,7 +694,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Persist every window's projects + sessions-by-cwd. Coalesced so rapid
     /// changes (focus/git callbacks) don't write on every tick.
     private func scheduleSave() {
-        guard !restoring, !savePending else { return }
+        // relaunchingForUpdate too: this fires 0.6s late, so a save armed just before the
+        // relaunch would otherwise land after the incoming instance restored — the suppression
+        // in applicationWillTerminate alone is not enough to keep it from writing.
+        guard !restoring, !savePending, !relaunchingForUpdate else { return }
         savePending = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             self?.savePending = false
