@@ -385,8 +385,12 @@ final class PaneTree {
     /// broadcast send-keys and `pane status` to fan out / look up by paneID.
     var panes: [TerminalPane] { leaves.compactMap { $0.content as? TerminalPane } }
 
-    /// Explicit kill (prefix-x / menu): terminate the shell under vestad, then close
-    /// the pane locally. Distinct from Cmd-W, which only detaches.
+    /// Terminate the shell under vestad, then close the pane locally. Used by prefix-x, the
+    /// menu, and the ⌘W cascade. Distinct from prefix-d, which detaches and keeps the shell.
+    ///
+    /// Callers with only one leaf should prefer AppDelegate.closePaneCascade: closeFocused()
+    /// refuses to remove the last leaf, so calling this directly there kills the shell and
+    /// leaves the dead pane mounted.
     func killFocusedSession() {
         if let pane = focused { TerminalPane.suppressExit(pane.paneID); MuxClient.kill(paneID: pane.paneID) }
         closeFocused()

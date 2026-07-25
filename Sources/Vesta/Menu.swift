@@ -64,7 +64,8 @@ func makeMainMenu(target: AppDelegate) -> NSMenu {
     viewItem.submenu = view
     view.addItem(withTitle: "Toggle Sidebar", action: #selector(AppDelegate.toggleSidebarMenu), keyEquivalent: "b")
         .target = target
-    // No key equivalent: explicit kill must not be confused with ⌘W (which detaches).
+    // No key equivalent: ⌘W runs the close cascade (pane → session → window); this kills the
+    // focused pane's shell outright without that fallthrough.
     view.addItem(withTitle: "Kill Session", action: #selector(AppDelegate.killSessionMenu), keyEquivalent: "")
         .target = target
     let fsItem = view.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
