@@ -35,7 +35,14 @@ enum MuxClient {
             let n = read(fd, &tmp, tmp.count)
             if n <= 0 { break }
             buf.append(Data(tmp[0..<n]))
-            if let f = decodeServerFrame(from: &buf), case let .info(sha) = f { return sha }
+            // An EMPTY sha means the daemon couldn't hash its own image (its executable was
+            // unlinked, or isn't readable to it). Treat that as "unknown", not as a real
+            // identity — otherwise it never equals bundledSHA, so we'd request an upgrade on
+            // every single launch. Each of those execs costs the panes their replay ring
+            // whenever scrollback persistence is off.
+            if let f = decodeServerFrame(from: &buf), case let .info(sha) = f {
+                return sha.isEmpty ? nil : sha
+            }
         }
         return nil
     }
