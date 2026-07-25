@@ -175,18 +175,40 @@ final class Updater: NSObject {
     ///
     /// Best-effort throughout: any failure leaves the old daemon serving and the app update
     /// proceeds regardless. The worst case is the status quo — a stale daemon.
-    // ponytail: one stable filename, not content-addressed. Overwriting it unlinks the inode a
-    // running daemon may still be executing, which is harmless (its identity was hashed at its
-    // own startup) and saves pruning a pile of vestad-<sha> files nobody reads.
+    // ponytail: one stable filename, not content-addressed. Replacing it via rename() leaves a
+    // running daemon on the unlinked inode, which is harmless — it hashed its identity at its
+    // own startup — and saves pruning a pile of vestad-<sha> files nobody reads.
     nonisolated private static func handOffDaemon(stagedApp: URL) {
         let fm = FileManager.default
         let incoming = stagedApp.appendingPathComponent("Contents/MacOS/vestad")
         guard fm.isExecutableFile(atPath: incoming.path) else { return }
         let stable = MuxPaths.base + "/vestad-current"
-        try? fm.removeItem(atPath: stable)
-        guard (try? fm.copyItem(atPath: incoming.path, toPath: stable)) != nil else { return }
-        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stable)
-        _ = MuxClient.upgradeDaemon(to: stable)
+
+        // Stage under a temp name and rename() into place. A partially-written binary at the
+        // real path is the one outcome here that could cost shells: execv succeeding on a
+        // truncated-but-loadable image gets SIGKILLed AFTER the daemon has already closed its
+        // listener and cleared CLOEXEC on the pty masters, so every shell takes the SIGHUP.
+        // (execv FAILING is safe — performUpgrade's step 7 rebinds and keeps serving.) rename()
+        // is atomic, so a concurrent updater can never expose a half-copy.
+        let tmp = stable + ".tmp-\(getpid())"
+        try? fm.removeItem(atPath: tmp)
+        guard (try? fm.copyItem(atPath: incoming.path, toPath: tmp)) != nil else { return }
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tmp)
+        // This is the first time vestad is ever exec'd from OUTSIDE the app bundle. copyItem
+        // carries xattrs along, and a quarantined image can be killed after load — same fatal
+        // window as above. The bytes came out of a bundle we just codesign --verify'd, and the
+        // signature is embedded in the Mach-O, so it survives the copy; only the xattr is a
+        // problem. Best effort: `xattr -d` fails harmlessly when the attribute isn't there.
+        _ = run("/usr/bin/xattr", ["-d", "com.apple.quarantine", tmp])
+        guard rename(tmp, stable) == 0 else { try? fm.removeItem(atPath: tmp); return }
+
+        // Report the outcome. This whole bug class stayed invisible for days precisely because
+        // a refused upgrade went unlogged — vestad's own stderr is /dev/null.
+        switch MuxClient.upgradeDaemon(to: stable) {
+        case .success:            NSLog("[vesta] session daemon handed off to the incoming build")
+        case let .failure(reason): NSLog("[vesta] session daemon kept the previous version: \(reason)")
+        case .unreachable:        NSLog("[vesta] session daemon unreachable — no handoff (a fresh one will be the new binary)")
+        }
     }
 
     nonisolated private static func run(_ path: String, _ args: [String]) -> Bool {
