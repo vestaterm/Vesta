@@ -1,4 +1,5 @@
 import AppKit
+import VestaMux
 
 /// In-app self-update against GitHub Releases. Checks the latest release; if newer, downloads
 /// the notarized DMG, swaps the new Vesta.app into place (move-aside-first; admin prompt only
@@ -141,6 +142,18 @@ final class Updater: NSObject {
         if fm.fileExists(atPath: "/usr/bin/codesign"),
            !run("/usr/bin/codesign", ["--verify", "--deep", staged.path]) { return false }
 
+        // Hand the daemon over BEFORE the bundle swap — this ordering is the whole point.
+        //
+        // The daemon refuses an upgrade to a binary whose CONTENT matches the one at its own
+        // exec-time path. Once we swap, that path holds the new vestad, so asking afterwards
+        // means asking it to upgrade to a copy of what it already reads there: refused, every
+        // launch, forever. Right now the path still holds the OLD bytes, so the compare
+        // differs and the handoff (--resume) goes through with every shell kept.
+        //
+        // A daemon predating that refuse check, or one already wedged, just declines and we
+        // carry on — the swap must never be blocked by this.
+        handOffDaemon(stagedApp: staged)
+
         let old = target.path + ".old-\(getpid())"
         func q(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         let swap = "rm -rf \(q(old)); mv \(q(target.path)) \(q(old)) && /usr/bin/ditto \(q(staged.path)) \(q(target.path)); "
@@ -151,6 +164,29 @@ final class Updater: NSObject {
         let script = "do shell script \"\(swap.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges"
         var err: NSDictionary?
         return NSAppleScript(source: script)?.executeAndReturnError(&err) != nil
+    }
+
+    /// Upgrade the running vestad to the incoming build, in place, keeping its shells.
+    ///
+    /// The new vestad is copied OUT of the staged bundle to a stable path first, because the
+    /// staged copy is deleted the moment mountStageSwap returns — exec'ing from it would leave
+    /// the daemon running an unlinked inode (exactly the state that made this bug so hard to
+    /// see). `vestad-current` sits beside the socket and outlives the update.
+    ///
+    /// Best-effort throughout: any failure leaves the old daemon serving and the app update
+    /// proceeds regardless. The worst case is the status quo — a stale daemon.
+    // ponytail: one stable filename, not content-addressed. Overwriting it unlinks the inode a
+    // running daemon may still be executing, which is harmless (its identity was hashed at its
+    // own startup) and saves pruning a pile of vestad-<sha> files nobody reads.
+    nonisolated private static func handOffDaemon(stagedApp: URL) {
+        let fm = FileManager.default
+        let incoming = stagedApp.appendingPathComponent("Contents/MacOS/vestad")
+        guard fm.isExecutableFile(atPath: incoming.path) else { return }
+        let stable = MuxPaths.base + "/vestad-current"
+        try? fm.removeItem(atPath: stable)
+        guard (try? fm.copyItem(atPath: incoming.path, toPath: stable)) != nil else { return }
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stable)
+        _ = MuxClient.upgradeDaemon(to: stable)
     }
 
     nonisolated private static func run(_ path: String, _ args: [String]) -> Bool {
