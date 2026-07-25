@@ -7,8 +7,13 @@ import Darwin
 
 // I/O side of the self-exec upgrade (the pure serialize/parse core lives in
 // VestaMux/UpgradeState.swift). Everything here touches the filesystem, the executable
-// image, or process identity, so it can't be unit-checked without a real daemon — the
-// end-to-end test in a sandboxed VESTA_MUX_DIR daemon covers it instead.
+// image, or process identity, so it can't be unit-checked without a real daemon.
+//
+// NOTE: this used to claim "the end-to-end test in a sandboxed VESTA_MUX_DIR daemon covers
+// it instead". No such test exists — VESTA_MUX_DIR appears only in MuxPaths.swift, here, and
+// the roadmap. That false claim is plausibly why the identity bug below shipped and then sat
+// undetected in the field for days. This path is currently covered by nothing; if you touch
+// it, verify by hand against a real daemon.
 
 /// Absolute path to THIS running executable (for the identical-binary refuse check). Uses
 /// `_NSGetExecutablePath`; falls back to argv[0]. Symlinks are fine — we hash file CONTENTS,
