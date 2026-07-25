@@ -63,9 +63,28 @@ final class ControlServer: @unchecked Sendable {
 
     private func run() {
         let path = controlSocketPath()
+        // Taking the path from a live instance stays unconditional and is usually right: during
+        // an update relaunch the incoming build SHOULD own the CLI, and a dev build run beside
+        // the installed app is doing it on purpose. What was missing is any record of it — a
+        // process that bound here and then exited left the path naming a dead inode, and every
+        // `vesta` command failed with "app not running" with nothing anywhere to say why. The
+        // next launch reclaims it, but only if you think to try.
+        //
+        // ponytail: log and take over, no negotiation. Waiting for the incumbent to leave
+        // sounds safer and measurably is not — on macOS a queued connection holds a backlog
+        // slot until it is accepted, even after the prober closes it, so a poll loop against a
+        // momentarily stalled owner fills the 8-slot backlog, reads the resulting ECONNREFUSED
+        // as "gone", and evicts it anyway. Nondeterministically, and while making real `vesta`
+        // commands fail for as long as the probing lasts.
+        if socketIsLive(path) { NSLog("[vesta] control socket taken over from another instance") }
         unlink(path)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return }
+        // The one listen fd in the app that was missing this; vestad/Daemon.swift sets it on
+        // its own listener for the same reason. A child that inherits this fd keeps the socket
+        // answering connects after this process is gone, so controlSocketAlive() reports an
+        // instance that does not exist and `vesta` blocks forever waiting on a reply from it.
+        setCloseOnExec(fd)
         var addr = makeSockaddrUn(path)
         let len = socklen_t(MemoryLayout<sockaddr_un>.size)
         let bound = withUnsafePointer(to: &addr) {
@@ -379,17 +398,22 @@ final class ControlServer: @unchecked Sendable {
 
 // MARK: - CLI client
 
-/// True if a Vesta instance is already listening on the control socket (used so a bare
-/// `vesta` opens a window in the running app instead of launching a second instance).
-func controlSocketAlive() -> Bool {
+/// True if something is listening on the unix socket at `path`. A leftover socket FILE whose
+/// owner is gone reads as false (connect gets ECONNREFUSED), which is what lets a new instance
+/// reclaim a stale path — the distinction ControlServer.run depends on.
+func socketIsLive(_ path: String) -> Bool {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0); if fd < 0 { return false }
     defer { close(fd) }
-    var addr = makeSockaddrUn(controlSocketPath())
+    var addr = makeSockaddrUn(path)
     let len = socklen_t(MemoryLayout<sockaddr_un>.size)
     return withUnsafePointer(to: &addr) {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) == 0 }
     }
 }
+
+/// True if a Vesta instance is already listening on the control socket (used so a bare
+/// `vesta` opens a window in the running app instead of launching a second instance).
+func controlSocketAlive() -> Bool { socketIsLive(controlSocketPath()) }
 
 func runControlCLI(_ args: [String]) -> Int32 {
     guard let verb = args.first else { return 1 }
@@ -549,5 +573,35 @@ func controlSelfCheck() {
     assert((back["args"] as? [Any])?.count == 1)
     assert(controlVerbs.contains("split"))
     assert(controlVerbs.contains("pane"))
+
+    // socketIsLive decides whether run() logs a takeover, and controlSocketAlive (the bare-argv
+    // bootstrap) is the same call — so the states it must tell apart are pinned against a real
+    // socket rather than a mock. This does NOT cover run() itself, which needs a live app.
+    let path = NSTemporaryDirectory() + "vesta-selfcheck-\(getpid()).sock"
+    unlink(path)
+    assert(!socketIsLive(path), "no file at path → not live")
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    assert(fd >= 0, "selfcheck could not open a socket")
+    // A listen fd that survives exec keeps answering connects after this process is gone, which
+    // is what makes a stale control.sock indistinguishable from a live one. run() sets this on
+    // its listener; pin that it takes on the same socket type.
+    assert(setCloseOnExec(fd), "setCloseOnExec must succeed on an AF_UNIX socket")
+    assert(fcntl(fd, F_GETFD) & FD_CLOEXEC != 0, "FD_CLOEXEC must actually be set")
+    var addr = makeSockaddrUn(path)
+    let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+    let bound = withUnsafePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, len) }
+    }
+    // listen() must run OUTSIDE the assert — assert is compiled out under -O, so calling it in
+    // the condition means the release smoke test binds a socket it never listens on.
+    let listening = listen(fd, 1)
+    assert(bound == 0 && listening == 0, "selfcheck could not bind \(path)")
+    assert(socketIsLive(path), "bound + listening → live, so a second instance must wait")
+    // THE CASE THE BUG TURNED ON: the owner is gone but its socket file remains. This must read
+    // as not-live, or a crashed instance would leave the CLI unreclaimable forever.
+    close(fd)
+    assert(FileManager.default.fileExists(atPath: path), "precondition: socket file outlives its owner")
+    assert(!socketIsLive(path), "orphaned socket file → not live, so the path is reclaimable")
+    unlink(path)
     print("controlSelfCheck ok")
 }
