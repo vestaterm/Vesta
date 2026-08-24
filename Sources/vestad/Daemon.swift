@@ -301,6 +301,16 @@ final class Daemon {
         clientSession[fd] = nil; subscriberSession[fd] = nil; clientBufs[fd] = nil; close(fd)
     }
 
+    /// The restart divider ingested into a cold-restored session's ring: leave whatever alt
+    /// screen the old shell died inside, drop any SGR state its half-written escape sequence
+    /// left on, then a dim rule naming the new shell's directory. Pure (no daemon state) so
+    /// it's trivially checkable; `dir` is tilde-abbreviated, `~` when the cwd is unknown.
+    static func coldRestoreBanner(cwd: String?) -> Data {
+        let dir = cwd.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "~"
+        let s = "\r\n\u{1b}[?1049l\u{1b}[0m\u{1b}[2m── vesta: session restarted — new shell in \(dir) ──\u{1b}[0m\r\n"
+        return Data(s.utf8)
+    }
+
     private func handle(_ frame: ClientFrame, from fd: Int32) {
         switch frame {
         case let .hello(paneID, cols, rows, cwd):
@@ -329,6 +339,14 @@ final class Daemon {
                 // grace-delete left over from a prior shell exit so we don't delete it out
                 // from under the new shell 5s later.
                 pendingDeletes[paneID] = nil
+                // Cold restore (machine rebooted / daemon died): the ring was reseeded from disk
+                // but the shell is brand new. Stamp a reset + divider INTO the ring so every
+                // future replay shows history, then a visible cut, then the fresh prompt —
+                // instead of half-drawn TUI state with no process behind it. Ingested BEFORE the
+                // `snapshot()` below, so even this first attach replays it; later reattaches take
+                // the `existing` branch and never re-ingest, so it appears exactly once. It lands
+                // in the on-disk log too — by design: the cut becomes part of history.
+                if fresh.seededFromLog { fresh.ingest(Daemon.coldRestoreBanner(cwd: cwd)) }
             }
             // Bind any subscribers that arrived before this session existed (review finding B).
             if let waiting = pendingSubscribers.removeValue(forKey: paneID) {
