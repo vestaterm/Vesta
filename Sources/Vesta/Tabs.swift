@@ -202,7 +202,15 @@ final class Workspace {
     /// the list — a row you can click, costing no shell until you do. Deduped by cwd, so
     /// re-running the seeding pass over a restored window is a no-op. Silent: no
     /// showActive, no luaFire — nothing was opened.
+    ///
+    /// A path that isn't a directory (moved repo, unmounted volume, typo) is skipped
+    /// entirely: hydrate rewrites an unusable saved cwd to ~ (usableDir), so a row seeded
+    /// at a vanished path would come back as ~, stop matching the config path, and get
+    /// re-seeded on every single launch — one stale config line growing the sidebar forever.
     func appendConfigWorkspace(path: String) {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue
+        else { return }
         guard !wss.contains(where: { $0.tree.focusedCwd == path }) else { return }
         wss.append(WS(tree: makeDormant(layout: ["paneID": UUID().uuidString, "cwd": path])))
     }
