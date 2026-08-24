@@ -238,8 +238,12 @@ final class Workspace {
 
     /// Branch off workspace `i`: a git worktree of ITS cwd, opened as a new workspace that
     /// joins `i`'s group (so a group stays the natural home for a feature's branches).
-    func newWorktreeWorkspace(from i: Int, branch: String, base: String? = nil) {
+    /// `id` is the row's paneID captured before the branch-name modal opened — the store can
+    /// mutate while it's up (another window, `vesta kill`), and a shifted index would branch
+    /// off the wrong repo. A mismatch aborts (same guard as moveTopLevel).
+    func newWorktreeWorkspace(from i: Int, branch: String, base: String? = nil, id: String? = nil) {
         guard wss.indices.contains(i) else { return }
+        guard id == nil || wss[i].tree.paneID == id else { return }
         let repo = wss[i].tree.focusedCwd ?? NSHomeDirectory()
         let gid = wss[i].groupID
         do {
@@ -270,8 +274,13 @@ final class Workspace {
     /// Returns true when the last workspace is about to be removed — replace instead of deleting.
     nonisolated static func replaceOnClose(totalSessions: Int) -> Bool { totalSessions <= 1 }
 
-    func closeWorkspace(_ i: Int) {
+    /// Close workspace `i`. `id` is the row's paneID captured at the moment the user aimed at
+    /// it (hover ×, or before a confirm sheet went up): the store is shared and can shift
+    /// underneath a modal, and closing kills shells — a stale index must destroy nothing.
+    /// nil ⇒ no identity check (callers that already resolved the row, e.g. removeGroup).
+    func closeWorkspace(_ i: Int, id: String? = nil) {
         guard wss.indices.contains(i) else { return }
+        guard id == nil || wss[i].tree.paneID == id else { return }
         let closing = wss[i].tree
         // Closing a workspace KILLS its daemon shell — the sidebar is the single source of
         // truth, so there are no orphaned detached sessions. (Window-close still only

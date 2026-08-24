@@ -63,7 +63,7 @@ final class WindowContext {
         controller = VestaWindowController(
             theme: theme, content: ws.container,
             onSelectWorkspace: { [weak ws] i in ws?.selectWorkspace(i) },
-            onCloseWorkspace:  { [weak ws] i in ws?.closeWorkspace(i) },
+            onCloseWorkspace:  { [weak ws] i, id in ws?.closeWorkspace(i, id: id) },
             onNewWorkspace:    { [weak ws] in ws?.newWorkspace() },
             onToggleGroup:     { [weak ws] g in ws?.toggleGroupCollapsed(g) },
             // Chrome's rename prompt sends the raw field text ("" when the user cleared it).
@@ -78,7 +78,8 @@ final class WindowContext {
             onUngroup:         { [weak ws] g in ws?.ungroup(g) },
             onGroupFromWorkspace: { [weak ws] i in ws?.newGroupFromWorkspace(i) },
             onMoveToGroup:     { [weak ws] i, gid in ws?.moveToGroup(i, groupID: gid) },
-            onNewWorktree:     { [weak ws] i, branch in ws?.newWorktreeWorkspace(from: i, branch: branch) },
+            onNewWorktree:     { [weak ws] i, branch, id in
+                                            ws?.newWorktreeWorkspace(from: i, branch: branch, id: id) },
             onReorderTopLevel: { [weak ws] from, gap, id in ws?.moveTopLevel(from: from, gap: gap, id: id) },
             onReorderMember:   { [weak ws] g, from, gap, id in ws?.moveMember(g, from: from, gap: gap, id: id) })
 

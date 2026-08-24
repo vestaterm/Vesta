@@ -29,7 +29,7 @@ final class VestaWindowController: NSWindowController {
     // Every index is a FLAT workspace index (store.workspaces) or a group index
     // (store.groups) — there is no project layer above them any more.
     private let onSelectWorkspace:    (Int) -> Void
-    private let onCloseWorkspace:     (Int) -> Void
+    private let onCloseWorkspace:     (Int, String?) -> Void   // (ws, paneID identity guard)
     private let onNewWorkspace:       () -> Void
     private let onToggleGroup:        (Int) -> Void
     private let onRenameWorkspace:    (Int, String?) -> Void
@@ -40,7 +40,7 @@ final class VestaWindowController: NSWindowController {
     private let onUngroup:            (Int) -> Void          // dissolve group, keep its workspaces
     private let onGroupFromWorkspace: (Int) -> Void
     private let onMoveToGroup:        (Int, String?) -> Void   // (ws, group id; nil ⇒ ungroup)
-    private let onNewWorktree:        (Int, String) -> Void    // (ws, branch)
+    private let onNewWorktree:        (Int, String, String?) -> Void  // (ws, branch, identity)
     private let onReorderTopLevel:    (Int, Int, String) -> Void       // (from-unit, dropGap, unit id)
     private let onReorderMember:      (Int, Int, Int, String) -> Void  // (group, from, dropGap, paneID)
 
@@ -102,7 +102,7 @@ final class VestaWindowController: NSWindowController {
 
     init(theme: Theme, content: NSView,
          onSelectWorkspace: @escaping (Int) -> Void = { _ in },
-         onCloseWorkspace:  @escaping (Int) -> Void = { _ in },
+         onCloseWorkspace:  @escaping (Int, String?) -> Void = { _, _ in },
          onNewWorkspace:    @escaping () -> Void    = {},
          onToggleGroup:     @escaping (Int) -> Void = { _ in },
          onRenameWorkspace:   @escaping (Int, String?) -> Void  = { _, _ in },
@@ -113,7 +113,7 @@ final class VestaWindowController: NSWindowController {
          onUngroup:           @escaping (Int) -> Void           = { _ in },
          onGroupFromWorkspace: @escaping (Int) -> Void          = { _ in },
          onMoveToGroup:     @escaping (Int, String?) -> Void = { _, _ in },
-         onNewWorktree:     @escaping (Int, String) -> Void  = { _, _ in },
+         onNewWorktree:     @escaping (Int, String, String?) -> Void = { _, _, _ in },
          onReorderTopLevel: @escaping (Int, Int, String) -> Void      = { _, _, _ in },
          onReorderMember:   @escaping (Int, Int, Int, String) -> Void = { _, _, _, _ in }) {
         self.theme = theme
@@ -814,7 +814,11 @@ final class VestaWindowController: NSWindowController {
         content.translatesAutoresizingMaskIntoConstraints = false
         title.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
 
-        let closeBtn = tinyButton(symbol: "xmark", label: "Close workspace") { [weak self] in self?.onCloseWorkspace(w.index) }
+        // The row captures its paneID: a sidebar rebuilt between hover and click (another
+        // window closing a workspace) must not let this × kill whatever slid into w.index.
+        let closeBtn = tinyButton(symbol: "xmark", label: "Close workspace") { [weak self] in
+            self?.onCloseWorkspace(w.index, w.treeID)
+        }
         closeBtn.translatesAutoresizingMaskIntoConstraints = false
         closeBtn.alphaValue = 0   // hover-revealed: no permanent destructive target
 
@@ -1246,7 +1250,7 @@ final class VestaWindowController: NSWindowController {
         })
         menu.addItem(colorMenuItem { [weak self] color in self?.onSetWorkspaceColor(w.index, color) })
         menu.addItem(BlockMenuItem(title: "New worktree workspace…") { [weak self] in
-            self?.promptWorktree(w.index)
+            self?.promptWorktree(w.index, id: w.treeID)
         })
 
         // Grouping. An ungrouped workspace can start a group around itself; a grouped one
@@ -1275,7 +1279,7 @@ final class VestaWindowController: NSWindowController {
 
         menu.addItem(.separator())
         menu.addItem(BlockMenuItem(title: "Close Workspace") { [weak self] in
-            self?.confirmCloseWorkspace(w.index, name: w.label)
+            self?.confirmCloseWorkspace(w.index, name: w.label, id: w.treeID)
         })
         return menu
     }
@@ -1299,6 +1303,19 @@ final class VestaWindowController: NSWindowController {
         return menu
     }
 
+    /// A confirm whose FIRST button destroys something must not answer itself: AppKit gives
+    /// button 0 the Return key equivalent, so a stray Return (or a held-down key from the
+    /// terminal underneath) would close workspaces and kill their shells. Mark it destructive
+    /// (red, per HIG) and take Return away — the only ways out are a deliberate click or Esc,
+    /// which AppKit keeps on the "Cancel" button. Return is deliberately left inert rather
+    /// than reassigned to Cancel: an NSButton has ONE key equivalent, so giving Cancel "\r"
+    /// would take Esc away from it, trading one lost escape hatch for another.
+    private static func disarmReturn(_ alert: NSAlert) {
+        guard let destructive = alert.buttons.first else { return }
+        destructive.hasDestructiveAction = true
+        destructive.keyEquivalent = ""
+    }
+
     /// Removing a group tears down the live workspaces inside it — confirm first.
     private func confirmRemoveGroup(_ gi: Int, name: String, count: Int) {
         let alert = NSAlert()
@@ -1306,18 +1323,20 @@ final class VestaWindowController: NSWindowController {
         alert.informativeText = "This closes the group's \(count) workspace\(count == 1 ? "" : "s") and any running programs in them."
         alert.addButton(withTitle: "Remove")
         alert.addButton(withTitle: "Cancel")
+        Self.disarmReturn(alert)
         if alert.runModal() == .alertFirstButtonReturn { onRemoveGroup(gi) }
     }
 
     /// Closing a workspace kills its panes — confirm on the menu path (the hover × stays the
     /// quick, no-questions route).
-    private func confirmCloseWorkspace(_ i: Int, name: String) {
+    private func confirmCloseWorkspace(_ i: Int, name: String, id: String?) {
         let alert = NSAlert()
         alert.messageText = "Close “\(name)”?"
         alert.informativeText = "This closes running programs in this workspace."
         alert.addButton(withTitle: "Close")
         alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn { onCloseWorkspace(i) }
+        Self.disarmReturn(alert)
+        if alert.runModal() == .alertFirstButtonReturn { onCloseWorkspace(i, id) }
     }
 
     /// Lazy native rename: a small modal NSAlert with a text field (group context menu).
@@ -1352,7 +1371,7 @@ final class VestaWindowController: NSWindowController {
     }
 
     /// Prompt for a branch name to create a git-worktree-isolated workspace.
-    private func promptWorktree(_ i: Int) {
+    private func promptWorktree(_ i: Int, id: String?) {
         let alert = NSAlert()
         alert.messageText = "New worktree workspace"
         alert.addButton(withTitle: "Create")
@@ -1364,7 +1383,7 @@ final class VestaWindowController: NSWindowController {
         if alert.runModal() == .alertFirstButtonReturn {
             let branch = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !branch.isEmpty else { return }
-            onNewWorktree(i, branch)
+            onNewWorktree(i, branch, id)
         }
     }
 
