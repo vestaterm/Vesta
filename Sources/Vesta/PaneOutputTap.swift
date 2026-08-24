@@ -94,7 +94,7 @@ final class PaneOutputTap: @unchecked Sendable {
             switch frame {
             case let .output(d):
                 coalesce(d, paneID: pid)
-            case let .helloAck(v):
+            case let .helloAck(v, _):
                 if v != muxProtocolVersion { drop(pid); return }   // version mismatch → bail
             case .exited:
                 // Belt-and-suspenders: the daemon doesn't send subscribers `.exited`

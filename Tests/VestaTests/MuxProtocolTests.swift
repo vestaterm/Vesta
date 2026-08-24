@@ -50,6 +50,19 @@ final class MuxProtocolTests: XCTestCase {
         }
     }
 
+    func testHelloAckResumedRoundTrip() {
+        for resumed in [true, false] {
+            var buf = encode(ServerFrame.helloAck(version: 5, resumed: resumed))
+            XCTAssertEqual(decodeServerFrame(from: &buf), .helloAck(version: 5, resumed: resumed))
+            XCTAssertTrue(buf.isEmpty, "decode consumed the whole frame for resumed: \(resumed)")
+        }
+        // An old daemon's frame carries the version and nothing else: [len=5][tag 0x11][u32 5].
+        // It must decode as resumed: true — old daemons only ever reattach-or-silently-fork.
+        var legacy = Data([0, 0, 0, 5, 0x11, 0, 0, 0, 5])
+        XCTAssertEqual(decodeServerFrame(from: &legacy), .helloAck(version: 5, resumed: true))
+        XCTAssertTrue(legacy.isEmpty)
+    }
+
     // MARK: - Partial / fragmented buffers
 
     func testPartialFrameLeavesBufferUntouched() {
