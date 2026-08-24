@@ -140,7 +140,7 @@ final class Session {
     /// Seed the replay ring from the prior on-disk log (scrollback from before a daemon
     /// restart), then open the log for append. The new shell's output continues the file.
     private func seedRingAndOpenLog() {
-        guard logEnabled else { return }   // opt-in: no on-disk scrollback by default
+        guard logEnabled else { return }   // opted out: no on-disk scrollback
         let path = MuxPaths.sessionLog(paneID)
         if let data = FileManager.default.contents(atPath: path), !data.isEmpty {
             // Resume at the next ESC or newline, not wherever 256 KB happens to land — a

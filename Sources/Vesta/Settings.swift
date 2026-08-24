@@ -162,7 +162,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
             row("Persist shells", persistBox, key: "vesta-persist"),
             caption("Shells survive quitting the app. Off: new sessions are plain shells — nothing survives quit, and daemon features (heat, in-place updates) are off."),
             row("Persist scrollback", scrollbackBox, key: "vesta-persist-scrollback"),
-            caption("On by default: scrollback and the restart divider survive a reboot. Logs are 0600 under the mux dir, but terminal output can contain passwords, API tokens, and SSH keys — turn this off if you'd rather none of it touch disk. Applies on the next daemon start.", tone: .dim),
+            caption("On by default: scrollback and the restart divider survive a reboot. Logs are 0600 in Application Support, but terminal output can contain passwords, API tokens, and SSH keys — turn this off if you'd rather none of it touch disk. Applies on the next daemon start.", tone: .dim),
             row("Shell integration", shellBox, key: "vesta-shell-integration"),
             caption("Exit-status marks drive session-card heat; injected into zsh."),
         ])
