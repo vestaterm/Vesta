@@ -301,13 +301,31 @@ final class Daemon {
         clientSession[fd] = nil; subscriberSession[fd] = nil; clientBufs[fd] = nil; close(fd)
     }
 
-    /// The restart divider ingested into a cold-restored session's ring: leave whatever alt
-    /// screen the old shell died inside, drop any SGR state its half-written escape sequence
-    /// left on, then a dim rule naming the new shell's directory. Pure (no daemon state) so
-    /// it's trivially checkable; `dir` is tilde-abbreviated, `~` when the cwd is unknown.
+    /// The restart divider ingested into a cold-restored session's ring, then a dim rule naming
+    /// the new shell's directory. The replayed history ends wherever the machine died — often
+    /// mid-TUI — so this must undo every STICKY mode a dead full-screen app could have left on,
+    /// not just colors. Leaving any of them set poisons the brand-new shell behind the divider:
+    ///
+    ///  - `?1049l`                  leave the alt screen (else history+prompt render into a
+    ///                              buffer the user can't scroll back out of)
+    ///  - `?1000l ?1002l ?1003l`    stop X10/button/any-motion mouse reporting, and
+    ///    `?1006l`                  SGR extended coordinates — else every click and scroll
+    ///                              injects escape junk onto the fresh command line
+    ///  - `?7h`                     restore autowrap (a TUI that turned it off truncates lines)
+    ///  - `[r`                      reset DECSTBM to the full screen (a leftover scroll region
+    ///                              pins output to a few rows)
+    ///  - `?25h`                    show the cursor again (DECTCEM — the most visible failure:
+    ///                              a working shell that looks frozen because it has no cursor)
+    ///  - `(B`                      G0 back to ASCII (a leftover line-drawing charset renders
+    ///                              the prompt as box glyphs)
+    ///  - `[0m`                     finally SGR, clearing color/bold left on mid-sequence
+    ///
+    /// All emitted unconditionally: each is a no-op when the mode wasn't set, and explicit
+    /// beats trying to infer the dead shell's state from bytes we never parsed. Pure (no daemon
+    /// state) so it's trivially checkable; `dir` is tilde-abbreviated, `~` when cwd is unknown.
     static func coldRestoreBanner(cwd: String?) -> Data {
         let dir = cwd.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "~"
-        let s = "\r\n\u{1b}[?1049l\u{1b}[0m\u{1b}[2m── vesta: session restarted — new shell in \(dir) ──\u{1b}[0m\r\n"
+        let s = "\r\n\u{1b}[?1049l\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1003l\u{1b}[?1006l\u{1b}[?7h\u{1b}[r\u{1b}[?25h\u{1b}(B\u{1b}[0m\u{1b}[2m── vesta: session restarted — new shell in \(dir) ──\u{1b}[0m\r\n"
         return Data(s.utf8)
     }
 
