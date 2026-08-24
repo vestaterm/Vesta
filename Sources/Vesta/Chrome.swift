@@ -90,6 +90,9 @@ final class VestaWindowController: NSWindowController {
     private var dragGrabOffset: CGFloat = 0       // snapshot-origin − cursor at pickup, so the float doesn't jump
     private var dragLaneMinY: CGFloat = 0         // lane clamp (stack coords)
     private var dragLaneMaxY: CGFloat = 0
+    // Last cursor position seen by moveDrag (WINDOW coords). mouseUp gives endDrag no point of
+    // its own, and the drop-on-header test needs the cursor's FINAL spot — so we stash it.
+    private var dragLastPoint: NSPoint = .zero
     private var dragSettling = false              // true while the drop/cancel settle animation runs
     // The in-flight settle's finalize, stored so it can be flushed SYNCHRONOUSLY (new drag
     // starting mid-settle, willClose) instead of waiting on the animation completion. Exactly
@@ -923,6 +926,41 @@ final class VestaWindowController: NSWindowController {
         return (units, from, 0)
     }
 
+    /// The group header row under `point` (WINDOW coords) — the drop-on-header target, or nil
+    /// for an ordinary reorder. Only a TOP-LEVEL WORKSPACE row can join a group by being
+    /// dropped on a header: a dragged header over another header is a plain reorder, and a
+    /// member row never leaves its group's lane at all. Neither the dragged row (not a header)
+    /// nor its floating snapshot (not an arranged subview) can be its own target.
+    private func groupHeaderUnder(_ point: NSPoint, dragged row: TaggedRow) -> TaggedRow? {
+        guard !row.isSessionRow, !row.isGroupHeader else { return nil }
+        // Header rows are direct subviews of projectsStack, so one window→stack conversion (the
+        // same one moveDrag does for the gap math) lets us test their frames directly. Frames
+        // are read LIVE, after setVisualGap's permutation — the user drops on what they see.
+        let p = projectsStack.convert(point, from: nil)
+        return projectsStack.arrangedSubviews
+            .compactMap { $0 as? TaggedRow }
+            .first { $0.isGroupHeader && $0 !== row && $0.frame.contains(p) }
+    }
+
+    /// The currently-arranged row carrying `identity`. Every setSidebar replaces the rows
+    /// wholesale, so a reference frozen at pickup can be detached (and its tag1 stale) by the
+    /// time the drop commits — re-find by identity instead. `isHeader` keeps the two id
+    /// namespaces (Group.id vs PaneTree.paneID) from ever crossing.
+    private func arrangedRow(identity: String, isHeader: Bool) -> TaggedRow? {
+        projectsStack.arrangedSubviews
+            .compactMap { $0 as? TaggedRow }
+            .first { $0.identity == identity && $0.isGroupHeader == isHeader }
+    }
+
+    /// Self-check hook (chromeSelfCheck): the lane split for the arranged workspace row with
+    /// `identity`, as (unit count, grabbed unit's index, lane's first arranged index). The
+    /// lane semantics have no UI test; this is the cheap headless cover for them.
+    fileprivate func laneProbe(_ identity: String) -> (Int, Int, Int)? {
+        guard let row = arrangedRow(identity: identity, isHeader: false) else { return nil }
+        let lane = laneUnits(for: row)
+        return (lane.units.count, lane.from, lane.rangeStart)
+    }
+
     private func beginDrag(_ row: TaggedRow) {
         // A flick-and-re-grab can start a new drag while the previous drop's settle (≤0.16s)
         // is still animating. Flush that settle's finalize synchronously FIRST — otherwise its
@@ -963,7 +1001,10 @@ final class VestaWindowController: NSWindowController {
         dragSnapshot = snap
         row.alphaValue = 0
 
-        let cursorY = projectsStack.convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil).y
+        // Seed the drop point from the live cursor: a drag that somehow ends without a single
+        // moveDrag must not hit-test against a point left over from the previous drag.
+        dragLastPoint = window?.mouseLocationOutsideOfEventStream ?? .zero
+        let cursorY = projectsStack.convert(dragLastPoint, from: nil).y
         dragGrabOffset = row.frame.origin.y - cursorY
 
         // Esc cancels the drag (defensive teardown also lives in endDrag).
@@ -975,6 +1016,7 @@ final class VestaWindowController: NSWindowController {
 
     private func moveDrag(to windowPoint: NSPoint) {
         guard let snap = dragSnapshot else { return }
+        dragLastPoint = windowPoint   // where the drop will be decided (see endDrag)
         // Float the snapshot with the cursor, clamped to the lane (sessions can't leave their
         // project's rows; a divider can't leave the divider column).
         let cursorY = projectsStack.convert(windowPoint, from: nil).y
@@ -1044,6 +1086,12 @@ final class VestaWindowController: NSWindowController {
         let snap = dragSnapshot
         let gap = dragGap
         let from = dragUnitFrom   // the grabbed unit's slot in its lane, frozen at pickup
+        // Drop-on-header is decided HERE, not in finalize: it needs the cursor's last window
+        // point against the LIVE row frames, and finalize's rebuild destroys both. Non-nil ⇒
+        // join that group INSTEAD of reordering (the two are mutually exclusive); a cancelled
+        // drag (Esc, window close) never gets here with commit == true, so it does neither.
+        var joinGroup: String? = nil
+        if commit, let row { joinGroup = groupHeaderUnder(dragLastPoint, dragged: row)?.identity }
 
         // Finalize: tear down drag state, then replay the stash + commit EXACTLY as before.
         let finalize = { [weak self] in
@@ -1064,6 +1112,17 @@ final class VestaWindowController: NSWindowController {
             // fires no broadcast, and the stash would otherwise be silently dropped. The
             // model call below uses the frozen tags + identity, so rebuilding first is safe.
             if let pending { self.setSidebar(pending) }
+            // Dropped on a group header → join that group; never also reorder. moveToGroup
+            // takes a flat INDEX and (unlike the reorder ops) has no identity guard of its own,
+            // so do the guarding here: re-find both ends by identity in the just-rebuilt stack
+            // and use the row's FRESH tag1. Either one gone (closed / ungrouped mid-drag) ⇒
+            // no-op, rather than moving some other workspace into some other group.
+            if let joinGroup {
+                guard let live = self.arrangedRow(identity: row.identity, isHeader: false),
+                      self.arrangedRow(identity: joinGroup, isHeader: true) != nil else { return }
+                self.onMoveToGroup(live.tag1, joinGroup)
+                return
+            }
             // row.identity travels with the drop: the store can mutate mid-drag (another
             // window, `vesta kill`, a shell exiting) — the model verifies the item at the
             // frozen index is still the one that was picked up, else aborts as a no-op.
@@ -1081,6 +1140,9 @@ final class VestaWindowController: NSWindowController {
         pendingFinalize = finalize
         // Settle the float into the gap (commit) or back to its origin (cancel), THEN finalize —
         // the row visibly lands before the model rebuild swaps in the identical committed order.
+        // A drop-on-header settles into the same GAP (the animation is gap-based and the row's
+        // real landing spot — the end of the group's span — isn't laid out yet); it reads a
+        // touch off for one frame, then finalize's committed rebuild snaps it exactly right.
         let target = commit ? row.frame : dragOriginFrame
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.16
@@ -1863,6 +1925,15 @@ private extension Comparable {
 
     // Calling setSidebar again must not crash (rebuild without leaking constraints)
     wc.setSidebar(items)
+
+    // Drag lanes. Top-level lane (dragging the solo workspace "t3"): 3 units — the expanded
+    // group's block (header + its 2 member rows), the collapsed group's lone header, and the
+    // solo row itself at index 2 — spanning the stack from arranged index 0. Member lane
+    // (dragging "t1", the 2nd member of group 0): only its 2 in-group siblings, itself at
+    // index 1, starting at arranged index 1 (right after that group's header).
+    assert(wc.laneProbe("t3").map { $0 == (3, 2, 0) } ?? false, "top-level lane: solo is unit 2 of 3")
+    assert(wc.laneProbe("t1").map { $0 == (2, 1, 1) } ?? false, "member lane: 2 siblings, dragged is #1")
+    assert(wc.laneProbe("t2") == nil, "a collapsed group's members render no rows — no lane")
 
     wc.setStatus("▌ normal · ⎇ main ↑1 · 2 dirty")
     wc.setDir("vesta / ~/dev/vesta")
