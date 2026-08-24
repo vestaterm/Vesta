@@ -651,6 +651,18 @@ final class Workspace {
         return units
     }
 
+    /// The legacy `"<project>.<session>"` id of every flat workspace index — the inverse of
+    /// the `<project> <session>` → index resolution, over the same top-level units. `sessions
+    /// --json` reports these as `id` because that string is what old plugins split and feed
+    /// back to `select`. One pass for the whole store (a per-row lookup would be quadratic).
+    nonisolated static func legacyIDs(groupIDs: [String?]) -> [String] {
+        var out = [String](repeating: "0.0", count: groupIDs.count)
+        for (p, unit) in topLevelUnits(groupIDs: groupIDs).enumerated() {
+            for (s, i) in unit.enumerated() { out[i] = "\(p).\(s)" }
+        }
+        return out
+    }
+
     /// Move a top-level row (a bare workspace, or a whole group block) from unit index
     /// `from` to drop-gap `gap`. Order is RESTORED from windows.json (hydrate keeps array
     /// order). `id` is the identity captured at drag start — the workspace's paneID, or the
@@ -848,6 +860,20 @@ func workspaceSelfCheck() {
     // ── closeWorkspace invariant: replaceOnClose is the real decision function ─
     assert(Workspace.replaceOnClose(totalSessions: 1) == true, "last ws replaced not removed")
     assert(Workspace.replaceOnClose(totalSessions: 2) == false, "two ws: safe to remove")
+
+    // ── `sessions --json` ids stay the legacy "<project>.<session>" pair ──────────
+    // Same store as above: [nil, "g1", "g1", nil, "g2"] → units [[0],[1,2],[3],[4]].
+    assert(Workspace.legacyIDs(groupIDs: [nil, "g1", "g1", nil, "g2"])
+           == ["0.0", "1.0", "1.1", "2.0", "3.0"],
+           "group members are sessions 0,1 of one project; a bare row is a project of one")
+    assert(Workspace.legacyIDs(groupIDs: []) == [], "empty store → no ids")
+    // The ids are the inverse of the <project> <session> → flat index resolution.
+    let ids = Workspace.legacyIDs(groupIDs: [nil, "g1", "g1"])
+    let back = Workspace.topLevelUnits(groupIDs: [nil, "g1", "g1"])
+    for (i, id) in ids.enumerated() {
+        let pair = id.split(separator: ".").map { Int($0)! }
+        assert(back[pair[0]][pair[1]] == i, "id \(id) resolves back to workspace \(i)")
+    }
 
     // ── Config seeding dedupes on PROVENANCE, so a `cd` can't fork a second row ────
     // A row seeded from /p still owns /p after its shell walked to /elsewhere.

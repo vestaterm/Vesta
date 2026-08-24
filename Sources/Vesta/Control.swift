@@ -160,17 +160,31 @@ final class ControlServer: @unchecked Sendable {
         return units[p][s]
     }
 
-    /// `sessions --json`: one flat record per workspace (id, name, group, cwd, pane count,
-    /// active/attention flags) sliced from the shared sidebar model. `id` is the flat index
-    /// as a string — what `select <id>` takes. `project` is kept as an alias of `group`
-    /// (falling back to the row's own label) so old plugins keep resolving; it also filters.
+    /// The inverse: a flat workspace index → the legacy `<project> <session>` pair. Every
+    /// reply that used to carry those indices still does, so a plugin echoing them back into
+    /// `select` round-trips. (0, 0) when the store is empty — no reply can name a row anyway.
+    @MainActor private func unitMember(_ ws: Workspace, _ i: Int) -> (project: Int, session: Int) {
+        let units = Workspace.topLevelUnits(groupIDs: ws.wss.map(\.groupID))
+        guard let p = units.firstIndex(where: { $0.contains(i) }),
+              let s = units[p].firstIndex(of: i) else { return (0, 0) }
+        return (p, s)
+    }
+
+    /// `sessions --json`: one record per workspace (id, name, group, cwd, pane count,
+    /// active/attention flags) sliced from the shared sidebar model. `id` keeps its legacy
+    /// `"P.S"` form — the top-level unit and the position inside it — because that string is
+    /// what plugins split and feed back to `select`; the flat store index rides alongside it
+    /// as the int `workspace`, and `select` takes either. `project` is kept as an alias of
+    /// `group` (falling back to the row's own label) so old plugins keep resolving; it also filters.
     @MainActor private func sessionsJSON(project: String?) -> [String: Any] {
         guard let ws = workspaceProvider() else { return ["ok": false, "error": "no window"] }
         var out: [[String: Any]] = []
+        let legacyID = Workspace.legacyIDs(groupIDs: ws.wss.map(\.groupID))
         for (i, w) in ws.wss.enumerated() where project == nil || projectName(ws, i) == project {
             let t = w.tree
             var d: [String: Any] = [
-                "id": "\(i)", "name": t.name ?? t.focusedLabel, "project": projectName(ws, i),
+                "id": legacyID[i], "workspace": i,
+                "name": t.name ?? t.focusedLabel, "project": projectName(ws, i),
                 "panes": t.paneCount, "active": i == ws.activeW,   // paneCount works while dormant
                 "attention": ws.hasAttention(t),
             ]
@@ -405,7 +419,10 @@ final class ControlServer: @unchecked Sendable {
                 return ["ok": false, "error": "select: no such workspace (\(args.joined(separator: " ")))"]
             }
             workspace.selectWorkspace(t)
-            return ["ok": true, "workspace": t]
+            // `workspace` is the new flat truth; project/session are the legacy pair for the
+            // same row (what old plugins read back out of this reply).
+            let um = unitMember(workspace, t)
+            return ["ok": true, "workspace": t, "project": um.project, "session": um.session]
         case "rename":
             guard let name = args.first else { return ["ok": false, "error": "rename: <name> required"] }
             // Blank clears the custom name and falls back to the folder label (sidebar convention).
@@ -439,7 +456,11 @@ final class ControlServer: @unchecked Sendable {
             default:
                 return ["ok": false, "error": "project: new [PATH] [--name X] | rename <name> | remove | color <#hex|none>"]
             }
-            return ["ok": true, "workspace": workspace.activeW]
+            // Legacy readers keyed off "project" (the old project index) — keep it pointing
+            // at the active row's top-level unit, alongside the flat workspace index.
+            let um = unitMember(workspace, workspace.activeW)
+            return ["ok": true, "workspace": workspace.activeW,
+                    "project": um.project, "session": um.session]
         default:
             return ["ok": false, "error": "unknown cmd: \(cmd)"]
         }
