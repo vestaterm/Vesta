@@ -24,50 +24,75 @@ struct PaneGlyph: Equatable {
 }
 
 // Equatable so the renderer can skip rebuilds when a 1Hz tick changed nothing (idle CPU).
-struct SidebarSession: Equatable {
+/// One sidebar row = one workspace = one terminal session (flat model, cmux-style).
+struct SidebarWorkspace: Equatable {
     let label: String
     let active: Bool
-    var ports: [Int] = []   // listening TCP ports of the session's foreground process tree
-    var dirty: Int = 0      // uncommitted changes in the session's cwd (git status --porcelain)
-    var attention: Bool = false  // bell/desktop-notification fired while session was not active
+    var index: Int                    // flat index into store.workspaces — the click/drag key
+    var ports: [Int] = []   // listening TCP ports of the workspace's foreground process tree
+    var dirty: Int = 0      // uncommitted changes in the workspace's cwd (git status --porcelain)
+    var attention: Bool = false  // bell/desktop-notification fired while ws was not active
     var heat: SessionHeat = .none
     var heatAge: String? = nil       // "3m" since the heat event (bell / command exit)
     var paneCount: Int = 1
     var focusedPaneID: String? = nil  // tail lookup key (filled by WindowContext)
     var tail: [String] = []           // last cleaned output lines (TailStore)
     var treeID: String = ""           // stable PaneTree.paneID — drag-reorder identity guard
-    var layout: PaneGlyph? = nil      // real split topology (multi-pane sessions only)
+    var layout: PaneGlyph? = nil      // real split topology (multi-pane workspaces only)
+    var color: NSColor? = nil         // per-workspace tint (nil ⇒ accent)
+    var branch: String? = nil         // git branch of the ws cwd (filled by WindowContext)
+    var grouped: Bool = false         // render indented under a group header
 }
 
-struct SidebarProject: Equatable {
+/// A group header row: purely visual packaging over a contiguous run of workspaces.
+struct SidebarGroup: Equatable {
     let name: String
-    var branch: String?
-    let expanded: Bool
-    let active: Bool
-    var color: NSColor? = nil    // custom project tint (nil ⇒ accent)
-    var sessions: [SidebarSession]  // var so AppDelegate can inject ports/dirty per session
-    var id: String = ""          // stable Proj.id — drag-reorder identity guard
+    let collapsed: Bool
+    var color: NSColor? = nil    // custom group tint (nil ⇒ accent)
+    var id: String = ""          // stable Group.id — drag-reorder identity guard
+    var groupIndex: Int = 0      // index into store.groups
+    var members: [SidebarWorkspace]  // var so WindowContext can inject ports/dirty per member
 }
 
-// MARK: - Project/Session model
+/// The sidebar is a flat list of these — a bare workspace row, or a group with its members.
+enum SidebarItem: Equatable {
+    case workspace(SidebarWorkspace)
+    case group(SidebarGroup)
+}
 
-struct Proj {
-    var id: String = ""          // stable identity for persistence: "home", "cfg:<path>", "u:<uuid>"
+// MARK: - Workspace/Group model
+
+/// A visual-only grouping of workspaces. Deliberately has NO cwd and NO behavior: it
+/// does not own sessions, it does not supply a default directory, it cannot be empty
+/// (the ops delete a group the moment its last member leaves). Membership is recorded
+/// on the workspace (`WS.groupID`); the group's members are the contiguous run of
+/// workspaces carrying its id, so sidebar order stays a single flat array.
+struct Group {
+    var id: String               // "g:<uuid>", or a migrated old project id
     var name: String
-    var path: String
-    var sessions: [PaneTree]
-    var expanded: Bool
     var color: NSColor? = nil    // custom tint, set via the sidebar context menu
+    var collapsed: Bool = false
 }
 
-/// App-owned shared session pool: holds the projects + their sessions (PaneTrees own
-/// the live ghostty surfaces), so they survive any window closing. Every window's
-/// Workspace reads/writes `projs` here, and `broadcast` refreshes all open windows —
+/// One sidebar row: a terminal session (PaneTree owns the live ghostty surfaces) plus
+/// its presentation state. Flat — there is no project layer above it.
+struct WS {
+    var tree: PaneTree
+    var color: NSColor? = nil    // custom tint, set via the sidebar context menu
+    var groupID: String? = nil   // nil ⇒ top-level (ungrouped)
+}
+
+/// App-owned shared workspace pool: holds the workspaces (PaneTrees own the live ghostty
+/// surfaces) + the visual groups, so they survive any window closing. Every window's
+/// Workspace reads/writes `workspaces` here, and `broadcast` refreshes all open windows —
 /// that's what makes the sidebar global. Per-window state (active selection, the
-/// display body) stays in Workspace, so each window can view a DIFFERENT session.
+/// display body) stays in Workspace, so each window can view a DIFFERENT workspace.
 @MainActor
 final class SessionStore {
-    var projs: [Proj] = []
+    /// Array order IS the sidebar order (user-defined, persisted). Group members are a
+    /// contiguous run — the move ops maintain that invariant.
+    var workspaces: [WS] = []
+    var groups: [Group] = []
     var broadcast: () -> Void = {}
     /// Immediate sidebar render in every window, no debounce. Fired by handleChange —
     /// i.e. DISCRETE USER MUTATIONS only (toggle/select/close/new/rename/reorder).
@@ -76,47 +101,46 @@ final class SessionStore {
     /// the per-session viewport capture in renderSidebar must stay behind the ≤1s
     /// debounce for those.
     var renderNow: () -> Void = {}
-    // Last active (project, session) selection — survives closing all windows, so reopening
-    // returns to where you were instead of spawning a fresh project.
-    var lastActive: (p: Int, s: Int) = (0, 0)
+    // Last active workspace index — survives closing all windows, so reopening
+    // returns to where you were instead of spawning a fresh workspace.
+    var lastActive: Int = 0
 }
 
-/// Owns projects; each project owns sessions (PaneTrees).
-/// Container = body only — the active session's rootView, swapped on change.
+/// Per-window view over the shared workspace pool: a flat, ordered list of workspaces
+/// (one terminal session each) plus the visual groups drawn over it.
+/// Container = body only — the active workspace's rootView, swapped on change.
 /// No top tab strip.
 @MainActor
 final class Workspace {
     let store: SessionStore
-    var projs: [Proj] { get { store.projs } set { store.projs = newValue } }
-    private(set) var activeP = 0
-    private(set) var activeS = 0
+    var wss: [WS] { get { store.workspaces } set { store.workspaces = newValue } }
+    var groups: [Group] { get { store.groups } set { store.groups = newValue } }
+    private(set) var activeW = 0
 
-    // Session→branch tag: keyed by PaneTree instance identity to avoid touching PaneTree's init.
-    private var worktreeBranch: [ObjectIdentifier: String] = [:]
+    // Workspace→worktree tag: keyed by PaneTree instance identity to avoid touching
+    // PaneTree's init. The repo is captured at creation — a flat workspace has no
+    // project above it to ask for one at close time.
+    private var worktreeBranch: [ObjectIdentifier: (repo: String, branch: String)] = [:]
 
-    // Sessions that have rung the bell / fired a desktop notification while not active.
+    // Workspaces that have rung the bell / fired a desktop notification while not active.
     private var attention: Set<ObjectIdentifier> = []
     private var attentionAt: [ObjectIdentifier: Date] = [:]   // when it rang (card heat age)
-    private weak var lastShown: PaneTree?   // previously-active session (outgoing markSeen)
+    private weak var lastShown: PaneTree?   // previously-active workspace (outgoing markSeen)
 
     /// True if `tree` has pending attention (bell/notification while backgrounded).
     /// Exposed for `sessions --json` / `pane status`.
     func hasAttention(_ tree: PaneTree) -> Bool { attention.contains(ObjectIdentifier(tree)) }
 
-    var activeTree: PaneTree { projs[activeP].sessions[activeS] }
-    var totalSessions: Int { projs.reduce(0) { $0 + $1.sessions.count } }
+    /// The active workspace's tree. Clamped: the pool always holds ≥1 workspace (init
+    /// seeds one, closeWorkspace replaces rather than empties), so this cannot miss.
+    var activeTree: PaneTree { wss[min(max(activeW, 0), wss.count - 1)].tree }
+
+    /// Same, but safe DURING init/hydrate, when the pool can still be momentarily empty.
+    private var activeTreeIfAny: PaneTree? { wss.indices.contains(activeW) ? wss[activeW].tree : nil }
 
     let container = NSView()
     private let body = NSView()
     private var theme: Theme
-
-    // Callbacks (set by AppDelegate, invoked by Chrome in Task B)
-    var onSelectSession:  ((Int, Int) -> Void)?
-    var onCloseSession:   ((Int, Int) -> Void)?
-    var onNewSession:     ((Int) -> Void)?
-    var onToggleExpand:   ((Int) -> Void)?
-    var onNewProject:     (() -> Void)?
-    var onChange:         (() -> Void)?
 
     init(theme: Theme, store: SessionStore, hydrateFrom: [String: Any]? = nil) {
         self.store = store
@@ -139,91 +163,74 @@ final class Workspace {
         // Restore path: build straight from the saved window entry instead of seeding a
         // throwaway home session (a real surface + relay + daemon login shell that hydrate
         // would immediately discard, leaking the shell under vestad every launch). hydrate
-        // populates projs (dormant) + calls showActive.
-        if projs.isEmpty, let win = hydrateFrom,
-           (win["projects"] as? [[String: Any]])?.isEmpty == false {
+        // populates wss (dormant) + calls showActive.
+        if wss.isEmpty, let win = hydrateFrom,
+           (win["workspaces"] as? [[String: Any]])?.isEmpty == false {
             hydrate(from: win)
             return
         }
 
-        if projs.isEmpty {
-            // First window for an empty pool: seed the home project at ~ with one session.
-            // Config projects are appended collapsed + empty by loadProjects/appendProject.
-            let home = NSHomeDirectory()
-            var homeProj = makeProj(name: "home", path: home, expanded: true, id: "home")
-            homeProj.sessions.append(makeTree(cwd: home))
-            projs.append(homeProj)
-            activeP = 0
-            activeS = 0
+        if wss.isEmpty {
+            // First window for an empty pool: seed ONE workspace at ~. Config paths are
+            // appended as extra dormant workspaces by the config seeding pass.
+            wss.append(WS(tree: makeTree(cwd: NSHomeDirectory())))
+            activeW = 0
         } else {
             // Reusing a live pool (e.g. reopened after closing all windows): return to the
-            // last active project — clamped — never spawn a duplicate. Lazy-open a session if
-            // that project was collapsed/empty.
-            let p = min(max(store.lastActive.p, 0), projs.count - 1)
-            activeP = p
-            if projs[p].sessions.isEmpty {
-                projs[p].sessions.append(makeTree(cwd: projs[p].path.isEmpty ? NSHomeDirectory() : projs[p].path))
-                projs[p].expanded = true
-            }
-            activeS = min(max(store.lastActive.s, 0), projs[p].sessions.count - 1)
+            // last active workspace — clamped — never spawn a duplicate. Every workspace
+            // always owns a tree, so there is nothing to lazy-create here.
+            activeW = min(max(store.lastActive, 0), wss.count - 1)
         }
         showActive()
     }
 
-    // MARK: - Operations
+    // MARK: - Workspace operations
 
-    func toggleExpand(_ p: Int) {
-        guard projs.indices.contains(p) else { return }
-        if projs[p].sessions.isEmpty {
-            // Lazy: create first session at the project path, expand, activate.
-            let tree = makeTree(cwd: projs[p].path)
-            projs[p].sessions.append(tree)
-            projs[p].expanded = true
-            activeP = p; activeS = 0
-            showActive()
-        } else {
-            projs[p].expanded.toggle()
-            handleChange()
-        }
-    }
-
-    private func addSession(_ p: Int, cwd: String?) {
-        guard projs.indices.contains(p) else { return }
-        // Default to the project's directory when no explicit cwd is given, so new sessions
-        // (project "+", ⌘T, `tab new`) open in the project's default dir.
-        let dir = cwd ?? (projs[p].path.isEmpty ? NSHomeDirectory() : projs[p].path)
+    /// Open a new workspace at the end of the list, top-level (never inside a group —
+    /// grouping is an explicit user act). Defaults to the active workspace's cwd, so
+    /// ⌘N continues where you were standing.
+    func newWorkspace(at cwd: String? = nil) {
+        let dir = cwd ?? activeTreeIfAny?.focusedCwd ?? NSHomeDirectory()
         let tree = makeTree(cwd: dir)
-        projs[p].sessions.append(tree)
-        projs[p].expanded = true
-        activeP = p
-        activeS = projs[p].sessions.count - 1
+        wss.append(WS(tree: tree))
+        activeW = wss.count - 1
         showActive()
         luaFire("session-opened", tree.paneID)
     }
 
-    func newSession(_ p: Int) {
-        addSession(p, cwd: nil)   // addSession defaults to the project's dir
+    func selectWorkspace(_ i: Int) {
+        guard wss.indices.contains(i) else { return }
+        activeW = i
+        let k = ObjectIdentifier(activeTree)
+        attention.remove(k); attentionAt[k] = nil
+        showActive()
+        luaFire("focus-changed", activeTree.paneID)
     }
 
-    /// Change a project's default directory (used for new sessions). Existing sessions keep
-    /// their own cwd.
-    func setProjectDir(_ p: Int, _ path: String) {
-        guard projs.indices.contains(p) else { return }
-        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        projs[p].path = trimmed
-        saveProjects()
+    func renameWorkspace(_ i: Int, _ name: String?) {
+        guard wss.indices.contains(i) else { return }
+        wss[i].tree.setName(name)   // setName fires onFocusChange → save + render
         handleChange()
     }
 
-    func newWorktreeSession(_ p: Int, branch: String, base: String? = nil) {
-        guard projs.indices.contains(p) else { return }
-        let repo = projs[p].path
+    func setWorkspaceColor(_ i: Int, _ c: NSColor?) {
+        guard wss.indices.contains(i) else { return }
+        wss[i].color = c
+        handleChange()
+    }
+
+    /// Branch off workspace `i`: a git worktree of ITS cwd, opened as a new workspace that
+    /// joins `i`'s group (so a group stays the natural home for a feature's branches).
+    func newWorktreeWorkspace(from i: Int, branch: String, base: String? = nil) {
+        guard wss.indices.contains(i) else { return }
+        let repo = wss[i].tree.focusedCwd ?? NSHomeDirectory()
+        let gid = wss[i].groupID
         do {
             let dir = try Worktree.add(repo: repo, branch: branch, base: base)
-            addSession(p, cwd: dir)                              // addSession sets active + showActive
-            worktreeBranch[ObjectIdentifier(activeTree)] = branch
-            handleChange()
+            newWorkspace(at: dir)                                   // appends + activates + showActive
+            worktreeBranch[ObjectIdentifier(activeTree)] = (repo, branch)
+            // moveToGroup keeps members contiguous (append landed it at the very end).
+            if gid != nil { moveToGroup(activeW, groupID: gid) } else { handleChange() }
         } catch {
             NSSound.beep()
             // surface the git error without crashing
@@ -232,76 +239,10 @@ final class Workspace {
         }
     }
 
-    func renameProject(_ p: Int, _ name: String) {
-        guard projs.indices.contains(p) else { return }
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        projs[p].name = trimmed
-        saveProjects()
-        handleChange()
-    }
-
-    func renameSession(_ p: Int, _ s: Int, _ name: String?) {
-        guard projs.indices.contains(p), projs[p].sessions.indices.contains(s) else { return }
-        projs[p].sessions[s].setName(name)   // setName fires onFocusChange → save + render
-        handleChange()
-    }
-
-    func setProjectColor(_ p: Int, _ color: NSColor?) {
-        guard projs.indices.contains(p) else { return }
-        projs[p].color = color
-        saveProjects()
-        handleChange()
-    }
-
-    /// Remove a project and all its sessions. Refuses to remove the last project
-    /// (the workspace must always have ≥1 project with ≥1 session).
-    func removeProject(_ p: Int) {
-        guard projs.indices.contains(p), projs.count > 1 else { return }
-        projs[p].sessions.forEach { forget($0) }   // evict identity-keyed state
-        projs.remove(at: p)
-        // Fix activeP: shift down if we removed at/before it, then clamp.
-        if activeP >= p { activeP = max(0, activeP - 1) }
-        activeP = min(activeP, projs.count - 1)
-        // Active project may be a lazy (empty) one — ensure it has a session.
-        if projs[activeP].sessions.isEmpty {
-            projs[activeP].sessions.append(makeTree(cwd: projs[activeP].path))
-            projs[activeP].expanded = true
-        }
-        activeS = min(activeS, projs[activeP].sessions.count - 1)
-        saveProjects()
-        showActive()
-    }
-
-    /// Create a project. With a path, the folder name becomes the project name and its
-    /// first session opens there; without one, an "untitled" project at home (legacy default).
-    func newProject(at path: String? = nil) {
-        let dir = path ?? NSHomeDirectory()
-        let name = path == nil ? "untitled" : ((dir as NSString).lastPathComponent.isEmpty ? dir : (dir as NSString).lastPathComponent)
-        var proj = makeProj(name: name, path: dir, expanded: true, id: "u:\(UUID().uuidString)")
-        // Add one session in the project dir immediately (mirrors home proj behaviour).
-        let tree = makeTree(cwd: dir)
-        proj.sessions.append(tree)
-        projs.append(proj)
-        activeP = projs.count - 1
-        activeS = 0
-        saveProjects()
-        showActive()
-    }
-
-    func selectSession(_ p: Int, _ s: Int) {
-        guard projs.indices.contains(p), projs[p].sessions.indices.contains(s) else { return }
-        activeP = p; activeS = s
-        let k = ObjectIdentifier(activeTree)
-        attention.remove(k); attentionAt[k] = nil
-        showActive()
-        luaFire("focus-changed", activeTree.paneID)
-    }
-
-    /// Drop all identity-keyed state for a session being removed. Without this a
+    /// Drop all identity-keyed state for a workspace being removed. Without this a
     /// later PaneTree that reuses the freed heap address inherits a stale
     /// worktree label or a phantom attention ring. (metaCache is evicted in
-    /// AppDelegate.renderSidebar, which can see the live session set.)
+    /// AppDelegate.renderSidebar, which can see the live workspace set.)
     private func forget(_ tree: PaneTree) {
         let k = ObjectIdentifier(tree)
         worktreeBranch[k] = nil
@@ -309,257 +250,246 @@ final class Workspace {
         attentionAt[k] = nil   // else an address-reusing tree inherits a stale heat age
     }
 
-    /// Returns true when the last session is about to be removed — replace instead of deleting.
+    /// Returns true when the last workspace is about to be removed — replace instead of deleting.
     nonisolated static func replaceOnClose(totalSessions: Int) -> Bool { totalSessions <= 1 }
 
-    func closeSession(_ p: Int, _ s: Int) {
-        guard projs.indices.contains(p), projs[p].sessions.indices.contains(s) else { return }
-        let closing = projs[p].sessions[s]
-        // Closing a session KILLS its daemon shell — the sidebar is the single source of
+    func closeWorkspace(_ i: Int) {
+        guard wss.indices.contains(i) else { return }
+        let closing = wss[i].tree
+        // Closing a workspace KILLS its daemon shell — the sidebar is the single source of
         // truth, so there are no orphaned detached sessions. (Window-close still only
         // detaches, since it doesn't drop the PaneTree from the shared store.)
         closing.paneIDs.forEach { TerminalPane.suppressExit($0); MuxClient.kill(paneID: $0) }
         luaFire("session-closed", closing.paneID)
-        // If this was a worktree session, best-effort remove its worktree dir
+        // If this was a worktree workspace, best-effort remove its worktree dir
         // off-main (non-force → dirty worktrees are left intact, never destroyed).
-        if let branch = worktreeBranch[ObjectIdentifier(closing)] {
-            let repo = projs[p].path
-            let dir = Worktree.dirFor(repo: repo, branch: branch)
+        if let wt = worktreeBranch[ObjectIdentifier(closing)] {
+            let repo = wt.repo
+            let dir = Worktree.dirFor(repo: repo, branch: wt.branch)
             DispatchQueue.global(qos: .utility).async { try? Worktree.remove(repo: repo, dir: dir) }
         }
-        // Forget identity-keyed state for the session being removed/replaced.
+        // Forget identity-keyed state for the workspace being removed/replaced.
         forget(closing)
-        // Never let global session count reach 0.
-        let total = projs.reduce(0) { $0 + $1.sessions.count }
-        if Workspace.replaceOnClose(totalSessions: total) {
-            // Replace with a fresh ~ session rather than leaving 0.
-            let tree = makeTree(cwd: NSHomeDirectory())
-            projs[p].sessions[s] = tree
-            activeP = p; activeS = s
+        let gone = wss[i].groupID
+        // Never let the global workspace count reach 0.
+        if Workspace.replaceOnClose(totalSessions: wss.count) {
+            // Replace with a fresh top-level ~ workspace rather than leaving 0.
+            wss[i] = WS(tree: makeTree(cwd: NSHomeDirectory()))
+            activeW = i
+            dropGroupIfEmpty(gone)
             showActive()
             return
         }
-        projs[p].sessions.remove(at: s)
-        // If project is now empty, collapse it.
-        if projs[p].sessions.isEmpty { projs[p].expanded = false }
-        // Fix activeS/activeP.
-        if activeP == p {
-            if projs[p].sessions.isEmpty {
-                // Find another project with sessions.
-                if let q = projs.indices.first(where: { $0 != p && !projs[$0].sessions.isEmpty }) {
-                    activeP = q; activeS = 0
-                } else {
-                    // No other sessions — create a fresh one in this project.
-                    let tree = makeTree(cwd: projs[p].path.isEmpty ? NSHomeDirectory() : projs[p].path)
-                    projs[p].sessions.append(tree)
-                    projs[p].expanded = true
-                    activeP = p; activeS = 0
-                }
-            } else {
-                activeS = min(activeS, projs[p].sessions.count - 1)
-            }
-        }
+        wss.remove(at: i)
+        // Removing at/before the active row shifts the selection down one; clamp after.
+        if activeW >= i { activeW = max(0, activeW - 1) }
+        activeW = min(activeW, wss.count - 1)
+        dropGroupIfEmpty(gone)
         showActive()
     }
 
-    func snapshot() -> [SidebarProject] {
-        projs.enumerated().map { (pi, proj) in
-            let multi = proj.sessions.count > 1
-            let sessions = proj.sessions.enumerated().map { (si, tree) in
-                // Disambiguate sibling sessions (otherwise every ~ shell reads "nuh").
-                let base = tree.name ?? tree.focusedLabel
-                var label = base
-                if multi { label = "\(si + 1). \(label)" }
-                // Prefer worktree branch tag when available.
-                if let br = worktreeBranch[ObjectIdentifier(tree)] { label = "⎇ \(br)" }
-                let oid = ObjectIdentifier(tree)
-                let isActive = pi == activeP && si == activeS
-                let attn = attention.contains(oid)
-                // Heat: waiting-for-you (bell) beats last-command ✓/✗; the ACTIVE session
-                // carries none (you're looking at it), and exits are cleared on select
-                // (markSeen) so heat always means "unseen news".
-                var heat: SessionHeat = .none
-                var heatAt: Date? = nil
-                if attn {
-                    heat = .need; heatAt = attentionAt[oid]
-                } else if !isActive, !tree.isDormant, let pid = tree.focusedPaneID,
-                          let ex = TailStore.shared.exitState(pid) {
-                    heat = ex.code == 0 ? .ok : .warn; heatAt = ex.at
-                }
-                let age: String? = heatAt.map {
-                    let m = Int(Date().timeIntervalSince($0) / 60)
-                    return m < 1 ? "now" : (m < 60 ? "\(m)m" : "\(m / 60)h")
-                }
-                let paneCount = tree.paneCount
-                let serialized = paneCount > 1 ? tree.serializeLayout() : nil
-                return SidebarSession(label: label, active: isActive,
-                                     attention: attn, heat: heat, heatAge: age,
-                                     paneCount: paneCount,
-                                     focusedPaneID: tree.isDormant ? nil : tree.focusedPaneID,
-                                     treeID: tree.paneID,
-                                     // Real topology for the schematic. Dormant sessions
-                                     // focus their first leaf on materialize — mirror that.
-                                     layout: serialized.map { PaneTree.layoutGlyph(
-                                        $0,
-                                        focusedPaneID: tree.isDormant
-                                            ? PaneTree.firstLeafID($0)
-                                            : tree.focusedPaneID) })
-            }
-            return SidebarProject(
-                name: proj.name,
-                branch: nil,   // filled by AppDelegate's git fetch in Task C
-                expanded: proj.expanded,
-                active: pi == activeP,
-                color: proj.color,
-                sessions: sessions,
-                id: proj.id
-            )
+    // MARK: - Group operations (visual only — a group never owns a session)
+
+    /// Wrap a top-level workspace in a new group named after it. Already-grouped
+    /// workspaces are a no-op (move them with moveToGroup instead).
+    func newGroupFromWorkspace(_ i: Int) {
+        guard wss.indices.contains(i), wss[i].groupID == nil else { return }
+        let g = Group(id: "g:\(UUID().uuidString)",
+                      name: wss[i].tree.name ?? wss[i].tree.focusedLabel)
+        groups.append(g)
+        wss[i].groupID = g.id
+        handleChange()
+    }
+
+    /// Move workspace `i` into `groupID` (nil ⇒ ungroup). Re-seats the row so a group's
+    /// members stay CONTIGUOUS — that contiguity is what makes a group one sidebar block.
+    func moveToGroup(_ i: Int, groupID: String?) {
+        guard wss.indices.contains(i), wss[i].groupID != groupID else { return }
+        let old = wss[i].groupID
+        var ws = wss.remove(at: i)
+        ws.groupID = groupID
+        // Insert at the end of the target group's span, or at the end of the list.
+        let at = groupID.flatMap { gid in wss.lastIndex(where: { $0.groupID == gid }).map { $0 + 1 } }
+            ?? wss.count
+        wss.insert(ws, at: at)
+        remapActive(moved: i, to: at)
+        dropGroupIfEmpty(old)
+        handleChange()
+    }
+
+    func renameGroup(_ g: Int, _ name: String) {
+        guard groups.indices.contains(g) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        groups[g].name = trimmed
+        handleChange()
+    }
+
+    func setGroupColor(_ g: Int, _ c: NSColor?) {
+        guard groups.indices.contains(g) else { return }
+        groups[g].color = c
+        handleChange()
+    }
+
+    func toggleGroupCollapsed(_ g: Int) {
+        guard groups.indices.contains(g) else { return }
+        groups[g].collapsed.toggle()
+        handleChange()
+    }
+
+    /// Close every workspace in the group; the group itself is dropped once empty.
+    func removeGroup(_ g: Int) {
+        guard groups.indices.contains(g) else { return }
+        let gid = groups[g].id
+        // Indices shift as each member closes (and the last close REPLACES rather than
+        // removes) — re-find by paneID instead of walking a stale index list.
+        for id in wss.filter({ $0.groupID == gid }).map(\.tree.paneID) {
+            if let i = wss.firstIndex(where: { $0.tree.paneID == id }) { closeWorkspace(i) }
         }
+        dropGroupIfEmpty(gid)   // covers a memberless group (shouldn't exist, but it's one line)
+    }
+
+    /// Dissolve the group: members become top-level where they stand, group deleted.
+    func ungroup(_ g: Int) {
+        guard groups.indices.contains(g) else { return }
+        let gid = groups[g].id
+        for i in wss.indices where wss[i].groupID == gid { wss[i].groupID = nil }
+        groups.remove(at: g)
+        handleChange()
+    }
+
+    /// Delete a group once no workspace carries its id — the ≥1-member invariant.
+    private func dropGroupIfEmpty(_ id: String?) {
+        guard let id, !wss.contains(where: { $0.groupID == id }) else { return }
+        groups.removeAll { $0.id == id }
+    }
+
+    /// Keep the active selection on the SAME workspace across a remove+insert of `moved`.
+    private func remapActive(moved from: Int, to: Int) {
+        if activeW == from { activeW = to; return }
+        var a = activeW
+        if a > from { a -= 1 }   // the remove shifted it down
+        if a >= to { a += 1 }    // the insert shifted it back up
+        activeW = a
+    }
+
+    // MARK: - Render snapshot
+
+    func snapshot() -> [SidebarItem] {
+        Self.topLevelUnits(groupIDs: wss.map(\.groupID)).flatMap { unit -> [SidebarItem] in
+            // A workspace whose groupID has no Group (shouldn't happen — hydrate drops
+            // dangling ids) still renders, just as plain top-level rows.
+            guard let gid = wss[unit[0]].groupID,
+                  let gi = groups.firstIndex(where: { $0.id == gid }) else {
+                return unit.map { .workspace(dto($0, grouped: false)) }
+            }
+            // Collapsed groups still carry their members: the renderer hides the rows, but
+            // the header aggregates their count/heat.
+            return [.group(SidebarGroup(name: groups[gi].name, collapsed: groups[gi].collapsed,
+                                        color: groups[gi].color, id: gid, groupIndex: gi,
+                                        members: unit.map { dto($0, grouped: true) }))]
+        }
+    }
+
+    private func dto(_ i: Int, grouped: Bool) -> SidebarWorkspace {
+        let tree = wss[i].tree
+        // Flat list: names disambiguate, so no "1." sibling prefix. Worktree tag wins.
+        var label = tree.name ?? tree.focusedLabel
+        if let wt = worktreeBranch[ObjectIdentifier(tree)] { label = "⎇ \(wt.branch)" }
+        let oid = ObjectIdentifier(tree)
+        let isActive = i == activeW
+        let attn = attention.contains(oid)
+        // Heat: waiting-for-you (bell) beats last-command ✓/✗; the ACTIVE workspace
+        // carries none (you're looking at it), and exits are cleared on select
+        // (markSeen) so heat always means "unseen news".
+        var heat: SessionHeat = .none
+        var heatAt: Date? = nil
+        if attn {
+            heat = .need; heatAt = attentionAt[oid]
+        } else if !isActive, !tree.isDormant, let pid = tree.focusedPaneID,
+                  let ex = TailStore.shared.exitState(pid) {
+            heat = ex.code == 0 ? .ok : .warn; heatAt = ex.at
+        }
+        let age: String? = heatAt.map {
+            let m = Int(Date().timeIntervalSince($0) / 60)
+            return m < 1 ? "now" : (m < 60 ? "\(m)m" : "\(m / 60)h")
+        }
+        let paneCount = tree.paneCount
+        let serialized = paneCount > 1 ? tree.serializeLayout() : nil
+        return SidebarWorkspace(label: label, active: isActive, index: i,
+                                attention: attn, heat: heat, heatAge: age,
+                                paneCount: paneCount,
+                                focusedPaneID: tree.isDormant ? nil : tree.focusedPaneID,
+                                treeID: tree.paneID,
+                                // Real topology for the schematic. Dormant workspaces
+                                // focus their first leaf on materialize — mirror that.
+                                layout: serialized.map { PaneTree.layoutGlyph(
+                                    $0,
+                                    focusedPaneID: tree.isDormant
+                                        ? PaneTree.firstLeafID($0)
+                                        : tree.focusedPaneID) },
+                                color: wss[i].color,
+                                grouped: grouped)
     }
 
     // MARK: - Compat shims for Control.swift (do NOT remove until Control.swift is updated)
 
-    /// The flat index of the active session across all projects (for `list` command).
-    var active: Int {
-        var n = 0
-        for (pi, proj) in projs.enumerated() {
-            for si in proj.sessions.indices {
-                if pi == activeP && si == activeS { return n }
-                n += 1
-            }
-        }
-        return 0
-    }
+    /// The index of the active workspace (for `list` command).
+    var active: Int { activeW }
 
     /// Flat list of all PaneTrees (for `list` command's tab count).
-    var tabs: [PaneTree] { projs.flatMap { $0.sessions } }
+    var tabs: [PaneTree] { wss.map(\.tree) }
 
-    func newTab(cwd: String?) {
-        // Compat: opens a new session in the active project at the given cwd.
-        // If cwd matches a project path, prefer that project; else use activeP.
-        let targetP: Int
-        if let cwd, let pi = projs.indices.first(where: { projs[$0].path == cwd }) {
-            targetP = pi
-        } else {
-            targetP = activeP
-        }
-        addSession(targetP, cwd: cwd)
-    }
+    func newTab(cwd: String?) { newWorkspace(at: cwd) }
 
-    func closeTab() { closeSession(activeP, activeS) }
-    func closeTab(at i: Int) {
-        // Flat index i → project/session.
-        var n = 0
-        for (pi, proj) in projs.enumerated() {
-            for si in proj.sessions.indices {
-                if n == i { closeSession(pi, si); return }
-                n += 1
-            }
-        }
-    }
-    func selectTab(_ i: Int) {
-        var n = 0
-        for (pi, proj) in projs.enumerated() {
-            for si in proj.sessions.indices {
-                if n == i { selectSession(pi, si); return }
-                n += 1
-            }
-        }
-    }
-    func nextTab() {
-        let t = tabs
-        guard !t.isEmpty else { return }
-        let cur = active
-        let next = (cur + 1) % t.count
-        selectTab(next)
-    }
-    func prevTab() {
-        let t = tabs
-        guard !t.isEmpty else { return }
-        let cur = active
-        let prev = (cur - 1 + t.count) % t.count
-        selectTab(prev)
-    }
+    func closeTab() { closeWorkspace(activeW) }
+    func closeTab(at i: Int) { closeWorkspace(i) }
+    func selectTab(_ i: Int) { selectWorkspace(i) }
+    func nextTab() { nextWorkspace() }
+    func prevTab() { prevWorkspace() }
 
-    // MARK: - Project appending (called by loadProjects)
+    // MARK: - Window-state persistence (this window's workspaces + groups)
 
-    // MARK: - Persistence (created projects + names/colors survive restart)
-
-    private static var projectsFile: String {
-        let dir = NSHomeDirectory() + "/Library/Application Support/vesta"
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        return dir + "/projects.json"
-    }
-
-    /// Write the current project list (id/name/path/color — not sessions) to disk.
-    private func saveProjects() {
-        let arr: [[String: String]] = projs.map { p in
-            var d = ["id": p.id, "name": p.name, "path": p.path]
-            if let c = p.color { d["color"] = hexString(c) }
-            return d
-        }
-        guard let data = try? JSONSerialization.data(withJSONObject: arr, options: [.prettyPrinted]) else { return }
-        try? data.write(to: URL(fileURLWithPath: Self.projectsFile), options: .atomic)
-    }
-
-    /// Layer persisted customizations on top of the launch state (home + config):
-    /// update name/color of existing projects by id, and re-add user-created
-    /// projects (`u:…`) that aren't present. Sessions stay lazy. Call after init +
-    /// loadProjects, before `onChange` is wired (so it doesn't trigger a render).
-    func restorePersisted() {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Self.projectsFile)),
-              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] else { return }
-        for d in arr {
-            guard let id = d["id"], let name = d["name"], let path = d["path"] else { continue }
-            let color = d["color"].flatMap { ghosttyColor($0) }
-            if let i = projs.firstIndex(where: { $0.id == id }) {
-                projs[i].name = name
-                projs[i].color = color          // config/home rename + recolor persist
-            } else if id.hasPrefix("u:") {
-                projs.append(Proj(id: id, name: name, path: path, sessions: [], expanded: false, color: color))
-            }
-            // cfg:/home entries not present are intentionally not re-added — they're
-            // driven by the live config (a path removed from config stays gone).
-        }
-    }
-
-    /// Append a config project as collapsed + empty (lazy).
-    func appendProject(name: String, path: String) {
-        projs.append(Proj(id: "cfg:\(path)", name: name, path: path, sessions: [], expanded: false))
-    }
-
-    // MARK: - Window-state persistence (this window's projects + sessions-by-cwd)
-
-    /// Snapshot for windows.json: each project (id/name/path/color/expanded) with its
-    /// sessions, plus the active project/session. Each session stores its full split
-    /// `layout` (topology + per-leaf paneID/cwd) so splits restore intact; cwd/paneID
-    /// stay top-level as a fallback for pre-layout snapshots. Live processes/scrollback
-    /// can't be restored — each leaf reopens as a fresh shell at its cwd.
+    /// Snapshot for windows.json: the flat workspace list (each with its full split
+    /// `layout` — topology + per-leaf paneID/cwd — so splits restore intact), the visual
+    /// groups, and the active index. Live processes/scrollback can't be restored — each
+    /// leaf reopens as a fresh shell at its cwd.
+    /// ponytail: provisional v2 writer — Task 2 owns the versioned format + v0/v1 migration.
     func serialize() -> [String: Any] {
-        let projsData: [[String: Any]] = projs.map { p in
-            var d: [String: Any] = [
-                "id": p.id, "name": p.name, "path": p.path, "expanded": p.expanded,
-                "sessions": p.sessions.map { (t: PaneTree) -> [String: Any] in
-                    var sd: [String: Any] = ["cwd": t.focusedCwd ?? p.path, "paneID": t.paneID,
-                                             "layout": t.serializeLayout()]
-                    if let nm = t.name { sd["name"] = nm }
-                    return sd
-                },
-            ]
-            if let c = p.color { d["color"] = hexString(c) }
+        let groupsData: [[String: Any]] = groups.map { g in
+            var d: [String: Any] = ["id": g.id, "name": g.name, "collapsed": g.collapsed]
+            if let c = g.color { d["color"] = hexString(c) }
             return d
         }
-        return ["projects": projsData, "activeProject": activeP, "activeSession": activeS]
+        let wsData: [[String: Any]] = wss.map { w in
+            var d: [String: Any] = ["paneID": w.tree.paneID,
+                                    "cwd": w.tree.focusedCwd ?? NSHomeDirectory(),
+                                    "layout": w.tree.serializeLayout()]
+            if let nm = w.tree.name { d["name"] = nm }
+            if let c = w.color { d["color"] = hexString(c) }
+            if let g = w.groupID { d["groupID"] = g }
+            return d
+        }
+        return ["groups": groupsData, "workspaces": wsData, "activeWorkspace": activeW]
     }
 
-    /// Replace the launch state with a saved window snapshot. Robust: a session cwd
-    /// that no longer exists falls back to the project path, then ~. Always leaves
-    /// ≥1 project and the active project with ≥1 session.
+    /// Replace the launch state with a saved window snapshot. Robust: a leaf cwd that no
+    /// longer exists falls back to the workspace's own saved cwd, then ~. Always leaves
+    /// ≥1 workspace. Array order is preserved verbatim — it IS the user's sidebar order.
     func hydrate(from win: [String: Any]) {
-        guard let projsData = win["projects"] as? [[String: Any]], !projsData.isEmpty else { return }
+        guard let wsData = win["workspaces"] as? [[String: Any]], !wsData.isEmpty else { return }
         // Tear down the default state this Workspace built in init.
-        projs.forEach { $0.sessions.forEach { forget($0) } }
-        projs.removeAll()
+        wss.forEach { forget($0.tree) }
+        wss.removeAll()
+        groups.removeAll()
+
+        for gd in (win["groups"] as? [[String: Any]] ?? []) {
+            guard let id = gd["id"] as? String else { continue }
+            groups.append(Group(id: id,
+                                name: gd["name"] as? String ?? "group",
+                                color: (gd["color"] as? String).flatMap { ghosttyColor($0) },
+                                collapsed: gd["collapsed"] as? Bool ?? false))
+        }
 
         let fm = FileManager.default
         func usableDir(_ cwd: String, fallback: String) -> String {
@@ -579,79 +509,50 @@ final class Workspace {
             return n
         }
 
-        for pd in projsData {
-            let id = pd["id"] as? String ?? "u:\(UUID().uuidString)"
-            let name = pd["name"] as? String ?? "untitled"
-            let path = pd["path"] as? String ?? NSHomeDirectory()
-            let color = (pd["color"] as? String).flatMap { ghosttyColor($0) }
-            let expanded = pd["expanded"] as? Bool ?? true
-            var proj = Proj(id: id, name: name, path: path, sessions: [], expanded: expanded, color: color)
-            for entry in (pd["sessions"] as? [Any] ?? []) {
-                // Every restored session is built DORMANT (persisted layout only). The one
-                // the window will display materializes at showActive() below; the rest stay
-                // data until first activation — no surfaces, no daemon attach at launch.
-                // Preferred: a saved split layout (topology + per-leaf paneID/cwd).
-                if let d = entry as? [String: Any],
-                   let layout = d["layout"] as? [String: Any],
-                   layout["a"] != nil || layout["paneID"] != nil || layout["browser"] != nil {
-                    proj.sessions.append(makeDormant(layout: fixDirs(layout, fallback: path),
-                                                     name: d["name"] as? String))
-                    continue
-                }
-                // Fallback: flat cwd/paneID (pre-layout snapshot) or legacy string entry →
-                // a single-leaf dormant layout (serializeLayout echoes it back identically).
-                let cwd: String, pid: String, nm: String?
-                if let d = entry as? [String: Any] {
-                    cwd = d["cwd"] as? String ?? path
-                    pid = d["paneID"] as? String ?? UUID().uuidString
-                    nm  = d["name"] as? String
-                } else if let s = entry as? String {   // legacy windows.json (pre-M2)
-                    cwd = s; pid = UUID().uuidString; nm = nil
-                } else { continue }
-                proj.sessions.append(makeDormant(
-                    layout: ["paneID": pid, "cwd": usableDir(cwd, fallback: path)], name: nm))
+        for d in wsData {
+            // Every restored workspace is built DORMANT (persisted layout only). The one
+            // the window will display materializes at showActive() below; the rest stay
+            // data until first activation — no surfaces, no daemon attach at launch.
+            let cwd = d["cwd"] as? String ?? NSHomeDirectory()
+            // Preferred: a saved split layout (topology + per-leaf paneID/cwd). Fallback:
+            // flat cwd/paneID → a single-leaf layout (serializeLayout echoes it back).
+            let layout: [String: Any]
+            if let saved = d["layout"] as? [String: Any],
+               saved["a"] != nil || saved["paneID"] != nil || saved["browser"] != nil {
+                layout = saved
+            } else {
+                layout = ["paneID": d["paneID"] as? String ?? UUID().uuidString, "cwd": cwd]
             }
-            projs.append(proj)
+            // A groupID with no restored group would render an orphan header — drop it.
+            let gid = (d["groupID"] as? String).flatMap { id in
+                groups.contains { $0.id == id } ? id : nil
+            }
+            wss.append(WS(tree: makeDormant(layout: fixDirs(layout, fallback: cwd),
+                                            name: d["name"] as? String),
+                          color: (d["color"] as? String).flatMap { ghosttyColor($0) },
+                          groupID: gid))
         }
 
-        // Invariants: ≥1 project, active project has ≥1 session.
-        if projs.isEmpty {
-            var home = makeProj(name: "home", path: NSHomeDirectory(), expanded: true, id: "home")
-            home.sessions.append(makeTree(cwd: NSHomeDirectory()))
-            projs.append(home)
-        }
-        activeP = min(max(0, win["activeProject"] as? Int ?? 0), projs.count - 1)
-        if projs[activeP].sessions.isEmpty {
-            projs[activeP].sessions.append(makeTree(cwd: projs[activeP].path))
-            projs[activeP].expanded = true
-        }
-        activeS = min(max(0, win["activeSession"] as? Int ?? 0), projs[activeP].sessions.count - 1)
+        // Invariant: ≥1 workspace.
+        if wss.isEmpty { wss.append(WS(tree: makeTree(cwd: NSHomeDirectory()))) }
+        activeW = min(max(0, win["activeWorkspace"] as? Int ?? 0), wss.count - 1)
         showActive()
     }
 
-    // MARK: - Cycle sessions within active project
+    // MARK: - Cycle workspaces
 
-    func nextSession() {
-        guard projs.indices.contains(activeP), !projs[activeP].sessions.isEmpty else { return }
-        let count = projs[activeP].sessions.count
-        activeS = (activeS + 1) % count
-        showActive()
+    func nextWorkspace() {
+        guard !wss.isEmpty else { return }
+        selectWorkspace((activeW + 1) % wss.count)
     }
 
-    func prevSession() {
-        guard projs.indices.contains(activeP), !projs[activeP].sessions.isEmpty else { return }
-        let count = projs[activeP].sessions.count
-        activeS = (activeS - 1 + count) % count
-        showActive()
+    func prevWorkspace() {
+        guard !wss.isEmpty else { return }
+        selectWorkspace((activeW - 1 + wss.count) % wss.count)
     }
 
-    func selectSessionInActiveProject(_ i: Int) {
-        guard projs.indices.contains(activeP), projs[activeP].sessions.indices.contains(i - 1) else { return }
-        activeS = i - 1
-        let k = ObjectIdentifier(activeTree)
-        attention.remove(k); attentionAt[k] = nil
-        showActive()
-    }
+    /// 1-based select (the prefix digit keys count sidebar rows from 1).
+    func selectWorkspaceNumber(_ n: Int) { selectWorkspace(n - 1) }
 
     // MARK: - Drag-reorder (sidebar)
 
@@ -673,46 +574,64 @@ final class Workspace {
         return order
     }
 
-    /// Move a whole project block from `from` to drop-gap `gap`. Keeps activeP on the same
-    /// project and refreshes all windows. Order is RESTORED from windows.json (hydrate keeps
-    /// array order); projects.json only re-layers name/path/color — restorePersisted never
-    /// reorders. `id` is the identity captured at drag start: the store can mutate mid-drag
-    /// (another window, `vesta kill`), so a shifted index aborts as a no-op.
-    func moveProject(from: Int, gap: Int, id: String) {
-        guard projs.indices.contains(from), projs[from].id == id else { return }
-        let order = Self.movedOrder(count: projs.count, from: from, gap: gap)
-        guard order != Array(projs.indices) else { return }   // no-op drop
-        projs = order.map { projs[$0] }
-        activeP = order.firstIndex(of: activeP) ?? activeP
-        saveProjects()
+    /// The top-level rows: each ungrouped workspace is its own unit, and each CONTIGUOUS
+    /// run of same-group workspaces fuses into one unit (a group drags as one block).
+    /// Purely positional — keeping members contiguous is the move ops' job. Pure; selfchecked.
+    nonisolated static func topLevelUnits(groupIDs: [String?]) -> [[Int]] {
+        var units: [[Int]] = []
+        for (i, gid) in groupIDs.enumerated() {
+            if let gid, let last = units.last, let li = last.last, groupIDs[li] == gid {
+                units[units.count - 1].append(i)
+            } else {
+                units.append([i])
+            }
+        }
+        return units
+    }
+
+    /// Move a top-level row (a bare workspace, or a whole group block) from unit index
+    /// `from` to drop-gap `gap`. Order is RESTORED from windows.json (hydrate keeps array
+    /// order). `id` is the identity captured at drag start — the workspace's paneID, or the
+    /// group's id: the store can mutate mid-drag (another window, `vesta kill`), so a
+    /// shifted index aborts as a no-op.
+    func moveTopLevel(from: Int, gap: Int, id: String) {
+        let units = Self.topLevelUnits(groupIDs: wss.map(\.groupID))
+        guard units.indices.contains(from) else { return }
+        let anchor = units[from][0]
+        let unitID = wss[anchor].groupID ?? wss[anchor].tree.paneID
+        guard unitID == id else { return }
+        let order = Self.movedOrder(count: units.count, from: from, gap: gap)
+        guard order != Array(units.indices) else { return }   // no-op drop
+        let activeID = activeTreeIfAny?.paneID
+        wss = order.flatMap { units[$0] }.map { wss[$0] }
+        // Indices moved wholesale — re-find the active row by identity.
+        if let activeID { activeW = wss.firstIndex { $0.tree.paneID == activeID } ?? activeW }
         handleChange()   // renders immediately (handleChange → store.renderNow)
     }
 
-    /// Reorder a session WITHIN its project (`p`) from `from` to drop-gap `gap`. Keeps the
-    /// active session pinned; order persists via windows.json (serialize writes session order).
-    /// `id` is the dragged tree's paneID captured at drag start — a store that shifted
-    /// mid-drag (session closed elsewhere) no longer matches, and the drop aborts as a no-op.
-    func moveSession(_ p: Int, from: Int, gap: Int, id: String) {
-        guard projs.indices.contains(p), projs[p].sessions.indices.contains(from),
-              projs[p].sessions[from].paneID == id else { return }
-        let order = Self.movedOrder(count: projs[p].sessions.count, from: from, gap: gap)
-        guard order != Array(projs[p].sessions.indices) else { return }   // no-op drop
-        projs[p].sessions = order.map { projs[p].sessions[$0] }
-        if activeP == p { activeS = order.firstIndex(of: activeS) ?? activeS }
+    /// Reorder a workspace WITHIN group `g` from `from` to drop-gap `gap` (indices are
+    /// positions in the group's span, not the flat list). `id` is the dragged tree's paneID
+    /// captured at drag start — a store that shifted mid-drag no longer matches, no-op.
+    func moveMember(_ g: Int, from: Int, gap: Int, id: String) {
+        guard groups.indices.contains(g) else { return }
+        let span = wss.indices.filter { wss[$0].groupID == groups[g].id }   // contiguous
+        guard span.indices.contains(from), wss[span[from]].tree.paneID == id else { return }
+        let order = Self.movedOrder(count: span.count, from: from, gap: gap)
+        guard order != Array(span.indices) else { return }   // no-op drop
+        let activeID = activeTreeIfAny?.paneID
+        let reordered = order.map { wss[span[$0]] }
+        for (k, idx) in span.enumerated() { wss[idx] = reordered[k] }
+        if let activeID { activeW = wss.firstIndex { $0.tree.paneID == activeID } ?? activeW }
         handleChange()
     }
 
     // MARK: - Private helpers
 
-    private func makeProj(name: String, path: String, expanded: Bool, id: String = "") -> Proj {
-        Proj(id: id, name: name, path: path, sessions: [], expanded: expanded, color: nil)
-    }
-
-    /// Mark a background session as needing attention (driven by the prompt-return
+    /// Mark a background workspace as needing attention (driven by the prompt-return
     /// poller in AppDelegate — a background command finished). No-op for the active
-    /// session (you're already looking at it).
+    /// workspace (you're already looking at it).
     func markAttention(_ tree: PaneTree) {
-        guard tree !== activeTree else { return }
+        guard tree !== activeTreeIfAny else { return }
         let k = ObjectIdentifier(tree)
         attentionAt[k] = attentionAt[k] ?? Date()
         // Only a state CHANGE re-renders — a process spamming bells doesn't get an
@@ -740,8 +659,8 @@ final class Workspace {
         tree.onFocusChange = { [weak store = store] in store?.broadcast() }
         tree.onAttention = { [weak self, weak tree] in
             guard let self, let tree else { return }
-            // Only ring if this session isn't the one you're looking at.
-            if tree !== self.activeTree {
+            // Only ring if this workspace isn't the one you're looking at.
+            if tree !== self.activeTreeIfAny {
                 let k = ObjectIdentifier(tree)
                 self.attentionAt[k] = self.attentionAt[k] ?? Date()
                 // Bell spam is free after the first ring (see markAttention).
@@ -752,7 +671,7 @@ final class Workspace {
     }
 
     private func showActive() {
-        store.lastActive = (activeP, activeS)   // remember for reopen-after-close
+        store.lastActive = activeW   // remember for reopen-after-close
         // Outgoing session first: exits that finished while it was ACTIVE were watched —
         // they must not light up as "unseen" heat the moment you switch away.
         if let prev = lastShown, prev !== activeTree { TailStore.shared.markSeen(prev.paneIDs) }
@@ -831,7 +750,7 @@ final class Workspace {
         theme = t
         container.layer?.backgroundColor = VestaConfig.shared.terminalOpacity < 1
             ? NSColor.clear.cgColor : t.background.cgColor
-        for p in projs { for s in p.sessions { s.applyTheme(t) } }
+        for w in wss { w.tree.applyTheme(t) }
     }
 
     private func handleChange() {
@@ -849,106 +768,24 @@ final class Workspace {
 /// Pure data-model checks that work without a running NSApp / ghostty.
 /// Called from the `selfcheck` exit path; does NOT create PaneTree or TerminalPane.
 func workspaceSelfCheck() {
-    let home = NSHomeDirectory()
+    // ── topLevelUnits: consecutive same-group indices fuse into one unit ──────
+    // wss groupIDs: [nil, "g1", "g1", nil, "g2"] → units [[0],[1,2],[3],[4]]
+    let units = Workspace.topLevelUnits(groupIDs: [nil, "g1", "g1", nil, "g2"])
+    assert(units == [[0], [1, 2], [3], [4]], "group members fuse into one top-level unit")
+    assert(Workspace.topLevelUnits(groupIDs: []) == [], "empty store → no units")
+    assert(Workspace.topLevelUnits(groupIDs: [nil, nil]) == [[0], [1]], "ungrouped are singletons")
+    // Non-contiguous same-group ids DO NOT fuse (contiguity is an invariant the
+    // move ops maintain; units are computed positionally):
+    assert(Workspace.topLevelUnits(groupIDs: ["g1", nil, "g1"]) == [[0], [1], [2]],
+           "units are positional — contiguity is the ops' job")
 
-    // ── Proj struct and SidebarProject/SidebarSession construction ──────────
-    var homeProj = Proj(name: "~", path: home, sessions: [], expanded: true)
-    assert(homeProj.path == home, "home proj path")
-    assert(homeProj.sessions.isEmpty, "fresh proj has no sessions")
-    assert(homeProj.expanded, "home proj starts expanded")
+    // ── top-level reorder = movedOrder over units, then flatten ───────────────
+    let flat = Workspace.movedOrder(count: 4, from: 1, gap: 0).flatMap { units[$0] }
+    assert(flat == [1, 2, 0, 3, 4], "moving the group block to the top carries both members")
 
-    var configProj = Proj(name: "code", path: "/Users/test/code", sessions: [], expanded: false)
-    assert(!configProj.expanded, "config proj starts collapsed")
-
-    // ── SidebarSession / SidebarProject ─────────────────────────────────────
-    let ss1 = SidebarSession(label: "shell", active: true)
-    let ss2 = SidebarSession(label: "vim", active: false)
-    assert(ss1.active && !ss2.active, "session active flags")
-
-    let sp = SidebarProject(name: "~", branch: "main", expanded: true, active: true, sessions: [ss1, ss2])
-    assert(sp.sessions.count == 2, "sidebar project session count")
-    assert(sp.branch == "main", "branch passthrough")
-    assert(sp.active && sp.expanded, "project flags")
-
-    // ── toggleExpand semantics: empty → create session; non-empty → flip ───────
-    // The real Workspace.toggleExpand branches on sessions.isEmpty; verify the predicate.
-    assert(homeProj.sessions.isEmpty == true, "toggleExpand: empty project takes the create-session branch")
-    homeProj.expanded = true
-    assert(homeProj.expanded, "toggleExpand on empty → expanded")
-
-    configProj.expanded.toggle()
-    assert(configProj.expanded, "toggleExpand on non-empty flips expanded")
-    configProj.expanded.toggle()
-    assert(!configProj.expanded, "toggleExpand twice → back to false")
-
-    // ── closeSession invariant: replaceOnClose is the real decision function ───
-    assert(Workspace.replaceOnClose(totalSessions: 1) == true,  "last session triggers replace, not remove")
-    assert(Workspace.replaceOnClose(totalSessions: 2) == false, "two sessions: safe to remove one")
-
-    // ── newProject appends and sets activeP to the new index ─────────────────
-    var projs: [Proj] = [homeProj, configProj]
-    let before = projs.count
-    projs.append(Proj(name: "~", path: home, sessions: [], expanded: true))
-    var activeP = projs.count - 1
-    assert(projs.count == before + 1, "newProject appended")
-    assert(activeP == projs.count - 1, "newProject activates new index")
-
-    // ── appendProject: starts collapsed + empty ───────────────────────────────
-    projs.append(Proj(name: "tmp", path: "/tmp", sessions: [], expanded: false))
-    let emptyIdx = projs.count - 1
-    assert(projs[emptyIdx].sessions.isEmpty, "appendProject: starts empty")
-    assert(!projs[emptyIdx].expanded, "appendProject: starts collapsed")
-
-    // ── toggleExpand on empty project: takes the create-session branch ───────
-    // Real Workspace.toggleExpand branches on sessions.isEmpty; verify the predicate holds.
-    assert(projs[emptyIdx].sessions.isEmpty == true, "toggleExpand on empty: would take create-session branch")
-    projs[emptyIdx].expanded = true
-    activeP = emptyIdx
-    assert(activeP == emptyIdx, "toggleExpand on empty: activates the project")
-
-    // ── removeProject: refuse last; fix activeP when removing at/before it ─────
-    // Mirrors removeProject's index math (the real method needs a live Workspace).
-    func fixActiveP(_ active: Int, removed p: Int, count: Int) -> Int {
-        var a = active
-        if a >= p { a = max(0, a - 1) }
-        return min(a, count - 1)
-    }
-    assert(fixActiveP(2, removed: 0, count: 2) == 1, "remove before active shifts it down")
-    assert(fixActiveP(0, removed: 1, count: 2) == 0, "remove after active leaves it")
-    assert(fixActiveP(1, removed: 1, count: 1) == 0, "remove active clamps into range")
-
-    // ── Attention: set when signalled while NOT the active session; clear on select ──
-    func attn(active: Bool) -> Bool { !active }     // mirrors Workspace.attentionFired guard
-    assert(attn(active: false) == true,  "signal on background session → ring")
-    assert(attn(active: true)  == false, "signal on focused session → no ring")
-
-    // ── Per-session snapshot is {cwd, paneID, name}; hydrate accepts dict + legacy ──
-    func snap(cwd: String, paneID: String, name: String?) -> [String: Any] {
-        var d: [String: Any] = ["cwd": cwd, "paneID": paneID]
-        if let name { d["name"] = name }
-        return d
-    }
-    // New dict shape: read back all three fields.
-    let s = snap(cwd: "/tmp", paneID: "PID-1", name: "build")
-    assert(s["cwd"] as? String == "/tmp", "snapshot cwd round-trips")
-    assert(s["paneID"] as? String == "PID-1", "snapshot paneID round-trips")
-    assert(s["name"] as? String == "build", "snapshot name round-trips")
-    // nil name is simply absent (not stored as NSNull).
-    let s2 = snap(cwd: "/tmp", paneID: "PID-2", name: nil)
-    assert(s2["name"] == nil, "nil name is omitted from the snapshot")
-
-    // hydrate's reader: a session entry may be the new dict OR a legacy bare cwd string.
-    func readSession(_ entry: Any) -> (cwd: String, paneID: String?, name: String?) {
-        if let d = entry as? [String: Any] {
-            return (d["cwd"] as? String ?? home, d["paneID"] as? String, d["name"] as? String)
-        }
-        if let cwd = entry as? String { return (cwd, nil, nil) }   // legacy windows.json
-        return (home, nil, nil)
-    }
-    let r1 = readSession(s)
-    assert(r1.cwd == "/tmp" && r1.paneID == "PID-1" && r1.name == "build", "reads new dict entry")
-    let r2 = readSession("/legacy/path")   // pre-M2 format
-    assert(r2.cwd == "/legacy/path" && r2.paneID == nil && r2.name == nil, "reads legacy string entry")
+    // ── closeWorkspace invariant: replaceOnClose is the real decision function ─
+    assert(Workspace.replaceOnClose(totalSessions: 1) == true, "last ws replaced not removed")
+    assert(Workspace.replaceOnClose(totalSessions: 2) == false, "two ws: safe to remove")
 
     // ── Drag-reorder: dropGap counts midpoints above the cursor (window y-up) ──────
     // Three rows at y = 90 (top), 60, 30 (bottom).
