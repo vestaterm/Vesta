@@ -37,6 +37,7 @@ final class VestaWindowController: NSWindowController {
     private let onSetWorkspaceColor:  (Int, NSColor?) -> Void
     private let onSetGroupColor:      (Int, NSColor?) -> Void
     private let onRemoveGroup:        (Int) -> Void
+    private let onUngroup:            (Int) -> Void          // dissolve group, keep its workspaces
     private let onGroupFromWorkspace: (Int) -> Void
     private let onMoveToGroup:        (Int, String?) -> Void   // (ws, group id; nil ⇒ ungroup)
     private let onNewWorktree:        (Int, String) -> Void    // (ws, branch)
@@ -109,6 +110,7 @@ final class VestaWindowController: NSWindowController {
          onSetWorkspaceColor: @escaping (Int, NSColor?) -> Void = { _, _ in },
          onSetGroupColor:     @escaping (Int, NSColor?) -> Void = { _, _ in },
          onRemoveGroup:       @escaping (Int) -> Void           = { _ in },
+         onUngroup:           @escaping (Int) -> Void           = { _ in },
          onGroupFromWorkspace: @escaping (Int) -> Void          = { _ in },
          onMoveToGroup:     @escaping (Int, String?) -> Void = { _, _ in },
          onNewWorktree:     @escaping (Int, String) -> Void  = { _, _ in },
@@ -130,6 +132,7 @@ final class VestaWindowController: NSWindowController {
         self.onSetWorkspaceColor = onSetWorkspaceColor
         self.onSetGroupColor     = onSetGroupColor
         self.onRemoveGroup       = onRemoveGroup
+        self.onUngroup           = onUngroup
         self.onGroupFromWorkspace = onGroupFromWorkspace
         self.onMoveToGroup     = onMoveToGroup
         self.onNewWorktree     = onNewWorktree
@@ -378,12 +381,18 @@ final class VestaWindowController: NSWindowController {
             empty.textColor = txt(.faint)
             stack.addArrangedSubview(padded(empty, left: 20, right: 16))
         } else {
+            // Every group in render order — the "Move to group ▸" submenu of each workspace
+            // row is built from this (each row drops its OWN group before showing it).
+            let groups: [(id: String, name: String)] = items.compactMap {
+                guard case let .group(g) = $0 else { return nil }
+                return (id: g.id, name: g.name)
+            }
             for (i, item) in items.enumerated() {
                 var last: NSView
                 switch item {
                 case let .workspace(w):
                     // Top-level workspace: full stack width, no group indent.
-                    let row = makeWorkspaceRow(w)
+                    let row = makeWorkspaceRow(w, groups: groups)
                     stack.addArrangedSubview(row)
                     row.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
                     last = row
@@ -396,7 +405,8 @@ final class VestaWindowController: NSWindowController {
                     if !g.collapsed {
                         stack.setCustomSpacing(3, after: header)   // tighter gap before members
                         for m in g.members {
-                            let row = makeWorkspaceRow(m, groupIdx: g.groupIndex)
+                            let row = makeWorkspaceRow(m, groupIdx: g.groupIndex,
+                                                       groups: groups.filter { $0.id != g.id })
                             stack.addArrangedSubview(row)
                             row.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -8).isActive = true
                             last = row
@@ -670,8 +680,9 @@ final class VestaWindowController: NSWindowController {
             row.heightAnchor.constraint(equalToConstant: 26),
         ])
 
-        row.toolTip = "click to collapse/expand · drag to reorder"
+        row.toolTip = "click to collapse/expand · drag to reorder · right-click for options"
         row.onClick = { [weak self] in self?.onToggleGroup(g.groupIndex) }
+        row.menu = makeGroupMenu(g)
         row.identity = g.id
         wireDrag(row, isMember: false)
         return row
@@ -681,8 +692,10 @@ final class VestaWindowController: NSWindowController {
     /// to 4 verbatim scrollback lines (TailStore). Heat is paint only: the inner-left rail
     /// tints while the workspace waits for you (attention), never the geometry.
     /// × is hover-revealed; the whole card selects. `groupIdx` is the enclosing group's
-    /// index (−1 for a top-level workspace) — it picks the member drag lane.
-    private func makeWorkspaceRow(_ w: SidebarWorkspace, groupIdx: Int = -1) -> NSView {
+    /// index (−1 for a top-level workspace) — it picks the member drag lane. `groups` are the
+    /// move-to targets for the context menu (caller drops the row's own group).
+    private func makeWorkspaceRow(_ w: SidebarWorkspace, groupIdx: Int = -1,
+                                  groups: [(id: String, name: String)] = []) -> NSView {
         let active = w.active
         // Per-workspace tint (nil ⇒ the theme accent): drives the heat rail, the meta run
         // and the card outline, so a colored workspace reads as its own thing.
@@ -806,12 +819,15 @@ final class VestaWindowController: NSWindowController {
         closeBtn.alphaValue = 0   // hover-revealed: no permanent destructive target
 
         // Heat rail (paint only, never geometry): bright tint = waiting for you,
-        // amber = unseen failure, soft tint = unseen success.
+        // amber = unseen failure, soft tint = unseen success. At rest the rail is blank —
+        // EXCEPT when the workspace carries its own color, which then rests on the rail so a
+        // color set from the context menu is always visible (the active card shows it in its
+        // background + outline instead). Uncolored workspaces paint exactly as before.
         let railColor: NSColor = switch w.heat {
         case .need: tint
         case .warn: Self.heatAmber
         case .ok:   tint.withAlphaComponent(0.45)
-        case .none: .clear
+        case .none: active ? .clear : (w.color?.withAlphaComponent(0.45) ?? .clear)
         }
         let bar = accentBar(railColor)
 
@@ -860,6 +876,7 @@ final class VestaWindowController: NSWindowController {
         row.onDoubleClick = { [weak self] in
             self?.promptRenameWorkspace(w.index, current: w.label)
         }
+        row.menu = makeWorkspaceMenu(w, groups: groups)
         row.identity = w.treeID
         // Grouped workspaces reorder INSIDE their group (member lane); a top-level
         // workspace is its own unit in the top-level lane, alongside group headers.
@@ -1201,6 +1218,106 @@ final class VestaWindowController: NSWindowController {
         img.unlockFocus()
         swatchCache[color] = img
         return img
+    }
+
+    /// Shared "Color ▸" submenu — presets + reset, both routed through one setter, so the
+    /// workspace and group menus can't drift apart.
+    private func colorMenuItem(_ set: @escaping (NSColor?) -> Void) -> NSMenuItem {
+        let item = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for (label, color) in Self.colorPresets {
+            let entry = BlockMenuItem(title: label) { set(color) }
+            entry.image = Self.swatch(color)
+            sub.addItem(entry)
+        }
+        sub.addItem(.separator())
+        sub.addItem(BlockMenuItem(title: "Reset to accent") { set(nil) })
+        item.submenu = sub
+        return item
+    }
+
+    /// Right-click menu of a workspace card. `groups` are the move-to targets — the caller has
+    /// already dropped the row's OWN group (moving a workspace where it already is is a no-op).
+    /// Rebuilt with the row on every setSidebar pass, so it always reflects current truth.
+    private func makeWorkspaceMenu(_ w: SidebarWorkspace, groups: [(id: String, name: String)]) -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(BlockMenuItem(title: "Rename…") { [weak self] in
+            self?.promptRenameWorkspace(w.index, current: w.label)
+        })
+        menu.addItem(colorMenuItem { [weak self] color in self?.onSetWorkspaceColor(w.index, color) })
+        menu.addItem(BlockMenuItem(title: "New worktree workspace…") { [weak self] in
+            self?.promptWorktree(w.index)
+        })
+
+        // Grouping. An ungrouped workspace can start a group around itself; a grouped one
+        // already has one, so it only moves (or leaves).
+        menu.addItem(.separator())
+        if !w.grouped {
+            menu.addItem(BlockMenuItem(title: "New group from workspace") { [weak self] in
+                self?.onGroupFromWorkspace(w.index)
+            })
+        }
+        if !groups.isEmpty || w.grouped {
+            let move = NSMenuItem(title: "Move to group", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for g in groups {
+                sub.addItem(BlockMenuItem(title: g.name) { [weak self] in self?.onMoveToGroup(w.index, g.id) })
+            }
+            if w.grouped {
+                if !groups.isEmpty { sub.addItem(.separator()) }
+                sub.addItem(BlockMenuItem(title: "Remove from group") { [weak self] in
+                    self?.onMoveToGroup(w.index, nil)
+                })
+            }
+            move.submenu = sub
+            menu.addItem(move)
+        }
+
+        menu.addItem(.separator())
+        menu.addItem(BlockMenuItem(title: "Close Workspace") { [weak self] in
+            self?.confirmCloseWorkspace(w.index, name: w.label)
+        })
+        return menu
+    }
+
+    /// Right-click menu of a group divider. Ungroup keeps every workspace (only the packaging
+    /// goes); Remove Group closes them — hence the confirm on one and not the other.
+    private func makeGroupMenu(_ g: SidebarGroup) -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(BlockMenuItem(title: "Rename…") { [weak self] in
+            self?.promptRenameGroup(g.groupIndex, current: g.name)
+        })
+        menu.addItem(colorMenuItem { [weak self] color in self?.onSetGroupColor(g.groupIndex, color) })
+        menu.addItem(BlockMenuItem(title: "Ungroup (keep workspaces)") { [weak self] in
+            self?.onUngroup(g.groupIndex)
+        })
+
+        menu.addItem(.separator())
+        menu.addItem(BlockMenuItem(title: "Remove Group…") { [weak self] in
+            self?.confirmRemoveGroup(g.groupIndex, name: g.name, count: g.members.count)
+        })
+        return menu
+    }
+
+    /// Removing a group tears down the live workspaces inside it — confirm first.
+    private func confirmRemoveGroup(_ gi: Int, name: String, count: Int) {
+        let alert = NSAlert()
+        alert.messageText = "Remove “\(name)”?"
+        alert.informativeText = "This closes the group's \(count) workspace\(count == 1 ? "" : "s") and any running programs in them."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn { onRemoveGroup(gi) }
+    }
+
+    /// Closing a workspace kills its panes — confirm on the menu path (the hover × stays the
+    /// quick, no-questions route).
+    private func confirmCloseWorkspace(_ i: Int, name: String) {
+        let alert = NSAlert()
+        alert.messageText = "Close “\(name)”?"
+        alert.informativeText = "This closes running programs in this workspace."
+        alert.addButton(withTitle: "Close")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn { onCloseWorkspace(i) }
     }
 
     /// Lazy native rename: a small modal NSAlert with a text field (group context menu).
