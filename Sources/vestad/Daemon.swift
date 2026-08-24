@@ -32,16 +32,18 @@ final class Daemon {
     // UI). Their logs are deleted IMMEDIATELY on reap — no resurrection is expected, so the
     // grace delay (which exists only to survive a racing daemon death) doesn't apply.
     private var explicitKills: Set<String> = []
-    // Persist scrollback to disk? Off by default; read once from config at startup.
+    // Persist scrollback to disk? On by default; read once from config at startup.
     private let logEnabled = Daemon.scrollbackEnabled()
     // Inject our zsh shell integration (OSC 133 command marks → sidebar heat)? On by default;
     // opt out with `vesta-shell-integration = false`. Read once from config at startup.
     private let shellIntegration = Daemon.boolConfig("vesta-shell-integration", default: true)
 
-    /// Read `vesta-persist-scrollback` from the Vesta config (XDG-aware). Default false —
-    /// terminal output can contain secrets, so on-disk persistence is strictly opt-in.
+    /// Read `vesta-persist-scrollback` from the Vesta config (XDG-aware). Default true — cold
+    /// restore (scrollback + the restart divider after a reboot) works out of the box. The logs
+    /// are 0600 under the mux dir and capped; opt out with `vesta-persist-scrollback = false`
+    /// when terminal output may hold secrets you don't want on disk.
     private static func scrollbackEnabled() -> Bool {
-        boolConfig("vesta-persist-scrollback", default: false)
+        boolConfig("vesta-persist-scrollback", default: true)
     }
 
     /// Read a boolean `key = true/1/yes` from the Vesta config (XDG-aware), or `default` if

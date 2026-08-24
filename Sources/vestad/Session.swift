@@ -48,8 +48,8 @@ final class Session {
     /// it stays false for a genuinely new pane and for an upgrade-adopted (live) session.
     private(set) var seededFromLog = false
 
-    /// Whether to persist scrollback to disk (off by default — terminal output can hold
-    /// secrets; opt in via `vesta-persist-scrollback = true`). Read once by the daemon.
+    /// Whether to persist scrollback to disk (on by default, 0600 — opt out via
+    /// `vesta-persist-scrollback = false` when output may hold secrets). Read once by the daemon.
     private let logEnabled: Bool
 
     init?(paneID: String, cols rawCols: Int32, rows rawRows: Int32, cwd: String? = nil, logEnabled: Bool = false, shellIntegration: Bool = false) {
