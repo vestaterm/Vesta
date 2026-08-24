@@ -42,6 +42,11 @@ final class Session {
     private var logFD: Int32 = -1
     private var logBytes = 0
     private static let logCap = 512 * 1024
+    /// True when this session's replay ring was seeded from a PRIOR on-disk log — i.e. a cold
+    /// restore: the scrollback outlived the daemon (reboot / crash) but the shell behind it did
+    /// not. The daemon uses this to stamp a restart divider into the ring (see coldRestoreBanner);
+    /// it stays false for a genuinely new pane and for an upgrade-adopted (live) session.
+    private(set) var seededFromLog = false
 
     /// Whether to persist scrollback to disk (off by default — terminal output can hold
     /// secrets; opt in via `vesta-persist-scrollback = true`). Read once by the daemon.
@@ -142,6 +147,7 @@ final class Session {
             // mid-sequence cut replays as literal junk (`;2;215;119;87m`) across the pane.
             ring = ringSuffixFromSafeBoundary(data, cap: Session.ringCap)
             logBytes = data.count
+            seededFromLog = true   // history from a dead daemon's shell — the caller marks the cut
         }
         logFD = open(path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
         setCloseOnExec(logFD)   // scrollback log must not leak into forked shells
