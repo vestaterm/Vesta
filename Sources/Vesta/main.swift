@@ -1507,9 +1507,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 /// Seed the `vesta-projects = ~/a, ~/b` paths as dormant top-level workspaces. Runs on
-/// EVERY window that owns the pool, not just an empty one — appendConfigWorkspace dedupes
-/// by cwd, so a path added to the config after a restore still shows up and a restored one
-/// is never duplicated.
+/// EVERY window that owns the pool, not just an empty one — appendConfigWorkspace dedupes on
+/// the seeded path it recorded (falling back to the live cwd), so a path added to the config
+/// after a restore still shows up, and a restored row is never duplicated even after you `cd`
+/// its shell somewhere else.
 @MainActor
 func seedConfigWorkspaces(_ settings: [String: String], into workspace: Workspace) {
     let raw =

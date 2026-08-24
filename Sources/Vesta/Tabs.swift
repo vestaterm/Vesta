@@ -80,6 +80,10 @@ struct WS {
     var tree: PaneTree
     var color: NSColor? = nil    // custom tint, set via the sidebar context menu
     var groupID: String? = nil   // nil ⇒ top-level (ungrouped)
+    /// The `vesta-projects` config path this row was SEEDED from, if any. Provenance, not
+    /// location: the row's cwd follows the shell (a `cd` moves it), while this doesn't — so
+    /// the seeding pass can still recognise its own row and refuses to seed a second one.
+    var seededFrom: String? = nil
 }
 
 /// App-owned shared workspace pool: holds the workspaces (PaneTrees own the live ghostty
@@ -211,8 +215,18 @@ final class Workspace {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue
         else { return }
-        guard !wss.contains(where: { $0.tree.focusedCwd == path }) else { return }
-        wss.append(WS(tree: makeDormant(layout: ["paneID": UUID().uuidString, "cwd": path])))
+        guard !Self.alreadySeeded(seeds: wss.map(\.seededFrom), cwds: wss.map { $0.tree.focusedCwd },
+                                  path: path) else { return }
+        wss.append(WS(tree: makeDormant(layout: ["paneID": UUID().uuidString, "cwd": path]),
+                      seededFrom: path))
+    }
+
+    /// Does this config path already own a row? Provenance FIRST (`seededFrom`), because a
+    /// seeded row's cwd follows its shell: `cd` out of it and a live-cwd-only match would seed
+    /// a duplicate on the next launch, forever. The live-cwd fallback still covers rows
+    /// written before provenance existed, and a row you happen to be standing in.
+    nonisolated static func alreadySeeded(seeds: [String?], cwds: [String?], path: String) -> Bool {
+        seeds.contains(path) || cwds.contains(path)
     }
 
     func selectWorkspace(_ i: Int) {
@@ -494,6 +508,8 @@ final class Workspace {
             if let nm = w.tree.name { d["name"] = nm }
             if let c = w.color { d["color"] = hexString(c) }
             if let g = w.groupID { d["groupID"] = g }
+            // Provenance for the config-seeding pass (additive — older readers ignore it).
+            if let s = w.seededFrom { d["seededFrom"] = s }
             return d
         }
         return ["groups": groupsData, "workspaces": wsData, "activeWorkspace": activeW]
@@ -556,7 +572,8 @@ final class Workspace {
             wss.append(WS(tree: makeDormant(layout: fixDirs(layout, fallback: cwd),
                                             name: d["name"] as? String),
                           color: (d["color"] as? String).flatMap { ghosttyColor($0) },
-                          groupID: gid))
+                          groupID: gid,
+                          seededFrom: d["seededFrom"] as? String))
         }
 
         // Invariant: ≥1 workspace.
@@ -832,6 +849,17 @@ func workspaceSelfCheck() {
     assert(Workspace.replaceOnClose(totalSessions: 1) == true, "last ws replaced not removed")
     assert(Workspace.replaceOnClose(totalSessions: 2) == false, "two ws: safe to remove")
 
+    // ── Config seeding dedupes on PROVENANCE, so a `cd` can't fork a second row ────
+    // A row seeded from /p still owns /p after its shell walked to /elsewhere.
+    assert(Workspace.alreadySeeded(seeds: ["/p"], cwds: ["/elsewhere"], path: "/p"),
+           "seeded row survives a cd — no duplicate on the next launch")
+    // Pre-provenance rows (nothing seeded) still match by the live cwd.
+    assert(Workspace.alreadySeeded(seeds: [nil], cwds: ["/p"], path: "/p"),
+           "a row already standing at the path counts (legacy files carry no provenance)")
+    assert(!Workspace.alreadySeeded(seeds: [nil, "/q"], cwds: ["/x", "/y"], path: "/p"),
+           "an unseeded, unvisited path IS seeded")
+    assert(!Workspace.alreadySeeded(seeds: [], cwds: [], path: "/p"), "empty store seeds")
+
     // ── Drag-reorder: dropGap counts midpoints above the cursor (window y-up) ──────
     // Three rows at y = 90 (top), 60, 30 (bottom).
     let midYs: [CGFloat] = [90, 60, 30]
@@ -1045,6 +1073,17 @@ func windowsFormatSelfCheck() {
     let v1file = try! JSONSerialization.data(withJSONObject: ["version": 1, "windows": [v1entry]])
     let pm = parseWindowsFile(v1file)
     assert((pm.windows.first?["workspaces"] as? [[String: Any]])?.count == 4, "v1 entries auto-migrate")
+
+    // `seededFrom` (config-seeding provenance) is additive: it rides through the file
+    // unchanged at the same version — no bump, and older readers just ignore the key.
+    let seeded: [String: Any] = ["groups": [], "activeWorkspace": 0,
+                                 "workspaces": [["paneID": "S1", "cwd": "/moved",
+                                                 "seededFrom": "/seed"]]]
+    let sfile = try! JSONSerialization.data(
+        withJSONObject: ["version": windowsFormatVersion, "windows": [seeded]])
+    let sparsed = parseWindowsFile(sfile)
+    assert((sparsed.windows[0]["workspaces"] as? [[String: Any]])?[0]["seededFrom"] as? String
+           == "/seed", "seededFrom survives the file round-trip at v2")
 
     // Corrupted / garbage input must not crash and must fall back to (0, []).
     assert(parseWindowsFile(Data("not json {{{".utf8)).windows.isEmpty, "garbage → empty")
