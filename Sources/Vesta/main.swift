@@ -664,24 +664,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let ctx = newWindow(hydrateFrom: first)  // hydrates inside init when `first` is present
         guard let data, let parsed, let first else { return }
         let (version, saved) = parsed
-        // Upgrade courtesy: keep the legacy (pre-versioning) file once, so a downgraded
-        // build — which reads the v1 dict as "no saved windows" and overwrites it — can
-        // be recovered manually from windows.json.v0.
-        if version == 0 {
-            try? data.write(to: URL(fileURLWithPath: Self.windowsFile + ".v0"), options: .atomic)
+        // Upgrade courtesy: keep the PRE-migration file once, so a downgraded build — which
+        // can't read the newer shape and overwrites it — can be recovered manually from
+        // windows.json.v<old version>.
+        if version < windowsFormatVersion {
+            try? data.write(to: URL(fileURLWithPath: Self.windowsFile + ".v\(version)"),
+                            options: .atomic)
         }
         // Entry 0 (the key window at save time) is authoritative for the shared pool — already
         // hydrated inside newWindow(hydrateFrom:) above.
         if let fd = first["frame"] as? String { ctx.controller.window?.setFrame(from: fd) }
         ctx.refresh()
         // v1+: recreate the other windows as views over the SAME pool — only their
-        // selection + frame are per-window (sessions live once, in the shared store).
+        // selection + frame are per-window (workspaces live once, in the shared store).
         // Legacy (version 0) files collapse to one window, as before.
         guard version >= 1 else { return }
         for entry in saved.dropFirst() {
             let extra = newWindow()
-            extra.workspace.selectSession(entry["activeProject"] as? Int ?? 0,
-                                          entry["activeSession"] as? Int ?? 0)
+            extra.workspace.selectWorkspace(entry["activeWorkspace"] as? Int ?? 0)
             if let fd = entry["frame"] as? String { extra.controller.window?.setFrame(from: fd) }
             extra.refresh()
         }
@@ -692,7 +692,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Persist every window's projects + sessions-by-cwd. Coalesced so rapid
+    /// Persist every window's workspaces + groups. Coalesced so rapid
     /// changes (focus/git callbacks) don't write on every tick.
     private func scheduleSave() {
         // relaunchingForUpdate too: this fires 0.6s late, so a save armed just before the
@@ -712,9 +712,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func saveWindows() {
         guard !windows.isEmpty else { return }
         let key = active
-        // ponytail: every entry repeats the shared project pool (Workspace.serialize
+        // ponytail: every entry repeats the shared workspace pool (Workspace.serialize
         // includes it; entry 0 is authoritative on restore). Split pool vs. per-window
-        // state in a v2 format if the duplication ever matters.
+        // state in a later format if the duplication ever matters.
         let ordered = [key].compactMap { $0 } + windows.filter { $0 !== key }
         let entries = ordered.map { w -> [String: Any] in
             var e = w.workspace.serialize()
@@ -1465,20 +1465,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Append config projects from `vesta-projects = ~/a, ~/b` into the workspace.
-/// The home project (index 0) is already created by Workspace.init; config
-/// projects are appended as collapsed + empty (lazy).
+/// Seed the `vesta-projects = ~/a, ~/b` paths as dormant top-level workspaces. Runs on
+/// EVERY window that owns the pool, not just an empty one — appendConfigWorkspace dedupes
+/// by cwd, so a path added to the config after a restore still shows up and a restored one
+/// is never duplicated.
 @MainActor
-func loadProjects(_ settings: [String: String], into workspace: Workspace) {
+func seedConfigWorkspaces(_ settings: [String: String], into workspace: Workspace) {
     let raw =
         settings["vesta-projects"]?
         .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } ?? []
-    let home = NSHomeDirectory()
     for raw in raw {
-        let path = (raw as NSString).expandingTildeInPath
-        guard path != home else { continue }  // don't duplicate the home project
-        let name = (path as NSString).lastPathComponent
-        workspace.appendProject(name: name, path: path)
+        workspace.appendConfigWorkspace(path: (raw as NSString).expandingTildeInPath)
     }
 }
 

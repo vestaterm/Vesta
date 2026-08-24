@@ -47,13 +47,12 @@ final class WindowContext {
         // Each window gets its OWN Workspace (own active selection + display body) over
         // the shared SessionStore. So window A can view untitled→2 while window B views
         // untitled→1 — both live, different sessions. The store is app-owned, so closing
-        // a window drops the view, never the sessions. First window to see an empty pool
-        // populates it (config projects + persisted state).
+        // a window drops the view, never the sessions. An empty pool is populated by
+        // Workspace.init (restore, else one ~ workspace) plus the config seeding below.
         let ws = Workspace(theme: theme, store: store, hydrateFrom: hydrateFrom)
-        if store.projs.isEmpty {
-            loadProjects(GhosttyApp.shared.settings, into: ws)
-            ws.restorePersisted()
-        }
+        // Unconditional: the seeding pass dedupes by cwd, so config paths added since the
+        // last save appear even when the pool was restored non-empty.
+        seedConfigWorkspaces(GhosttyApp.shared.settings, into: ws)
         self.workspace = ws
 
         // Same session-management closures as the single-window build, bound to

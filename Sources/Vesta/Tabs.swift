@@ -198,6 +198,15 @@ final class Workspace {
         luaFire("session-opened", tree.paneID)
     }
 
+    /// Seed a `vesta-projects` config path as a DORMANT top-level workspace at the end of
+    /// the list — a row you can click, costing no shell until you do. Deduped by cwd, so
+    /// re-running the seeding pass over a restored window is a no-op. Silent: no
+    /// showActive, no luaFire — nothing was opened.
+    func appendConfigWorkspace(path: String) {
+        guard !wss.contains(where: { $0.tree.focusedCwd == path }) else { return }
+        wss.append(WS(tree: makeDormant(layout: ["paneID": UUID().uuidString, "cwd": path])))
+    }
+
     func selectWorkspace(_ i: Int) {
         guard wss.indices.contains(i) else { return }
         activeW = i
@@ -453,8 +462,8 @@ final class Workspace {
     /// Snapshot for windows.json: the flat workspace list (each with its full split
     /// `layout` — topology + per-leaf paneID/cwd — so splits restore intact), the visual
     /// groups, and the active index. Live processes/scrollback can't be restored — each
-    /// leaf reopens as a fresh shell at its cwd.
-    /// ponytail: provisional v2 writer — Task 2 owns the versioned format + v0/v1 migration.
+    /// leaf reopens as a fresh shell at its cwd. This is the windows.json v2 entry shape
+    /// (see windowsFormatVersion); v0/v1 files are read through migrateWindowEntry.
     func serialize() -> [String: Any] {
         let groupsData: [[String: Any]] = groups.map { g in
             var d: [String: Any] = ["id": g.id, "name": g.name, "collapsed": g.collapsed]
@@ -536,6 +545,25 @@ final class Workspace {
         // Invariant: ≥1 workspace.
         if wss.isEmpty { wss.append(WS(tree: makeTree(cwd: NSHomeDirectory()))) }
         activeW = min(max(0, win["activeWorkspace"] as? Int ?? 0), wss.count - 1)
+        // A group's members must be CONTIGUOUS — the ops keep them that way and the
+        // migration emits them that way, but a hand-edited file can interleave them, and
+        // topLevelUnits is positional: an interleaved file would draw the same group header
+        // twice. Re-seat each stray row at the end of its group's first-seen run (stable,
+        // O(n) for an already-sorted file), then re-find the active row by identity.
+        let activeID = wss[activeW].tree.paneID
+        var seated: [WS] = []
+        for w in wss {
+            if let gid = w.groupID, let last = seated.lastIndex(where: { $0.groupID == gid }) {
+                seated.insert(w, at: last + 1)
+            } else {
+                seated.append(w)
+            }
+        }
+        wss = seated
+        activeW = wss.firstIndex { $0.tree.paneID == activeID } ?? activeW
+        // A group nothing points at has no rows to draw — same ≥1-member invariant the
+        // ops enforce via dropGroupIfEmpty.
+        groups.removeAll { g in !wss.contains { $0.groupID == g.id } }
         showActive()
     }
 
@@ -809,46 +837,165 @@ func workspaceSelfCheck() {
 
 // MARK: - windows.json format (versioned)
 
-/// windows.json format version. v1 = `{"version": 1, "windows": [entry…]}` with the
-/// key window's entry first; each entry is Workspace.serialize() + optional "frame"
-/// (NSWindow frameDescriptor). Pre-versioning files are a bare top-level array.
-let windowsFormatVersion = 1
+/// windows.json format version. v2 = `{"version": 2, "windows": [entry…]}` with the key
+/// window's entry first; each entry is Workspace.serialize() (`groups` + flat
+/// `workspaces` + `activeWorkspace`) plus an optional "frame" (NSWindow frameDescriptor).
+/// v1 was the same envelope around the old Project→Sessions shape; v0 (pre-versioning)
+/// was a bare top-level array of those. Both are read through migrateWindowEntry.
+let windowsFormatVersion = 2
 
-/// Decode windows.json bytes into (version, window entries). Pure — no I/O — so the
-/// selfcheck can exercise it. An unversioned top-level array is the legacy format →
-/// version 0. Corrupt/garbage JSON → (0, []): the caller falls back to a fresh window.
-/// Future format bumps branch HERE (migrate old shapes into the current one).
+/// One v0/v1 window entry (Project→Sessions) → the v2 flat shape. Pure and idempotent:
+/// an entry that already carries a `workspaces` key is returned untouched, so this can
+/// run over every entry regardless of the file's version.
+///
+/// The hierarchy collapses by session count, because that's what the sidebar actually
+/// showed: a 1-session project WAS one row → bare workspace; ≥2 sessions was a real
+/// block → a visual group (keeping the old project id, so nothing else needs rewriting)
+/// with one member per session; a 0-session (lazy config) project had a row you could
+/// click → one dormant workspace at its path. Nothing visible disappears.
+/// Members of a group are emitted contiguously — that contiguity is what makes a group
+/// one sidebar block.
+func migrateWindowEntry(_ entry: [String: Any]) -> [String: Any] {
+    if entry["workspaces"] != nil { return entry }   // already v2
+    var groups: [[String: Any]] = []
+    var wss: [[String: Any]] = []
+    let activeP = entry["activeProject"] as? Int ?? 0
+    let activeS = entry["activeSession"] as? Int ?? 0
+    var activeW = 0
+
+    for (pi, p) in (entry["projects"] as? [[String: Any]] ?? []).enumerated() {
+        let path = p["path"] as? String ?? NSHomeDirectory()
+        let name = p["name"] as? String ?? (path as NSString).lastPathComponent
+        let color = p["color"] as? String
+        // Sessions are dicts; in v0 files they were bare cwd strings.
+        let sessions: [[String: Any]] = (p["sessions"] as? [Any] ?? []).compactMap {
+            if let d = $0 as? [String: Any] { return d }
+            if let cwd = $0 as? String { return ["cwd": cwd] }
+            return nil
+        }
+        // Flatten the (project, session) cursor into the flat row it lands on.
+        if pi == activeP { activeW = wss.count + max(0, min(activeS, sessions.count - 1)) }
+
+        var groupID: String? = nil
+        if sessions.count >= 2 {
+            // Old project ids were unique; a hand-edited file's needn't be, and two groups
+            // sharing an id would swallow the second one's members under the first header.
+            var gid = p["id"] as? String ?? "g:\(UUID().uuidString)"
+            if groups.contains(where: { $0["id"] as? String == gid }) { gid = "g:\(UUID().uuidString)" }
+            var g: [String: Any] = ["id": gid, "name": name,
+                                    "collapsed": !(p["expanded"] as? Bool ?? true)]
+            if let color { g["color"] = color }
+            groups.append(g)
+            groupID = gid
+        }
+        guard !sessions.isEmpty else {
+            // Lazy config project (never opened): one dormant workspace at its path.
+            let pid = UUID().uuidString
+            var w: [String: Any] = ["paneID": pid, "cwd": path,
+                                    "layout": ["paneID": pid, "cwd": path]]
+            if name != (path as NSString).lastPathComponent { w["name"] = name }
+            if let color { w["color"] = color }
+            wss.append(w)
+            continue
+        }
+        for s in sessions {
+            let cwd = s["cwd"] as? String ?? path
+            let pid = s["paneID"] as? String ?? UUID().uuidString
+            var w: [String: Any] = ["paneID": pid, "cwd": cwd,
+                                    "layout": s["layout"] as? [String: Any]
+                                        ?? ["paneID": pid, "cwd": cwd]]
+            if let nm = s["name"] as? String { w["name"] = nm }
+            if let color { w["color"] = color }          // the project tint becomes each row's
+            if let groupID { w["groupID"] = groupID }
+            wss.append(w)
+        }
+    }
+
+    var out: [String: Any] = ["groups": groups, "workspaces": wss,
+                              "activeWorkspace": min(activeW, max(0, wss.count - 1))]
+    if let frame = entry["frame"] { out["frame"] = frame }   // per-window, not per-project
+    return out
+}
+
+/// Decode windows.json bytes into (version, window entries) — every entry migrated to the
+/// current shape. Pure — no I/O — so the selfcheck can exercise it. An unversioned
+/// top-level array is the legacy format → version 0. Corrupt/garbage JSON → (0, []): the
+/// caller falls back to a fresh window. The reported version is the file's, not the
+/// entries' — restoreWindows uses it to back up the pre-migration file.
 func parseWindowsFile(_ data: Data) -> (version: Int, windows: [[String: Any]]) {
     guard let json = try? JSONSerialization.jsonObject(with: data) else { return (0, []) }
-    if let legacy = json as? [[String: Any]] { return (0, legacy) }   // pre-versioning format
+    if let legacy = json as? [[String: Any]] {   // pre-versioning format
+        return (0, legacy.map(migrateWindowEntry))
+    }
     guard let dict = json as? [String: Any],
           let wins = dict["windows"] as? [[String: Any]] else { return (0, []) }
-    return (dict["version"] as? Int ?? windowsFormatVersion, wins)
+    return (dict["version"] as? Int ?? windowsFormatVersion, wins.map(migrateWindowEntry))
 }
 
 /// Format-level checks for windows.json (hydrate itself needs live PaneTrees/ghostty,
 /// so the selfcheck stops at the parse seam — see workspaceSelfCheck for entry reading).
 func windowsFormatSelfCheck() {
-    // Current (v1) format: version + entries round-trip, frame string survives.
+    // Current (v2) format: version + entries round-trip, frame string survives.
     let entry: [String: Any] = [
-        "projects": [["id": "home", "name": "home", "path": "/tmp",
-                      "sessions": [["cwd": "/tmp", "paneID": "P1"]]]],
-        "activeProject": 0, "activeSession": 0, "frame": "10 10 800 600 0 0 1920 1080 ",
+        "groups": [], "workspaces": [["paneID": "P1", "cwd": "/tmp", "name": "solo"]],
+        "activeWorkspace": 0, "frame": "10 10 800 600 0 0 1920 1080 ",
     ]
-    let v1 = try! JSONSerialization.data(
+    let v2 = try! JSONSerialization.data(
         withJSONObject: ["version": windowsFormatVersion, "windows": [entry, entry]])
-    let r1 = parseWindowsFile(v1)
-    assert(r1.version == windowsFormatVersion && r1.windows.count == 2, "v1 file parses")
-    assert((r1.windows[0]["projects"] as? [[String: Any]])?.count == 1, "v1 entry content intact")
-    assert(r1.windows[1]["frame"] as? String == "10 10 800 600 0 0 1920 1080 ", "frame survives")
-    // Legacy: bare top-level array, cwd-only string sessions (pre-M2) → version 0.
+    let r2 = parseWindowsFile(v2)
+    assert(r2.version == windowsFormatVersion && r2.windows.count == 2, "v2 file parses")
+    assert((r2.windows[0]["workspaces"] as? [[String: Any]])?.count == 1, "v2 entry content intact")
+    assert(r2.windows[1]["frame"] as? String == "10 10 800 600 0 0 1920 1080 ", "frame survives")
+    // Legacy: bare top-level array, cwd-only string sessions (pre-M2) → version 0, and the
+    // whole entry arrives migrated into the v2 shape.
     let legacy = Data(
         #"[{"projects": [{"id": "home", "name": "home", "path": "/tmp", "sessions": ["/tmp", "/x"]}]}]"#
             .utf8)
     let r0 = parseWindowsFile(legacy)
     assert(r0.version == 0 && r0.windows.count == 1, "legacy array → version 0")
-    let sess = ((r0.windows[0]["projects"] as? [[String: Any]])?.first?["sessions"] as? [Any]) ?? []
-    assert(sess.first as? String == "/tmp", "legacy cwd-only session entries preserved")
+    let lws = (r0.windows[0]["workspaces"] as? [[String: Any]]) ?? []
+    assert(lws.count == 2, "legacy cwd-only sessions → one workspace each")
+    assert(lws[0]["cwd"] as? String == "/tmp" && lws[1]["cwd"] as? String == "/x",
+           "legacy cwd-only session entries preserved")
+    assert(lws[0]["paneID"] as? String != nil, "legacy session gets a synthesized paneID")
+    assert((r0.windows[0]["groups"] as? [[String: Any]])?.count == 1,
+           "the 2-session project became a group")
+
+    // ── v1 → v2 migration: 1-session project → bare workspace; ≥2 → group + members ──
+    let v1entry: [String: Any] = [
+        "projects": [
+            ["id": "home", "name": "home", "path": "/tmp",
+             "sessions": [["cwd": "/tmp", "paneID": "P1", "name": "solo"]]],
+            ["id": "u:x", "name": "halo", "path": "/h", "color": "#8ec7a8",
+             "sessions": [["cwd": "/h", "paneID": "P2"], ["cwd": "/h/sub", "paneID": "P3"]]],
+            ["id": "cfg:/lazy", "name": "lazy", "path": "/lazy", "sessions": []],
+        ],
+        "activeProject": 1, "activeSession": 1,
+    ]
+    let m = migrateWindowEntry(v1entry)
+    let mws = m["workspaces"] as! [[String: Any]]
+    let mgs = m["groups"] as! [[String: Any]]
+    assert(mws.count == 4, "1 + 2 + 1 lazy = 4 workspaces")
+    assert(mgs.count == 1 && mgs[0]["name"] as? String == "halo", "only multi-session project → group")
+    assert(mws[0]["paneID"] as? String == "P1" && mws[0]["groupID"] == nil, "solo project → bare ws")
+    assert(mws[0]["name"] as? String == "solo", "session name survives")
+    assert(mws[1]["groupID"] as? String == mgs[0]["id"] as? String, "member carries group id")
+    assert(mws[2]["groupID"] as? String == mgs[0]["id"] as? String, "second member too")
+    assert(mws[1]["color"] as? String == "#8ec7a8", "project color lands on member workspaces")
+    assert(mws[3]["cwd"] as? String == "/lazy" && (mws[3]["layout"] as? [String: Any])?["cwd"] as? String == "/lazy",
+           "lazy config project → one dormant ws at its path")
+    assert(m["activeWorkspace"] as? Int == 2, "active (p=1,s=1) → flat index 2")
+    // Already-v2 entries pass through migrateWindowEntry unchanged.
+    let v2entry: [String: Any] = ["groups": [], "workspaces": [["paneID": "Q", "cwd": "/q"]],
+                                  "activeWorkspace": 0]
+    assert((migrateWindowEntry(v2entry)["workspaces"] as? [[String: Any]])?.count == 1, "v2 idempotent")
+    // parseWindowsFile: v2 file round-trips; v1 file arrives migrated.
+    let v2file = try! JSONSerialization.data(withJSONObject: ["version": 2, "windows": [v2entry]])
+    assert(parseWindowsFile(v2file).version == 2, "v2 parses")
+    let v1file = try! JSONSerialization.data(withJSONObject: ["version": 1, "windows": [v1entry]])
+    let pm = parseWindowsFile(v1file)
+    assert((pm.windows.first?["workspaces"] as? [[String: Any]])?.count == 4, "v1 entries auto-migrate")
+
     // Corrupted / garbage input must not crash and must fall back to (0, []).
     assert(parseWindowsFile(Data("not json {{{".utf8)).windows.isEmpty, "garbage → empty")
     assert(parseWindowsFile(Data()).windows.isEmpty, "empty file → empty")
