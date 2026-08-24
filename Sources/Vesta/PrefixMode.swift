@@ -12,10 +12,10 @@ enum PrefixAction: Equatable {
     case focusUp            // k / ↑
     case focusRight         // l / →
     case zoom               // z  → ws.activeTree.zoomFocused()
-    case newSession         // c  → ws.newSession(ws.activeP)
-    case nextSession        // n  → ws.nextSession()
-    case prevSession        // p  → ws.prevSession()
-    case rename             // ,  → rename the active session's project
+    case newSession         // c  → ws.newWorkspace()
+    case nextSession        // n  → ws.nextWorkspace()
+    case prevSession        // p  → ws.prevWorkspace()
+    case rename             // ,  → rename the active workspace
     case detach             // d  → (stub until M3)
     case kill               // x  → (stub until M3)
 }

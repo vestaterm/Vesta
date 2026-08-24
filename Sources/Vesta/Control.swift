@@ -136,21 +136,47 @@ final class ControlServer: @unchecked Sendable {
         return tree.focused
     }
 
-    /// `sessions --json`: one flat record per session (id, name, project, cwd, pane count,
-    /// active/attention flags) sliced from the shared sidebar model. `project` filters by name.
+    /// The active workspace's group, as an index into `ws.groups` — nil when it's a bare
+    /// top-level row. This is the split every `project` verb turns on.
+    @MainActor private func activeGroup(_ ws: Workspace) -> Int? {
+        guard ws.wss.indices.contains(ws.activeW), let id = ws.wss[ws.activeW].groupID
+        else { return nil }
+        return ws.groups.firstIndex { $0.id == id }
+    }
+
+    /// The name a workspace answers to for `--project` filters: its group's name if it has
+    /// one, else its own label (a bare row is its own one-member "project" to old plugins).
+    @MainActor private func projectName(_ ws: Workspace, _ i: Int) -> String {
+        if let id = ws.wss[i].groupID, let g = ws.groups.first(where: { $0.id == id }) { return g.name }
+        return ws.wss[i].tree.name ?? ws.wss[i].tree.focusedLabel
+    }
+
+    /// Legacy `<project> <session>` indices → a flat workspace index, resolved through the
+    /// top-level sidebar units: a group is one unit and its members are its sessions; a bare
+    /// workspace is a unit holding only itself. nil ⇒ out of range.
+    @MainActor private func flatIndex(_ ws: Workspace, unit p: Int, member s: Int) -> Int? {
+        let units = Workspace.topLevelUnits(groupIDs: ws.wss.map(\.groupID))
+        guard units.indices.contains(p), units[p].indices.contains(s) else { return nil }
+        return units[p][s]
+    }
+
+    /// `sessions --json`: one flat record per workspace (id, name, group, cwd, pane count,
+    /// active/attention flags) sliced from the shared sidebar model. `id` is the flat index
+    /// as a string — what `select <id>` takes. `project` is kept as an alias of `group`
+    /// (falling back to the row's own label) so old plugins keep resolving; it also filters.
     @MainActor private func sessionsJSON(project: String?) -> [String: Any] {
         guard let ws = workspaceProvider() else { return ["ok": false, "error": "no window"] }
         var out: [[String: Any]] = []
-        for (pi, p) in ws.projs.enumerated() where project == nil || p.name == project {
-            for (si, t) in p.sessions.enumerated() {
-                var d: [String: Any] = [
-                    "id": "\(pi).\(si)", "name": t.name ?? t.focusedLabel, "project": p.name,
-                    "panes": t.paneCount, "active": pi == ws.activeP && si == ws.activeS,   // paneCount works while dormant
-                    "attention": ws.hasAttention(t),
-                ]
-                if let c = t.focusedCwd { d["cwd"] = c }
-                out.append(d)
-            }
+        for (i, w) in ws.wss.enumerated() where project == nil || projectName(ws, i) == project {
+            let t = w.tree
+            var d: [String: Any] = [
+                "id": "\(i)", "name": t.name ?? t.focusedLabel, "project": projectName(ws, i),
+                "panes": t.paneCount, "active": i == ws.activeW,   // paneCount works while dormant
+                "attention": ws.hasAttention(t),
+            ]
+            if let id = w.groupID, let g = ws.groups.first(where: { $0.id == id }) { d["group"] = g.name }
+            if let c = t.focusedCwd { d["cwd"] = c }
+            out.append(d)
         }
         return ["ok": true, "sessions": out]
     }
@@ -245,9 +271,9 @@ final class ControlServer: @unchecked Sendable {
             // Submits the line by default (appends Enter), so a command actually runs;
             // pass --no-enter to send the keystrokes without a trailing Return.
             // Broadcast modes fan the same text out to every pane of a target set:
-            //   --all             every pane in the focused session
-            //   --session <P.S>   every pane of session S in project P (select-style indices)
-            //   --project <name>  every pane in every session of the named project
+            //   --all             every pane in the focused workspace
+            //   --session <N|P.S> every pane of workspace N (or legacy unit P, member S)
+            //   --project <name>  every pane of every workspace in the named group
             var rest = args
             var enter = true
             if let i = rest.firstIndex(of: "--no-enter") { rest.remove(at: i); enter = false }
@@ -261,18 +287,23 @@ final class ControlServer: @unchecked Sendable {
             if let i = rest.firstIndex(of: "--all") {
                 rest.remove(at: i); targets = [tree]
             } else if let i = rest.firstIndex(of: "--session") {
-                guard i + 1 < rest.count else { return ["ok": false, "error": "send-keys --session <P.S>"] }
+                guard i + 1 < rest.count else { return ["ok": false, "error": "send-keys --session <N>"] }
                 let sid = rest[i + 1]; rest.removeSubrange(i...(i + 1))
+                // "3" is the flat workspace index; "1.0" is the legacy P.S pair, resolved
+                // through the same top-level units `select` uses.
                 let ix = sid.split(separator: ".").compactMap { Int($0) }
-                guard ix.count == 2, ix[0] >= 0, ix[0] < workspace.projs.count,
-                      ix[1] >= 0, ix[1] < workspace.projs[ix[0]].sessions.count else {
-                    return ["ok": false, "error": "send-keys --session <P.S> (select-style indices)"]
+                let flat: Int? = ix.count == 1 ? ix[0]
+                    : (ix.count == 2 ? flatIndex(workspace, unit: ix[0], member: ix[1]) : nil)
+                guard let f = flat, workspace.wss.indices.contains(f) else {
+                    return ["ok": false, "error": "send-keys --session <N> (select-style index)"]
                 }
-                targets = [workspace.projs[ix[0]].sessions[ix[1]]]
+                targets = [workspace.wss[f].tree]
             } else if let i = rest.firstIndex(of: "--project") {
                 guard i + 1 < rest.count else { return ["ok": false, "error": "send-keys --project <name>"] }
                 let name = rest[i + 1]; rest.removeSubrange(i...(i + 1))
-                let matched = workspace.projs.filter { $0.name == name }.flatMap { $0.sessions }
+                let matched = workspace.wss.indices
+                    .filter { projectName(workspace, $0) == name }
+                    .map { workspace.wss[$0].tree }
                 guard !matched.isEmpty else { return ["ok": false, "error": "send-keys --project: no project '\(name)'"] }
                 targets = matched
             }
@@ -304,23 +335,26 @@ final class ControlServer: @unchecked Sendable {
                 return ["ok": false, "error": "pane status <paneID>"]
             }
             let paneID = args[1]
-            for (pi, p) in workspace.projs.enumerated() {
-                for (si, t) in p.sessions.enumerated() {
-                    // paneIDs works while dormant (reads the layout); materialize on match so a
-                    // live TerminalPane exists to report cwd/title/alive.
-                    guard t.paneIDs.contains(paneID) else { continue }
-                    t.materialize()
-                    guard let pane = t.panes.first(where: { $0.paneID == paneID }) else { continue }
-                    let fg = pane.foregroundPID   // read once: `alive` and `pid` must agree
-                    var d: [String: Any] = [
-                        "ok": true, "paneID": paneID, "session": "\(pi).\(si)", "project": p.name,
-                        "title": pane.title, "alive": fg != nil,
-                        "attention": workspace.hasAttention(t),
-                    ]
-                    if let c = pane.cwd { d["cwd"] = c }
-                    if let fg { d["pid"] = Int(fg) }
-                    return d
+            for (i, w) in workspace.wss.enumerated() {
+                let t = w.tree
+                // paneIDs works while dormant (reads the layout); materialize on match so a
+                // live TerminalPane exists to report cwd/title/alive.
+                guard t.paneIDs.contains(paneID) else { continue }
+                t.materialize()
+                guard let pane = t.panes.first(where: { $0.paneID == paneID }) else { continue }
+                let fg = pane.foregroundPID   // read once: `alive` and `pid` must agree
+                var d: [String: Any] = [
+                    "ok": true, "paneID": paneID, "workspace": i, "session": "\(i)",
+                    "project": projectName(workspace, i),
+                    "title": pane.title, "alive": fg != nil,
+                    "attention": workspace.hasAttention(t),
+                ]
+                if let id = w.groupID, let g = workspace.groups.first(where: { $0.id == id }) {
+                    d["group"] = g.name
                 }
+                if let c = pane.cwd { d["cwd"] = c }
+                if let fg { d["pid"] = Int(fg) }
+                return d
             }
             return ["ok": false, "error": "pane status: no pane \(paneID)"]
         case "list":
@@ -331,7 +365,7 @@ final class ControlServer: @unchecked Sendable {
             return ["ok": true, "path": path]
         case "tab":
             switch args.first {
-            case "new": workspace.newTab(cwd: argValue(args, "--cwd"))   // nil → project's default dir
+            case "new": workspace.newTab(cwd: argValue(args, "--cwd"))   // nil → the active workspace's cwd
             case "next", .none: workspace.nextTab()
             case "prev": workspace.prevTab()
             case "close": workspace.closeTab()
@@ -343,7 +377,7 @@ final class ControlServer: @unchecked Sendable {
                 return ["ok": false, "error": "worktree: branch required"]
             }
             let base = argValue(args, "--base")
-            workspace.newWorktreeSession(workspace.activeP, branch: branch, base: base)
+            workspace.newWorktreeWorkspace(from: workspace.activeW, branch: branch, base: base)
             return ["ok": true, "branch": branch, "base": base as Any]
         case "browser":
             let urlStr = args.first ?? "about:blank"
@@ -357,39 +391,55 @@ final class ControlServer: @unchecked Sendable {
             workspace.activeTree.focused?.search(args.first ?? "")
             return ["ok": true]
         case "select":
-            guard args.count >= 2, let p = Int(args[0]), let s = Int(args[1]) else {
-                return ["ok": false, "error": "select: <project> <session> (0-based indices)"]
+            // One index = the flat workspace (what `sessions --json` reports as `id`). Two =
+            // the legacy <project> <session> pair, resolved through the top-level units.
+            let ix = args.compactMap { Int($0) }
+            let target: Int?
+            switch ix.count {
+            case 1: target = ix[0]
+            case 2...: target = flatIndex(workspace, unit: ix[0], member: ix[1])
+            default:
+                return ["ok": false, "error": "select: <workspace> (0-based), or <project> <session>"]
             }
-            workspace.selectSession(p, s)
-            return ["ok": true, "project": p, "session": s]
+            guard let t = target, workspace.wss.indices.contains(t) else {
+                return ["ok": false, "error": "select: no such workspace (\(args.joined(separator: " ")))"]
+            }
+            workspace.selectWorkspace(t)
+            return ["ok": true, "workspace": t]
         case "rename":
             guard let name = args.first else { return ["ok": false, "error": "rename: <name> required"] }
-            workspace.renameSession(workspace.activeP, workspace.activeS, name)
+            // Blank clears the custom name and falls back to the folder label (sidebar convention).
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            workspace.renameWorkspace(workspace.activeW, trimmed.isEmpty ? nil : trimmed)
             return ["ok": true, "name": name]
         case "project":
+            // Compat verb over the flat model: it acts on the active row's GROUP when it has
+            // one, else on the workspace itself — which is exactly what a "project" was.
+            let g = activeGroup(workspace)
             switch args.first {
             case "new":
                 // `project new [PATH] [--name X]` — PATH is the positional after "new"
-                // (the CLI injects the caller's cwd when omitted; nil → home).
+                // (the CLI injects the caller's cwd when omitted; nil → the active cwd).
                 let path = (args.count >= 2 && !args[1].hasPrefix("--")) ? args[1] : nil
-                workspace.newProject(at: path)
-                if let name = argValue(args, "--name") { workspace.renameProject(workspace.activeP, name) }
+                workspace.newWorkspace(at: path)
+                if let name = argValue(args, "--name") { workspace.renameWorkspace(workspace.activeW, name) }
             case "rename":
                 guard args.count >= 2 else { return ["ok": false, "error": "project rename <name>"] }
-                workspace.renameProject(workspace.activeP, args[1])
+                if let g { workspace.renameGroup(g, args[1]) }
+                else { workspace.renameWorkspace(workspace.activeW, args[1]) }
             case "dir":
-                // `project dir [PATH]` — change the active project's default dir (PATH or caller's cwd).
-                guard args.count >= 2, !args[1].hasPrefix("--") else { return ["ok": false, "error": "project dir <path>"] }
-                workspace.setProjectDir(workspace.activeP, args[1])
+                return ["ok": false,
+                        "error": "project dir was removed — each workspace owns its cwd (cd in the shell)"]
             case "remove":
-                workspace.removeProject(workspace.activeP)
+                if let g { workspace.removeGroup(g) } else { workspace.closeWorkspace(workspace.activeW) }
             case "color":
                 guard args.count >= 2 else { return ["ok": false, "error": "project color <#hex|none>"] }
-                workspace.setProjectColor(workspace.activeP, args[1] == "none" ? nil : ghosttyColor(args[1]))
+                let c = args[1] == "none" ? nil : ghosttyColor(args[1])
+                if let g { workspace.setGroupColor(g, c) } else { workspace.setWorkspaceColor(workspace.activeW, c) }
             default:
-                return ["ok": false, "error": "project: new [PATH] [--name X] | dir [PATH] | rename <name> | remove | color <#hex|none>"]
+                return ["ok": false, "error": "project: new [PATH] [--name X] | rename <name> | remove | color <#hex|none>"]
             }
-            return ["ok": true, "project": workspace.activeP]
+            return ["ok": true, "workspace": workspace.activeW]
         default:
             return ["ok": false, "error": "unknown cmd: \(cmd)"]
         }
@@ -418,9 +468,9 @@ func controlSocketAlive() -> Bool { socketIsLive(controlSocketPath()) }
 func runControlCLI(_ args: [String]) -> Int32 {
     guard let verb = args.first else { return 1 }
     var rest = Array(args.dropFirst())
-    // `vesta project new|dir` with no PATH → default to the caller's working directory (resolved
+    // `vesta project new` with no PATH → default to the caller's working directory (resolved
     // here, since the app's cwd differs from the shell's). An explicit path is left untouched.
-    if verb == "project", rest.first == "new" || rest.first == "dir",
+    if verb == "project", rest.first == "new",
        !(rest.count >= 2 && !rest[1].hasPrefix("--")) {
         rest.insert(FileManager.default.currentDirectoryPath, at: 1)
     }
@@ -525,28 +575,29 @@ func printUsage() {
       focus [ID]                            focus pane ID, or cycle to the next
       zoom                                  toggle zoom on the focused pane
       send-keys <ID|focused> <text>         type text into a pane
-      send-keys --all|--session <P.S>|--project <name> <text>   broadcast (--all = focused session's panes)
+      send-keys --all|--session <N>|--project <name> <text>   broadcast (--all = focused workspace's panes)
       capture [ID|focused] [--scrollback]   print a pane's text
       pane status <paneID>                  JSON: cwd, title, alive, attention for one pane
       list                                  list panes/tabs as JSON
-      open [PATH]                           open PATH in a new tab (default ~)
-      tab new|next|prev|close [--cwd DIR]   manage tabs
-      worktree <branch> [--base <ref>]      open a git-worktree-isolated session on <branch>
+      open [PATH]                           open PATH in a new workspace (default ~)
+      tab new|next|prev|close [--cwd DIR]   manage workspaces (alias: one workspace = one tab)
+      worktree <branch> [--base <ref>]      open a git-worktree-isolated workspace on <branch>
       browser [url|port]                    open an embedded browser pane (port → http://localhost:PORT)
       reload                                re-read the config and apply colors/font/theme live
       notify <message>                      show a toast banner in the active window
       run <name>                            run a Lua command registered via vesta.command
       plugins [list|sync]                   list installed Lua plugins (marks disabled), or git-pull + reload them
       plugins enable|disable <name>         turn a plugin on/off and reload
-      state                                 dump all windows→projects→sessions→panes as JSON
-      sessions [--json] [--project <name>]  readable session list (▸ = active); --json for structured records (--project implies --json)
-      select <project> <session>            switch the active window to a session (0-based)
-      rename <name>                         rename the active session
-      project new [PATH] [--name X]|dir [PATH]|rename <name>|remove|color <#hex|none>   manage projects (new/dir: PATH or caller's cwd)
-      kill <id>                             terminate a session's shell under the daemon
+      state                                 dump workspaces + groups + windows as JSON (plus a `projects` compat view)
+      sessions [--json] [--project <name>]  readable workspace list (▸ = active); --json for structured records (--project implies --json)
+      select <workspace>                    switch the active window to a workspace (0-based flat index)
+      select <project> <session>            legacy form: group P, member S
+      rename <name>                         rename the active workspace (blank clears it)
+      project new [PATH] [--name X]|rename <name>|remove|color <#hex|none>   acts on the active row's group, else the workspace (new: PATH or caller's cwd)
+      kill <id>                             terminate a workspace's shell under the daemon
 
     Config (in your ghostty config; libghostty ignores the vesta- keys):
-      vesta-projects = ~/a, ~/b      sidebar projects
+      vesta-projects = ~/a, ~/b      folders seeded as sidebar workspaces
       vesta-accent = #889b94         selection / focus / tab accent
       vesta-surface = #161719        window + pane background override
       vesta-sidebar-width = 224      sidebar width in px
