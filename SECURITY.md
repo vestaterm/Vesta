@@ -30,7 +30,19 @@ so history survives a daemon restart — or a reboot. Terminal output can contai
 passwords, API tokens, and SSH keys; set `vesta-persist-scrollback = false` if you
 do not want that data on disk (the trade-off: sessions come back empty after a
 restart). Logs are removed when a session ends cleanly; a daemon crash can leave the
-last ~512 KB on disk until the next clean exit. The daemon reads this setting once
+last ~512 KB on disk until the next clean exit.
+
+The session logs are not the only file involved: an **in-place daemon upgrade** first
+writes a `0600` snapshot of its live state to
+`~/Library/Application Support/vesta/upgrade-state.bin`, which carries each session's
+replay ring (up to ~256 KB of recent terminal output per pane) so the re-executed daemon
+can adopt the running shells. Note this happens **regardless of
+`vesta-persist-scrollback`** — that setting governs the session logs, not the upgrade
+snapshot, which the in-memory ring always feeds. The file is unlinked as soon as the new
+image adopts the state, and immediately if the write or the exec fails; but a hard kill
+inside that brief window can leave it on disk until the next upgrade overwrites it.
+
+The daemon reads this setting once
 at startup, so toggling it applies on the next daemon start (quit Vesta and let
 `vestad` exit, or `kill` it).
 
