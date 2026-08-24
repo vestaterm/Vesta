@@ -27,7 +27,10 @@ public enum ClientFrame: Equatable {
 }
 
 public enum ServerFrame: Equatable {
-    case helloAck(version: Int)
+    // `resumed`: the daemon reattached this pane to a live pty (true) or forked a fresh
+    // shell for it (false). Additive trailing byte — older daemons omit it and older
+    // clients stop reading after the version, exactly like hello's v4 `cwd`.
+    case helloAck(version: Int, resumed: Bool = true)
     // On attach the daemon replays the raw output ring as a normal `output` frame
     // (no separate snapshot/screen state — ghostty parses the bytes). Live output
     // is the same frame. `exited` ends the session; `sessions` answers `list`.
@@ -93,8 +96,8 @@ public func encode(_ f: ClientFrame) -> Data {
 public func encode(_ f: ServerFrame) -> Data {
     var p = Data()
     switch f {
-    case let .helloAck(version):
-        putU32(UInt32(version), into: &p); return frame(0x11, p)
+    case let .helloAck(version, resumed):
+        putU32(UInt32(version), into: &p); p.append(resumed ? 1 : 0); return frame(0x11, p)
     case let .output(data):
         putField(data, into: &p); return frame(0x14, p)
     case let .exited(status):
@@ -174,7 +177,12 @@ public func decodeServerFrame(from buf: inout Data) -> ServerFrame? {
     guard let (tag, payload) = pullFrame(from: &buf) else { return nil }
     var r = Reader(payload)
     switch tag {
-    case 0x11: return .helloAck(version: Int(r.u32()))
+    case 0x11:
+        let version = Int(r.u32())
+        // Absent flag = an older daemon, which only ever reattached-or-silently-forked;
+        // assume the pty was live rather than reporting a fresh fork it never signalled.
+        let resumed = r.remaining() > 0 ? r.byte() == 1 : true
+        return .helloAck(version: version, resumed: resumed)
     case 0x14: return .output(r.field())
     case 0x15: return .exited(status: Int32(bitPattern: r.u32()))
     case 0x16:
@@ -219,7 +227,8 @@ public func muxProtocolSelfCheck() {
     // Round-trip every ServerFrame case.
     let info = SessionInfo(id: "p1", name: "build", cwd: "/tmp", alive: true, attachedCount: 2)
     let serverCases: [ServerFrame] = [
-        .helloAck(version: 1),
+        .helloAck(version: 1, resumed: true),
+        .helloAck(version: 1, resumed: false),
         .output(Data([0x68, 0x69])),
         .exited(status: 137),
         .sessions([info, SessionInfo(id: "p2", name: nil, cwd: nil, alive: false, attachedCount: 0)]),
@@ -235,6 +244,12 @@ public func muxProtocolSelfCheck() {
         assert(out == f, "server round-trip \(f)")
         assert(buf.isEmpty, "server decode consumed the whole frame")
     }
+    // An old daemon's helloAck — [len=5][tag 0x11][u32 version], no resumed byte —
+    // still decodes, as resumed: true.
+    var legacyAck = Data([0, 0, 0, 5, 0x11, 0, 0, 0, 5])
+    assert(decodeServerFrame(from: &legacyAck) == .helloAck(version: 5, resumed: true),
+           "legacy helloAck decodes as resumed")
+    assert(legacyAck.isEmpty, "legacy helloAck fully consumed")
     // Partial buffer: a frame missing its last byte decodes to nil and leaves buf untouched.
     var full = encode(ClientFrame.input(Data([0xaa, 0xbb, 0xcc])))
     let truncated = full.dropLast()

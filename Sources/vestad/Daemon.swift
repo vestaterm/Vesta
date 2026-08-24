@@ -308,6 +308,9 @@ final class Daemon {
             // version via helloAck (below); the CLIENT (vesta-attach, Task 3.8) compares
             // helloAck.version to its own muxProtocolVersion and bails on mismatch. This
             // is what makes remote attach (M5) against a newer/older daemon safe.
+            // Capture this BEFORE the create-branch: it's what helloAck reports back, so the
+            // caller can tell a reattached pty from a silently forked fresh shell.
+            let resumed = sessions[paneID] != nil
             let s: Session
             if let existing = sessions[paneID] {
                 s = existing
@@ -333,7 +336,7 @@ final class Daemon {
             }
             s.addClient(fd: fd)
             clientSession[fd] = paneID
-            if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion))) {
+            if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion, resumed: resumed))) {
                 closeClient(fd); return
             }
             // Clean reattach: replay the raw output ring verbatim. ghostty parses it,
@@ -378,7 +381,8 @@ final class Daemon {
             subscriberSession[fd] = paneID
             if let s = sessions[paneID] { s.addSubscriber(fd: fd) }
             else { pendingSubscribers[paneID, default: []].append(fd) }
-            if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion))) { closeClient(fd) }
+            // A subscriber never spawns anything, so there's no fork to report: resumed: true.
+            if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion, resumed: true))) { closeClient(fd) }
         case let .upgrade(path):
             performUpgrade(newBinary: path, replyTo: fd)
         case .info:
