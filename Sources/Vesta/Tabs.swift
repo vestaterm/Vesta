@@ -912,7 +912,16 @@ func migrateWindowEntry(_ entry: [String: Any]) -> [String: Any] {
             var w: [String: Any] = ["paneID": pid, "cwd": cwd,
                                     "layout": s["layout"] as? [String: Any]
                                         ?? ["paneID": pid, "cwd": cwd]]
-            if let nm = s["name"] as? String { w["name"] = nm }
+            if let nm = s["name"] as? String {
+                w["name"] = nm                            // an explicit session name always wins
+            } else if sessions.count == 1, name != (cwd as NSString).lastPathComponent {
+                // A 1-session project WAS the sidebar row you read as "<project>", so the
+                // flattened row keeps the PROJECT's name. Compared against the SESSION's cwd
+                // because that's the label the flat row would otherwise show (focusedLabel):
+                // "napp-suite" over cwd …/napp must survive, while a project auto-named after
+                // its own folder stays implicit (renaming the folder still renames the row).
+                w["name"] = name
+            }
             if let color { w["color"] = color }          // the project tint becomes each row's
             if let groupID { w["groupID"] = groupID }
             wss.append(w)
@@ -987,6 +996,30 @@ func windowsFormatSelfCheck() {
     assert(mgs.count == 1 && mgs[0]["name"] as? String == "halo", "only multi-session project → group")
     assert(mws[0]["paneID"] as? String == "P1" && mws[0]["groupID"] == nil, "solo project → bare ws")
     assert(mws[0]["name"] as? String == "solo", "session name survives")
+    // A 1-session project's row was labelled by the PROJECT, so its name must survive the
+    // flattening — but only when the cwd's basename can't reproduce it (else it's implicit).
+    let named: [String: Any] = [
+        "projects": [
+            // Renamed project, cwd == its own path: the name is not the basename → carried.
+            ["id": "a", "name": "nvim Setup", "path": "/c/nvim",
+             "sessions": [["cwd": "/c/nvim", "paneID": "N1"]]],
+            // Session sits in a SUBDIR: without the project name the row would read "napp".
+            ["id": "b", "name": "napp-suite", "path": "/d/napp-suite",
+             "sessions": [["cwd": "/d/napp-suite/napp", "paneID": "N2"]]],
+            // Auto-named after its folder → no stored name (the folder label already says it).
+            ["id": "c", "name": "v-code", "path": "/d/v-code",
+             "sessions": [["cwd": "/d/v-code", "paneID": "N3"]]],
+            // ≥2 sessions became a GROUP that carries the name — members stay unnamed.
+            ["id": "d", "name": "Vesta Project", "path": "/w",
+             "sessions": [["cwd": "/w/halo", "paneID": "N4"], ["cwd": "/w", "paneID": "N5"]]],
+        ],
+    ]
+    let nws = migrateWindowEntry(named)["workspaces"] as! [[String: Any]]
+    assert(nws[0]["name"] as? String == "nvim Setup", "1-session project name survives")
+    assert(nws[1]["name"] as? String == "napp-suite", "…even when the session sits in a subdir")
+    assert(nws[2]["name"] == nil, "project auto-named after its folder stays implicit")
+    assert(nws[3]["name"] == nil && nws[4]["name"] == nil,
+           "multi-session project: the name lives on the group, not on each member")
     assert(mws[1]["groupID"] as? String == mgs[0]["id"] as? String, "member carries group id")
     assert(mws[2]["groupID"] as? String == mgs[0]["id"] as? String, "second member too")
     assert(mws[1]["color"] as? String == "#8ec7a8", "project color lands on member workspaces")
