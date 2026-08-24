@@ -303,34 +303,6 @@ final class Daemon {
         clientSession[fd] = nil; subscriberSession[fd] = nil; clientBufs[fd] = nil; close(fd)
     }
 
-    /// The restart divider ingested into a cold-restored session's ring, then a dim rule naming
-    /// the new shell's directory. The replayed history ends wherever the machine died — often
-    /// mid-TUI — so this must undo every STICKY mode a dead full-screen app could have left on,
-    /// not just colors. Leaving any of them set poisons the brand-new shell behind the divider:
-    ///
-    ///  - `?1049l`                  leave the alt screen (else history+prompt render into a
-    ///                              buffer the user can't scroll back out of)
-    ///  - `?1000l ?1002l ?1003l`    stop X10/button/any-motion mouse reporting, and
-    ///    `?1006l`                  SGR extended coordinates — else every click and scroll
-    ///                              injects escape junk onto the fresh command line
-    ///  - `?7h`                     restore autowrap (a TUI that turned it off truncates lines)
-    ///  - `[r`                      reset DECSTBM to the full screen (a leftover scroll region
-    ///                              pins output to a few rows)
-    ///  - `?25h`                    show the cursor again (DECTCEM — the most visible failure:
-    ///                              a working shell that looks frozen because it has no cursor)
-    ///  - `(B`                      G0 back to ASCII (a leftover line-drawing charset renders
-    ///                              the prompt as box glyphs)
-    ///  - `[0m`                     finally SGR, clearing color/bold left on mid-sequence
-    ///
-    /// All emitted unconditionally: each is a no-op when the mode wasn't set, and explicit
-    /// beats trying to infer the dead shell's state from bytes we never parsed. Pure (no daemon
-    /// state) so it's trivially checkable; `dir` is tilde-abbreviated, `~` when cwd is unknown.
-    static func coldRestoreBanner(cwd: String?) -> Data {
-        let dir = cwd.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "~"
-        let s = "\r\n\u{1b}[?1049l\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1003l\u{1b}[?1006l\u{1b}[?7h\u{1b}[r\u{1b}[?25h\u{1b}(B\u{1b}[0m\u{1b}[2m── vesta: session restarted — new shell in \(dir) ──\u{1b}[0m\r\n"
-        return Data(s.utf8)
-    }
-
     private func handle(_ frame: ClientFrame, from fd: Int32) {
         switch frame {
         case let .hello(paneID, cols, rows, cwd):
@@ -366,7 +338,8 @@ final class Daemon {
                 // `snapshot()` below, so even this first attach replays it; later reattaches take
                 // the `existing` branch and never re-ingest, so it appears exactly once. It lands
                 // in the on-disk log too — by design: the cut becomes part of history.
-                if fresh.seededFromLog { fresh.ingest(Daemon.coldRestoreBanner(cwd: cwd)) }
+                // coldRestoreBanner lives in VestaMux (pure, so `vesta selfcheck` covers it).
+                if fresh.seededFromLog { fresh.ingest(coldRestoreBanner(cwd: cwd)) }
             }
             // Bind any subscribers that arrived before this session existed (review finding B).
             if let waiting = pendingSubscribers.removeValue(forKey: paneID) {

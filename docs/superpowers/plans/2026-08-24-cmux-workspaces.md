@@ -504,15 +504,22 @@ func testHelloAckResumedRoundTrip() {
 // replay shows history, then a visible cut, then the fresh prompt — instead of
 // half-drawn TUI state with no process behind it.
 if fresh.seededFromLog {
-    fresh.ingest(Daemon.coldRestoreBanner(cwd: cwd))
+    fresh.ingest(coldRestoreBanner(cwd: cwd))
 }
 ```
 
+**(amended by review rulings)** — the banner shipped as a public function in
+`Sources/VestaMux/Scrollback.swift` (not `Daemon`), so `vesta selfcheck` and `swift test` can
+exercise it, and it emits far more than the two escapes sketched here. The order is
+load-bearing: `[r` homes the cursor and `?1049l` restores a saved one, so a *leading* CRLF
+painted the rule at the top of the restored screen and stranded history below it. Resets
+first, then park at the last row (`[999;1H` — CUP rows past the bottom are clamped, which is
+how we reach the last row without knowing the pane height), then the CRLF, then the rule:
+
 ```swift
-static func coldRestoreBanner(cwd: String?) -> Data {
+public func coldRestoreBanner(cwd: String?) -> Data {
     let dir = cwd.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "~"
-    // ?1049l leaves a stale alt screen; SGR reset clears colors mid-sequence output left on.
-    let s = "\r\n\u{1b}[?1049l\u{1b}[0m\u{1b}[2m── vesta: session restarted — new shell in \(dir) ──\u{1b}[0m\r\n"
+    let s = "\u{1b}[?1049l\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1003l\u{1b}[?1006l\u{1b}[?7h\u{1b}[r\u{1b}[?25h\u{1b}(B\u{1b}[0m\u{1b}[999;1H\r\n\u{1b}[2m── vesta: session restarted — new shell in \(dir) ──\u{1b}[0m\r\n"
     return Data(s.utf8)
 }
 ```
