@@ -831,7 +831,9 @@ final class VestaWindowController: NSWindowController {
         case .need: tint
         case .warn: Self.heatAmber
         case .ok:   tint.withAlphaComponent(0.45)
-        case .none: active ? .clear : (w.color?.withAlphaComponent(0.45) ?? .clear)
+        // Resting sits well BELOW .ok's 0.45: at equal alpha a merely-colored workspace was
+        // indistinguishable from one reporting an unseen success. Identity, not a signal.
+        case .none: active ? .clear : (w.color?.withAlphaComponent(0.22) ?? .clear)
         }
         let bar = accentBar(railColor)
 
