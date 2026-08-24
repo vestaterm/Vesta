@@ -28,6 +28,7 @@ if argv.first == "selfcheck" {
     muxPathsSelfCheck()
     scrollbackSweepSelfCheck()
     scrollbackRingSelfCheck()
+    coldRestoreBannerSelfCheck()
     processTreeSelfCheck()
     upgradeStateSelfCheck()
     shellIntegrationSelfCheck()

@@ -74,6 +74,84 @@ public func ringSuffixFromSafeBoundary(_ data: Data, cap: Int) -> Data {
     return d == 0 ? data : Data(data.dropFirst(d))
 }
 
+/// Builds the restart divider stamped into a cold-restored session's ring: a mode reset, then a
+/// dim rule naming the new shell's directory. The replayed history ends wherever the machine died
+/// — often mid-TUI — so this must undo every STICKY mode a dead full-screen app could have left
+/// on, not just colors. Leaving any of them set poisons the brand-new shell behind the divider:
+///
+///  - `?1049l`                  leave the alt screen (else history+prompt render into a
+///                              buffer the user can't scroll back out of)
+///  - `?1000l ?1002l ?1003l`    stop X10/button/any-motion mouse reporting, and
+///    `?1006l`                  SGR extended coordinates — else every click and scroll
+///                              injects escape junk onto the fresh command line
+///  - `?7h`                     restore autowrap (a TUI that turned it off truncates lines)
+///  - `[r`                      reset DECSTBM to the full screen (a leftover scroll region
+///                              pins output to a few rows)
+///  - `?25h`                    show the cursor again (DECTCEM — the most visible failure:
+///                              a working shell that looks frozen because it has no cursor)
+///  - `(B`                      G0 back to ASCII (a leftover line-drawing charset renders
+///                              the prompt as box glyphs)
+///  - `[0m`                     finally SGR, clearing color/bold left on mid-sequence
+///
+/// All emitted unconditionally: each is a no-op when the mode wasn't set, and explicit beats
+/// trying to infer the dead shell's state from bytes we never parsed.
+///
+/// ORDER IS LOAD-BEARING, and it is why the newline comes after the resets rather than first.
+/// Two of the resets move the cursor: `[r` (DECSTBM) homes it to row 1, and `?1049l` restores
+/// the cursor saved when the dead TUI entered the alt screen. Emitting `\r\n` first therefore
+/// wrote the blank line at whatever row the history left the cursor on, and the resets then
+/// yanked the cursor back up — so the rule painted over the TOP of the restored screen and the
+/// rows below it stayed on display as stale history under the fresh prompt.
+///
+/// So: resets first, then `[999;1H` to park the cursor on the LAST row, then `\r\n`, then the
+/// rule. 999 is a deliberate clamp, not a magic size: CUP row arguments past the bottom are
+/// clamped to the last row by the terminal (ECMA-48 / xterm behaviour), which is how we reach
+/// "the bottom row" without knowing the pane's height — the ring is replayed into whatever
+/// geometry the client attaches with, so no height is available here. From the last row the
+/// `\r\n` scrolls the screen up one line, pushing the restored history up into scrollback and
+/// opening a blank line at the bottom for the rule. The trailing `\r\n` leaves the fresh prompt
+/// on its own line under it.
+///
+/// Pure (no daemon state) so the selfcheck can exercise it; `dir` is tilde-abbreviated, and `~`
+/// when the cwd is unknown.
+public func coldRestoreBanner(cwd: String?) -> Data {
+    let dir = cwd.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "~"
+    let s = "\u{1b}[?1049l\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1003l\u{1b}[?1006l\u{1b}[?7h\u{1b}[r\u{1b}[?25h\u{1b}(B\u{1b}[0m\u{1b}[999;1H\r\n\u{1b}[2m── vesta: session restarted — new shell in \(dir) ──\u{1b}[0m\r\n"
+    return Data(s.utf8)
+}
+
+public func coldRestoreBannerSelfCheck() {
+    let text = String(decoding: coldRestoreBanner(cwd: "/tmp"), as: UTF8.self)
+
+    // ORDER, not mere presence: every mode reset must precede the cursor park, which must
+    // precede the newline, which must precede the rule. Getting this backwards is the bug this
+    // check exists for — a containment assert passes on the broken banner too.
+    assert(text.hasPrefix("\u{1b}[?1049l"), "banner must open with the alt-screen leave, got \(text)")
+    let park = text.range(of: "\u{1b}[999;1H")
+    let rule = text.range(of: "\u{1b}[2m── vesta: session restarted")
+    guard let park, let rule else { assertionFailure("banner missing cursor park or rule"); return }
+    for reset in ["\u{1b}[?1049l", "\u{1b}[?1000l", "\u{1b}[?1002l", "\u{1b}[?1003l",
+                  "\u{1b}[?1006l", "\u{1b}[?7h", "\u{1b}[r", "\u{1b}[?25h", "\u{1b}(B", "\u{1b}[0m"] {
+        guard let r = text.range(of: reset) else { assertionFailure("banner missing \(reset)"); return }
+        assert(r.upperBound <= park.lowerBound, "reset \(reset) must come BEFORE the [999;1H park")
+    }
+    guard let nl = text.range(of: "\r\n") else { assertionFailure("banner has no newline"); return }
+    assert(park.upperBound == nl.lowerBound, "the park must be immediately followed by the CRLF")
+    assert(nl.upperBound == rule.lowerBound, "the rule must follow the CRLF, not precede it")
+    assert(text.hasSuffix("\u{1b}[0m\r\n"), "banner must end SGR-clean on its own line")
+
+    // Unknown cwd → a bare tilde, never "nil" or an empty gap in the sentence.
+    let unknown = String(decoding: coldRestoreBanner(cwd: nil), as: UTF8.self)
+    assert(unknown.contains("new shell in ~ ──"), "nil cwd renders as ~, got \(unknown)")
+
+    // A $HOME-prefixed path is abbreviated, so the rule stays short enough to fit a pane.
+    let home = NSHomeDirectory()
+    let deep = String(decoding: coldRestoreBanner(cwd: home + "/Code/vesta"), as: UTF8.self)
+    assert(deep.contains("new shell in ~/Code/vesta ──"), "home path must tilde-abbreviate, got \(deep)")
+    assert(!deep.contains(home), "abbreviated path must not leak the literal home directory")
+    print("coldRestoreBannerSelfCheck OK")
+}
+
 public func scrollbackRingSelfCheck() {
     let esc = UInt8(0x1b)
     func d(_ s: String) -> Data { Data(s.utf8) }
