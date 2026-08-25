@@ -1,6 +1,6 @@
 import AppKit
 
-/// Window + chrome + collapsible projects sidebar.
+/// Window + chrome + collapsible workspaces sidebar.
 /// Uniform surface everywhere; seamless slim titlebar that flows into content.
 /// Matches the locked mockup: hairlines (white @0.07) do the separating, never
 /// brightness steps. Near-gray mint accent for selection + glow.
@@ -26,19 +26,23 @@ final class VestaWindowController: NSWindowController {
     private enum Tier { case full, dim, faint }
 
     // MARK: – action closures (wired by AppDelegate)
-    private let onSelectSession:   (Int, Int) -> Void
-    private let onCloseSession:    (Int, Int) -> Void
-    private let onNewSession:      (Int) -> Void
-    private let onToggleExpand:    (Int) -> Void
-    private let onNewProject:      () -> Void
-    private let onRenameProject:   (Int, String) -> Void
-    private let onRenameSession:   (Int, Int, String?) -> Void
-    private let onSetProjectColor: (Int, NSColor?) -> Void
-    private let onRemoveProject:   (Int) -> Void
-    private let onNewWorktree:     (Int, String) -> Void
-    private let onChangeProjectDir: () -> Void
-    private let onReorderProject:  (Int, Int, String) -> Void        // (from, dropGap, Proj.id)
-    private let onReorderSession:  (Int, Int, Int, String) -> Void   // (project, from, dropGap, paneID)
+    // Every index is a FLAT workspace index (store.workspaces) or a group index
+    // (store.groups) — there is no project layer above them any more.
+    private let onSelectWorkspace:    (Int) -> Void
+    private let onCloseWorkspace:     (Int, String?) -> Void   // (ws, paneID identity guard)
+    private let onNewWorkspace:       () -> Void
+    private let onToggleGroup:        (Int) -> Void
+    private let onRenameWorkspace:    (Int, String?) -> Void
+    private let onRenameGroup:        (Int, String) -> Void
+    private let onSetWorkspaceColor:  (Int, NSColor?) -> Void
+    private let onSetGroupColor:      (Int, NSColor?) -> Void
+    private let onRemoveGroup:        (Int) -> Void
+    private let onUngroup:            (Int) -> Void          // dissolve group, keep its workspaces
+    private let onGroupFromWorkspace: (Int) -> Void
+    private let onMoveToGroup:        (Int, String?) -> Void   // (ws, group id; nil ⇒ ungroup)
+    private let onNewWorktree:        (Int, String, String?) -> Void  // (ws, branch, identity)
+    private let onReorderTopLevel:    (Int, Int, String) -> Void       // (from-unit, dropGap, unit id)
+    private let onReorderMember:      (Int, Int, Int, String) -> Void  // (group, from, dropGap, paneID)
 
     private var sidebar: NSView!
     private var sidebarWidth: NSLayoutConstraint!
@@ -59,19 +63,19 @@ final class VestaWindowController: NSWindowController {
     // next key). Color comes from theme.accent — never hardcoded.
     private var prefixPill: NSTextField?
 
-    // Mutable container for the projects stack — cleared+refilled by setProjects.
+    // Mutable container for the sidebar rows — cleared+refilled by setSidebar.
     private var projectsStack: NSStackView!
-    private var projCount: NSTextField?      // PROJECTS count, pinned in the header (not scrolled)
-    private var projScroll: NSScrollView?    // wraps the project list; appearance tracks surface
+    private var wsCount: NSTextField?        // WORKSPACES count, pinned in the header (not scrolled)
+    private var projScroll: NSScrollView?    // wraps the row list; appearance tracks surface
 
-    // Drag-to-reorder state. While a press or drag is live, setProjects is suppressed (the
+    // Drag-to-reorder state. While a press or drag is live, setSidebar is suppressed (the
     // ~1Hz sidebar rebuild would otherwise destroy the row mid-interaction — even a plain
     // click resolves at mouseUp now, and a detached row isn't guaranteed its mouseUp).
-    // Suppressed rebuilds stash into pendingProjects and replay on release, so no refresh
-    // is ever lost; lastProjects lets a cancelled drag rebuild from truth immediately.
+    // Suppressed rebuilds stash into pendingItems and replay on release, so no refresh
+    // is ever lost; lastItems lets a cancelled drag rebuild from truth immediately.
     private var suppressRebuild = false
-    private var lastProjects: [SidebarProject] = []
-    private var pendingProjects: [SidebarProject]?   // rebuild that arrived while suppressed
+    private var lastItems: [SidebarItem] = []
+    private var pendingItems: [SidebarItem]?   // rebuild that arrived while suppressed
     private weak var dragRow: TaggedRow?
     private var dragGap = 0
     private var dragEscMonitor: Any?
@@ -87,6 +91,9 @@ final class VestaWindowController: NSWindowController {
     private var dragGrabOffset: CGFloat = 0       // snapshot-origin − cursor at pickup, so the float doesn't jump
     private var dragLaneMinY: CGFloat = 0         // lane clamp (stack coords)
     private var dragLaneMaxY: CGFloat = 0
+    // Last cursor position seen by moveDrag (WINDOW coords). mouseUp gives endDrag no point of
+    // its own, and the drop-on-header test needs the cursor's FINAL spot — so we stash it.
+    private var dragLastPoint: NSPoint = .zero
     private var dragSettling = false              // true while the drop/cancel settle animation runs
     // The in-flight settle's finalize, stored so it can be flushed SYNCHRONOUSLY (new drag
     // starting mid-settle, willClose) instead of waiting on the animation completion. Exactly
@@ -94,19 +101,21 @@ final class VestaWindowController: NSWindowController {
     private var pendingFinalize: (() -> Void)?
 
     init(theme: Theme, content: NSView,
-         onSelectSession: @escaping (Int, Int) -> Void = { _, _ in },
-         onCloseSession:  @escaping (Int, Int) -> Void = { _, _ in },
-         onNewSession:    @escaping (Int) -> Void      = { _ in },
-         onToggleExpand:  @escaping (Int) -> Void      = { _ in },
-         onNewProject:    @escaping () -> Void          = {},
-         onRenameProject:   @escaping (Int, String) -> Void      = { _, _ in },
-         onRenameSession:   @escaping (Int, Int, String?) -> Void = { _, _, _ in },
-         onSetProjectColor: @escaping (Int, NSColor?) -> Void     = { _, _ in },
-         onRemoveProject:   @escaping (Int) -> Void          = { _ in },
-         onNewWorktree:     @escaping (Int, String) -> Void  = { _, _ in },
-         onChangeProjectDir: @escaping () -> Void            = {},
-         onReorderProject:  @escaping (Int, Int, String) -> Void      = { _, _, _ in },
-         onReorderSession:  @escaping (Int, Int, Int, String) -> Void = { _, _, _, _ in }) {
+         onSelectWorkspace: @escaping (Int) -> Void = { _ in },
+         onCloseWorkspace:  @escaping (Int, String?) -> Void = { _, _ in },
+         onNewWorkspace:    @escaping () -> Void    = {},
+         onToggleGroup:     @escaping (Int) -> Void = { _ in },
+         onRenameWorkspace:   @escaping (Int, String?) -> Void  = { _, _ in },
+         onRenameGroup:       @escaping (Int, String) -> Void   = { _, _ in },
+         onSetWorkspaceColor: @escaping (Int, NSColor?) -> Void = { _, _ in },
+         onSetGroupColor:     @escaping (Int, NSColor?) -> Void = { _, _ in },
+         onRemoveGroup:       @escaping (Int) -> Void           = { _ in },
+         onUngroup:           @escaping (Int) -> Void           = { _ in },
+         onGroupFromWorkspace: @escaping (Int) -> Void          = { _ in },
+         onMoveToGroup:     @escaping (Int, String?) -> Void = { _, _ in },
+         onNewWorktree:     @escaping (Int, String, String?) -> Void = { _, _, _ in },
+         onReorderTopLevel: @escaping (Int, Int, String) -> Void      = { _, _, _ in },
+         onReorderMember:   @escaping (Int, Int, Int, String) -> Void = { _, _, _, _ in }) {
         self.theme = theme
         self.surface = theme.background
         // Restore the dragged sidebar width if saved, else the config default.
@@ -114,19 +123,21 @@ final class VestaWindowController: NSWindowController {
         self.openWidth = savedWidth > 0 ? CGFloat(savedWidth) : CGFloat(VestaConfig.shared.sidebarWidth)
         // Restore collapsed/open state across launches (defaults to open).
         self.sidebarOpen = UserDefaults.standard.object(forKey: "VestaSidebarOpen") as? Bool ?? true
-        self.onSelectSession = onSelectSession
-        self.onCloseSession  = onCloseSession
-        self.onNewSession    = onNewSession
-        self.onToggleExpand  = onToggleExpand
-        self.onNewProject    = onNewProject
-        self.onRenameProject   = onRenameProject
-        self.onRenameSession   = onRenameSession
-        self.onSetProjectColor = onSetProjectColor
-        self.onRemoveProject   = onRemoveProject
+        self.onSelectWorkspace = onSelectWorkspace
+        self.onCloseWorkspace  = onCloseWorkspace
+        self.onNewWorkspace    = onNewWorkspace
+        self.onToggleGroup     = onToggleGroup
+        self.onRenameWorkspace   = onRenameWorkspace
+        self.onRenameGroup       = onRenameGroup
+        self.onSetWorkspaceColor = onSetWorkspaceColor
+        self.onSetGroupColor     = onSetGroupColor
+        self.onRemoveGroup       = onRemoveGroup
+        self.onUngroup           = onUngroup
+        self.onGroupFromWorkspace = onGroupFromWorkspace
+        self.onMoveToGroup     = onMoveToGroup
         self.onNewWorktree     = onNewWorktree
-        self.onChangeProjectDir = onChangeProjectDir
-        self.onReorderProject  = onReorderProject
-        self.onReorderSession  = onReorderSession
+        self.onReorderTopLevel = onReorderTopLevel
+        self.onReorderMember   = onReorderMember
 
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 680),
@@ -198,9 +209,8 @@ final class VestaWindowController: NSWindowController {
     /// the only durable handle AppKit gives for the titlebar.
     private var rootGlass: GlassView?   // glass mode's behind-window material (root-level)
     static let heatAmber = NSColor(srgbRed: 0.88, green: 0.70, blue: 0.47, alpha: 1)  // unseen-failure rail
-    private var newProjectBtn: NSButton?         // titlebar +, pinned to the sidebar edge
+    private var newWorkspaceBtn: NSButton?       // titlebar +, pinned to the sidebar edge
     private var plusLeading: NSLayoutConstraint?    // syncTitlebarLayout-driven
-    private var folderLeading: NSLayoutConstraint?  // syncTitlebarLayout-driven
     private var titlebarBand: NSView?   // glass mode's full-width titlebar tint strip
 
     func flattenTitlebar() {
@@ -291,11 +301,11 @@ final class VestaWindowController: NSWindowController {
     // MARK: public updates
 
     /// Live config reload (no relaunch): adopt new colors. Sidebar rows rebuild
-    /// with the new accent on the next setProjects() (the caller's refresh()).
+    /// with the new accent on the next setSidebar() (the caller's refresh()).
     func applyTheme(_ t: Theme) {
         theme = t
         surface = t.background
-        lastProjects = []   // invalidate the skip-if-unchanged cache — rows must repaint in the new theme
+        lastItems = []   // invalidate the skip-if-unchanged cache — rows must repaint in the new theme
         let glass = VestaConfig.shared.glassSidebar
         window?.isOpaque = !VestaConfig.shared.seeThrough
         window?.backgroundColor = VestaConfig.shared.seeThrough ? .clear : surface
@@ -336,51 +346,75 @@ final class VestaWindowController: NSWindowController {
     /// Show/hide the prefix-armed indicator (driven by PrefixState.onArmedChange).
     func setPrefixArmed(_ armed: Bool) { prefixPill?.isHidden = !armed }
 
-    /// Rebuild the PROJECTS area from the given snapshot.
+    /// Rebuild the WORKSPACES area from the given snapshot.
     /// Single source of sidebar truth — called on every onChange.
-    func setProjects(_ projects: [SidebarProject]) {
+    func setSidebar(_ items: [SidebarItem]) {
         guard let stack = projectsStack else { return }
         // A press/drag is live — keep the pressed row intact; stash the data and replay it
         // when the interaction releases (endPress / endDrag), so the refresh isn't lost.
-        if suppressRebuild { pendingProjects = projects; return }
+        if suppressRebuild { pendingItems = items; return }
         // Nothing changed since the last render → keep the existing rows. This is what
         // makes the ~1Hz refresh free at idle (no view churn, no layout, no tracking-area
         // resets — hover state survives too). applyTheme clears the cache so a re-theme
         // with identical data still repaints.
-        if projects == lastProjects, !stack.arrangedSubviews.isEmpty { return }
-        lastProjects = projects
+        if items == lastItems, !stack.arrangedSubviews.isEmpty { return }
+        lastItems = items
 
         // Remove all previously arranged subviews (avoid constraint leaks).
         let old = stack.arrangedSubviews
         old.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
 
-        // The PROJECTS header is pinned outside the scroll view — just refresh its count here.
-        projCount?.stringValue = String(format: "%02d", projects.count)
+        // The WORKSPACES header is pinned outside the scroll view — just refresh its count
+        // here. It counts WORKSPACES, not rows: a group contributes its members, never itself.
+        let total = items.reduce(0) { n, item in
+            switch item {
+            case .workspace:      return n + 1
+            case let .group(g):   return n + g.members.count
+            }
+        }
+        wsCount?.stringValue = String(format: "%02d", total)
 
-        if projects.isEmpty {
-            let empty = NSTextField(labelWithString: "no projects")
+        if items.isEmpty {
+            // Only reachable transiently — the pool always re-seeds a workspace.
+            let empty = NSTextField(labelWithString: "no workspaces")
             empty.font = Fonts.mono(12)
             empty.textColor = txt(.faint)
             stack.addArrangedSubview(padded(empty, left: 20, right: 16))
         } else {
-            for (pi, proj) in projects.enumerated() {
-                let prow = makeProjectRow(pi, proj)
-                stack.addArrangedSubview(prow)
-                // Stretch project row to full stack width (constraint added after insertion).
-                // Dividers run the full sidebar width — the count/+ slot IS the right edge.
-                prow.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
-                var last: NSView = prow
-                if proj.expanded {
-                    stack.setCustomSpacing(3, after: prow)   // tighter gap before nested sessions
-                    for (si, sess) in proj.sessions.enumerated() {
-                        let srow = makeSessionRow(pi, si, sess)
-                        stack.addArrangedSubview(srow)
-                        srow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -8).isActive = true
-                        last = srow
+            // Every group in render order — the "Move to group ▸" submenu of each workspace
+            // row is built from this (each row drops its OWN group before showing it).
+            let groups: [(id: String, name: String)] = items.compactMap {
+                guard case let .group(g) = $0 else { return nil }
+                return (id: g.id, name: g.name)
+            }
+            for (i, item) in items.enumerated() {
+                var last: NSView
+                switch item {
+                case let .workspace(w):
+                    // Top-level workspace: full stack width, no group indent.
+                    let row = makeWorkspaceRow(w, groups: groups)
+                    stack.addArrangedSubview(row)
+                    row.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
+                    last = row
+                case let .group(g):
+                    let header = makeGroupRow(g)
+                    stack.addArrangedSubview(header)
+                    // Headers run the full sidebar width — the count slot IS the right edge.
+                    header.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
+                    last = header
+                    if !g.collapsed {
+                        stack.setCustomSpacing(3, after: header)   // tighter gap before members
+                        for m in g.members {
+                            let row = makeWorkspaceRow(m, groupIdx: g.groupIndex,
+                                                       groups: groups.filter { $0.id != g.id })
+                            stack.addArrangedSubview(row)
+                            row.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -8).isActive = true
+                            last = row
+                        }
                     }
                 }
-                // Breathing room between project groups.
-                if pi < projects.count - 1 { stack.setCustomSpacing(10, after: last) }
+                // Breathing room between top-level items.
+                if i < items.count - 1 { stack.setCustomSpacing(10, after: last) }
             }
         }
     }
@@ -503,12 +537,12 @@ final class VestaWindowController: NSWindowController {
         edge.layer?.backgroundColor = hair(0.07).cgColor
         v.addSubview(edge)
 
-        // PROJECTS header — pinned below the titlebar, NOT part of the scrolling list.
-        let header = makeProjHeaderRow(count: 0)
+        // WORKSPACES header — pinned below the titlebar, NOT part of the scrolling list.
+        let header = makeHeaderRow(count: 0)
         header.translatesAutoresizingMaskIntoConstraints = false
         v.addSubview(header)
 
-        // The scrolling project list.
+        // The scrolling workspace list.
         let stack = NSStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
@@ -516,9 +550,9 @@ final class VestaWindowController: NSWindowController {
         stack.spacing = 3
         // Side insets so the outlined cards float instead of touching the sidebar edges.
         stack.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 8, right: 0)
-        projectsStack = stack   // setProjects clears + refills it
+        projectsStack = stack   // setSidebar clears + refills it
 
-        // Scroll the list so many projects/sessions don't grow the window. A flipped clip view
+        // Scroll the list so many workspaces don't grow the window. A flipped clip view
         // anchors content to the top; the appearance tracks the surface so the overlay scroller
         // knob matches the theme instead of defaulting to a light system knob.
         let scroll = NSScrollView()
@@ -577,23 +611,26 @@ final class VestaWindowController: NSWindowController {
 
     // MARK: – Row builders
 
-    /// PROJECTS section header (count only — the + lives in the titlebar now).
-    private func makeProjHeaderRow(count: Int) -> NSView {
-        sectionLabel("PROJECTS", count: String(format: "%02d", count))
+    /// WORKSPACES section header (count only — the + lives in the titlebar now).
+    private func makeHeaderRow(count: Int) -> NSView {
+        sectionLabel("WORKSPACES", count: String(format: "%02d", count))
     }
 
-    /// Project DIVIDER: ▾ name ── hairline ── (count | +). Projects are grouping labels,
-    /// not cards — sessions carry the visual weight (cmux-style). Click = expand/collapse;
-    /// the + is hover-revealed so a stray click near the edge can't create a session.
-    private func makeProjectRow(_ pi: Int, _ p: SidebarProject) -> NSView {
-        let tint = p.color ?? theme.accent
+    /// Group DIVIDER: ▾ name ── hairline ── count. A group is purely visual packaging over a
+    /// contiguous run of workspaces — a grouping label, not a card; the workspace rows below
+    /// carry the visual weight (cmux-style). Click = collapse/expand; there is no + (a group
+    /// owns no directory, so "new workspace" only makes sense in the titlebar).
+    private func makeGroupRow(_ g: SidebarGroup) -> NSView {
+        let tint = g.color ?? theme.accent
+        // A group reads as "active" when it holds the active workspace — the same weight
+        // the old project divider carried.
+        let active = g.members.contains { $0.active }
 
-        let nameLabel = NSTextField(labelWithString: "\(p.expanded ? "▾" : "▸") \(p.name)")
-        nameLabel.font = Fonts.mono(11, medium: p.active)
-        nameLabel.textColor = p.active ? tint : tint.withAlphaComponent(0.75)
+        let nameLabel = NSTextField(labelWithString: "\(g.collapsed ? "▸" : "▾") \(g.name)")
+        nameLabel.font = Fonts.mono(11, medium: active)
+        nameLabel.textColor = active ? tint : tint.withAlphaComponent(0.75)
         nameLabel.lineBreakMode = .byTruncatingTail
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        if let branch = p.branch { nameLabel.toolTip = "\(p.name) · ⎇ \(branch) — click to expand/collapse" }
 
         let hairline = NSView()
         hairline.translatesAutoresizingMaskIntoConstraints = false
@@ -602,31 +639,23 @@ final class VestaWindowController: NSWindowController {
         hairline.heightAnchor.constraint(equalToConstant: 1).isActive = true
         hairline.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        // Session count is always visible (expanded or not — no information lost).
-        let count = NSTextField(labelWithString: "\(p.sessions.count)")
+        // Member count is always visible (collapsed or not — no information lost).
+        let count = NSTextField(labelWithString: "\(g.members.count)")
         count.font = Fonts.mono(9.5)
         count.textColor = txt(.faint)
         count.alignment = .center
         count.translatesAutoresizingMaskIntoConstraints = false
 
-        let addBtn = tinyButton(symbol: "plus", label: "New session") { [weak self] in self?.onNewSession(pi) }
-        addBtn.translatesAutoresizingMaskIntoConstraints = false
-        addBtn.alphaValue = 0   // hover-revealed
-
-        // Count and + share one fixed-width trailing slot: the count shows at rest, and on
-        // hover the + swaps in over the same position (count fades out) — no width jump.
+        // Fixed-width trailing slot, same 18pt column the section header's count uses.
         let slot = NSView()
         slot.translatesAutoresizingMaskIntoConstraints = false
         slot.setContentHuggingPriority(.required, for: .horizontal)
-        slot.toolTip = "sessions in \(p.name) — hover: new session"
+        slot.toolTip = "workspaces in \(g.name)"
         slot.addSubview(count)
-        slot.addSubview(addBtn)
         NSLayoutConstraint.activate([
             slot.widthAnchor.constraint(equalToConstant: 18),
             count.centerXAnchor.constraint(equalTo: slot.centerXAnchor),
             count.centerYAnchor.constraint(equalTo: slot.centerYAnchor),
-            addBtn.centerXAnchor.constraint(equalTo: slot.centerXAnchor),
-            addBtn.centerYAnchor.constraint(equalTo: slot.centerYAnchor),
         ])
 
         let content = NSStackView(views: [nameLabel, hairline, slot])
@@ -636,44 +665,43 @@ final class VestaWindowController: NSWindowController {
         content.translatesAutoresizingMaskIntoConstraints = false
 
         let row = TaggedRow()
-        row.tag1 = pi
+        row.tag1 = g.groupIndex
+        row.isGroupHeader = true
         row.translatesAutoresizingMaskIntoConstraints = false
         row.wantsLayer = true
         row.layer?.cornerRadius = 5
-        row.hoverHighlight = false   // dividers don't need a hover wash; the + reveal is enough
-        // Direct alpha (no animator): rows rebuild ≤1/s under streaming output, and the
-        // hover re-assert would otherwise re-fade the count in and out every rebuild.
-        row.onHover = { [weak addBtn, weak count] inside in
-            addBtn?.alphaValue = inside ? 1 : 0   // + reveals
-            count?.alphaValue = inside ? 0 : 1    // count hides — same slot
-        }
+        row.hoverHighlight = false   // dividers don't need a hover wash
 
         row.addSubview(content)
         NSLayoutConstraint.activate([
             content.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 11),
             content.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
             content.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            addBtn.widthAnchor.constraint(equalToConstant: 18),
-            addBtn.heightAnchor.constraint(equalToConstant: 18),
             row.heightAnchor.constraint(equalToConstant: 26),
         ])
 
-        row.toolTip = "click to expand/collapse · drag to reorder"
-        row.onClick = { [weak self] in self?.onToggleExpand(pi) }
-        row.menu = makeProjectMenu(pi, name: p.name, hasColor: p.color != nil)
-        row.identity = p.id
-        wireDrag(row, isSession: false)
+        row.toolTip = "click to collapse/expand · drag to reorder · right-click for options"
+        row.onClick = { [weak self] in self?.onToggleGroup(g.groupIndex) }
+        row.menu = makeGroupMenu(g)
+        row.identity = g.id
+        wireDrag(row, isMember: false)
         return row
     }
 
-    /// Session CARD: outlined, self-sizing — title row (label + plain-text meta) over up
+    /// Workspace CARD: outlined, self-sizing — title row (label + plain-text meta) over up
     /// to 4 verbatim scrollback lines (TailStore). Heat is paint only: the inner-left rail
-    /// tints mint while the session waits for you (attention), never the geometry.
-    /// × is hover-revealed; the whole card selects.
-    private func makeSessionRow(_ pi: Int, _ si: Int, _ sess: SidebarSession) -> NSView {
-        let active = sess.active
+    /// tints while the workspace waits for you (attention), never the geometry.
+    /// × is hover-revealed; the whole card selects. `groupIdx` is the enclosing group's
+    /// index (−1 for a top-level workspace) — it picks the member drag lane. `groups` are the
+    /// move-to targets for the context menu (caller drops the row's own group).
+    private func makeWorkspaceRow(_ w: SidebarWorkspace, groupIdx: Int = -1,
+                                  groups: [(id: String, name: String)] = []) -> NSView {
+        let active = w.active
+        // Per-workspace tint (nil ⇒ the theme accent): drives the heat rail, the meta run
+        // and the card outline, so a colored workspace reads as its own thing.
+        let tint = w.color ?? theme.accent
 
-        let label = NSTextField(labelWithString: sess.label)
+        let label = NSTextField(labelWithString: w.label)
         label.font = Fonts.mono(12, medium: active)
         label.textColor = active ? txt(.full) : txt(.dim)
         label.lineBreakMode = .byTruncatingTail
@@ -685,45 +713,60 @@ final class VestaWindowController: NSWindowController {
         // the parts that are present — nothing more, nothing less.
         var meta: [String] = []
         var metaTip: [String] = []
-        if sess.paneCount > 1 { meta.append("⊞\(sess.paneCount)"); metaTip.append("⊞\(sess.paneCount) — panes in this session") }
-        if sess.dirty > 0 { meta.append("●\(sess.dirty)"); metaTip.append("●\(sess.dirty) — uncommitted changes") }
-        if let port = sess.ports.first { meta.append(":\(port)"); metaTip.append(":\(port) — listening port") }
-        switch sess.heat {
+        if w.paneCount > 1 { meta.append("⊞\(w.paneCount)"); metaTip.append("⊞\(w.paneCount) — panes in this workspace") }
+        if w.dirty > 0 { meta.append("●\(w.dirty)"); metaTip.append("●\(w.dirty) — uncommitted changes") }
+        if let port = w.ports.first { meta.append(":\(port)"); metaTip.append(":\(port) — listening port") }
+        switch w.heat {
         case .need:
-            meta.append(sess.heatAge ?? "●")
-            metaTip.append("\(sess.heatAge ?? "●") — rang while in background (unseen; click to clear)")
+            meta.append(w.heatAge ?? "●")
+            metaTip.append("\(w.heatAge ?? "●") — rang while in background (unseen; click to clear)")
         case .warn:
-            meta.append("✗ · \(sess.heatAge ?? "now")")
-            metaTip.append("✗ · \(sess.heatAge ?? "now") — last command failed \(sess.heatAge ?? "just now") ago (unseen; click to clear)")
+            meta.append("✗ · \(w.heatAge ?? "now")")
+            metaTip.append("✗ · \(w.heatAge ?? "now") — last command failed \(w.heatAge ?? "just now") ago (unseen; click to clear)")
         case .ok:
-            meta.append("✓ · \(sess.heatAge ?? "now")")
-            metaTip.append("✓ · \(sess.heatAge ?? "now") — last command succeeded \(sess.heatAge ?? "just now") ago (unseen; click to clear)")
+            meta.append("✓ · \(w.heatAge ?? "now")")
+            metaTip.append("✓ · \(w.heatAge ?? "now") — last command succeeded \(w.heatAge ?? "just now") ago (unseen; click to clear)")
         case .none: break
         }
         var titleViews: [NSView] = [label]
-        // Split schematic (vesta-sidebar-panes): pane-count cells, focused-first lit.
-        // ponytail: count-based grid, not real topology — read PaneTree.serializeLayout
-        // and draw the true split tree if anyone asks.
-        if VestaConfig.shared.sidebarPanes, sess.paneCount > 1 {
+        // Split schematic (vesta-sidebar-panes): the REAL split topology, focused pane lit.
+        if VestaConfig.shared.sidebarPanes, w.paneCount > 1 {
             // Real topology; a missing glyph (shouldn't happen for paneCount > 1) just
             // draws a single unfocused cell rather than lying with a count grid.
-            let schematic = PaneSchematic(layout: sess.layout ?? .leaf(focused: false),
-                                          accent: theme.accent, dim: txt(.faint))
+            let schematic = PaneSchematic(layout: w.layout ?? .leaf(focused: false),
+                                          accent: tint, dim: txt(.faint))
             schematic.toolTip = "split layout — focused pane highlighted (vesta-sidebar-panes)"
             titleViews.insert(schematic, at: 0)
         }
+        var trailing: [NSView] = []
         if !meta.isEmpty {
             let m = NSTextField(labelWithString: meta.joined(separator: " · "))
             m.font = Fonts.mono(9.5)
-            m.textColor = switch sess.heat {
-            case .need, .ok: theme.accent
+            m.textColor = switch w.heat {
+            case .need, .ok: tint
             case .warn: Self.heatAmber
             case .none: txt(.faint)
             }
             m.setContentCompressionResistancePriority(.required, for: .horizontal)
             m.setContentHuggingPriority(.required, for: .horizontal)
             m.toolTip = metaTip.joined(separator: " · ")   // built-in legend for the glyph run
-            titleViews.append(m)
+            trailing.append(m)
+        }
+        // A top-level workspace carries its own branch: there is no project row above it to
+        // hold one any more. Grouped workspaces stay quiet — the group already packages them.
+        if let branch = w.branch, !w.grouped {
+            let b = NSTextField(labelWithString: "⎇ \(branch)")
+            b.font = Fonts.mono(9.5)
+            b.textColor = txt(.faint)               // dim, whatever the heat run is doing
+            b.lineBreakMode = .byTruncatingTail
+            b.toolTip = "⎇ \(branch) — git branch of this workspace's folder"
+            // Truncate the branch BEFORE the workspace label (which is already .defaultLow).
+            b.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(240), for: .horizontal)
+            b.setContentHuggingPriority(.required, for: .horizontal)
+            trailing.append(b)
+        }
+        if !trailing.isEmpty {
+            titleViews += trailing
             // Reserve the top-right corner so the revealed × never covers the meta text.
             let pad = NSView()
             pad.translatesAutoresizingMaskIntoConstraints = false
@@ -736,8 +779,8 @@ final class VestaWindowController: NSWindowController {
         title.spacing = 6
 
         var rows: [NSView] = [title]
-        if !sess.tail.isEmpty {
-            let lines = sess.tail.suffix(TailStore.maxLines).map { (t: String) -> NSView in
+        if !w.tail.isEmpty {
+            let lines = w.tail.suffix(TailStore.maxLines).map { (t: String) -> NSView in
                 let l = NSTextField(labelWithString: t)
                 l.font = Fonts.mono(9)
                 l.textColor = txt(.faint)
@@ -759,7 +802,7 @@ final class VestaWindowController: NSWindowController {
             tail.orientation = .horizontal
             tail.alignment = .top
             tail.spacing = 7
-            tail.toolTip = "last output of this session's focused pane (vesta-sidebar-tails)"
+            tail.toolTip = "last output of this workspace's focused pane (vesta-sidebar-tails)"
             rule.heightAnchor.constraint(equalTo: tailStack.heightAnchor).isActive = true
             rows.append(tail)
         }
@@ -771,34 +814,46 @@ final class VestaWindowController: NSWindowController {
         content.translatesAutoresizingMaskIntoConstraints = false
         title.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
 
-        let closeBtn = tinyButton(symbol: "xmark", label: "Close session") { [weak self] in self?.onCloseSession(pi, si) }
+        // The row captures its paneID: a sidebar rebuilt between hover and click (another
+        // window closing a workspace) must not let this × kill whatever slid into w.index.
+        let closeBtn = tinyButton(symbol: "xmark", label: "Close workspace") { [weak self] in
+            self?.onCloseWorkspace(w.index, w.treeID)
+        }
         closeBtn.translatesAutoresizingMaskIntoConstraints = false
         closeBtn.alphaValue = 0   // hover-revealed: no permanent destructive target
 
-        // Heat rail (paint only, never geometry): bright accent = waiting for you,
-        // amber = unseen failure, soft accent = unseen success.
-        let railColor: NSColor = switch sess.heat {
-        case .need: theme.accent
+        // Heat rail (paint only, never geometry): bright tint = waiting for you,
+        // amber = unseen failure, soft tint = unseen success. At rest the rail is blank —
+        // EXCEPT when the workspace carries its own color, which then rests on the rail so a
+        // color set from the context menu is always visible (the active card shows it in its
+        // background + outline instead). Uncolored workspaces paint exactly as before.
+        let railColor: NSColor = switch w.heat {
+        case .need: tint
         case .warn: Self.heatAmber
-        case .ok:   theme.accent.withAlphaComponent(0.45)
-        case .none: .clear
+        case .ok:   tint.withAlphaComponent(0.45)
+        // Resting sits well BELOW .ok's 0.45: at equal alpha a merely-colored workspace was
+        // indistinguishable from one reporting an unseen success. Identity, not a signal.
+        case .none: active ? .clear : (w.color?.withAlphaComponent(0.22) ?? .clear)
         }
         let bar = accentBar(railColor)
 
         let row = TaggedRow()
-        row.tag1 = pi; row.tag2 = si
+        row.tag1 = w.index
+        row.groupIdx = groupIdx
         row.translatesAutoresizingMaskIntoConstraints = false
         row.wantsLayer = true
         row.layer?.cornerRadius = 7
         row.layer?.borderWidth = 1
-        row.layer?.borderColor = hair(active ? 0.16 : 0.07).cgColor
-        row.layer?.backgroundColor = active ? theme.accent.withAlphaComponent(0.07).cgColor : NSColor.clear.cgColor
+        // Outline: the plain hairline (white) unless the workspace carries its own color,
+        // which then shows at the SAME alphas — so an uncolored card looks exactly as before.
+        row.layer?.borderColor = (w.color ?? .white).withAlphaComponent(active ? 0.16 : 0.07).cgColor
+        row.layer?.backgroundColor = active ? tint.withAlphaComponent(0.07).cgColor : NSColor.clear.cgColor
         row.onHover = { [weak closeBtn] inside in closeBtn?.alphaValue = inside ? 1 : 0 }
         // Row-level legend for the heat paint (rail + tinted meta) — only when it's lit.
-        switch sess.heat {
+        switch w.heat {
         case .need: row.toolTip = "rang while in background — click to open"
-        case .warn: row.toolTip = "last command failed (exit shown on the amber rail) — unseen since \(sess.heatAge ?? "just now")"
-        case .ok:   row.toolTip = "last command succeeded — unseen since \(sess.heatAge ?? "just now")"
+        case .warn: row.toolTip = "last command failed (exit shown on the amber rail) — unseen since \(w.heatAge ?? "just now")"
+        case .ok:   row.toolTip = "last command succeeded — unseen since \(w.heatAge ?? "just now")"
         case .none: break
         }
 
@@ -823,12 +878,15 @@ final class VestaWindowController: NSWindowController {
             row.heightAnchor.constraint(greaterThanOrEqualToConstant: 30),
         ])
 
-        row.onClick = { [weak self] in self?.onSelectSession(pi, si) }
+        row.onClick = { [weak self] in self?.onSelectWorkspace(w.index) }
         row.onDoubleClick = { [weak self] in
-            self?.promptRenameSession(pi, si, current: sess.label)
+            self?.promptRenameWorkspace(w.index, current: w.label)
         }
-        row.identity = sess.treeID
-        wireDrag(row, isSession: true)
+        row.menu = makeWorkspaceMenu(w, groups: groups)
+        row.identity = w.treeID
+        // Grouped workspaces reorder INSIDE their group (member lane); a top-level
+        // workspace is its own unit in the top-level lane, alongside group headers.
+        wireDrag(row, isMember: w.grouped)
         return row
     }
 
@@ -839,9 +897,9 @@ final class VestaWindowController: NSWindowController {
     /// follows the cursor while the real row stays in the stack at alpha 0 to HOLD the gap; on
     /// each midpoint crossing we animate the stack's OWN arrangedSubview reordering (never
     /// hand-position arranged frames), so the drag can't desync from the layout NSStackView
-    /// reasserts. Projects reorder as whole blocks; sessions reorder only within their project.
-    private func wireDrag(_ row: TaggedRow, isSession: Bool) {
-        row.isSessionRow = isSession
+    /// reasserts. Groups reorder as whole blocks; members reorder only within their group.
+    private func wireDrag(_ row: TaggedRow, isMember: Bool) {
+        row.isSessionRow = isMember
         row.draggable = true
         row.onPressBegin = { [weak self] in self?.suppressRebuild = true }
         row.onPressEnd   = { [weak self] in self?.endPress() }
@@ -855,24 +913,26 @@ final class VestaWindowController: NSWindowController {
     private func endPress() {
         guard dragRow == nil else { return }
         suppressRebuild = false
-        if let p = pendingProjects { pendingProjects = nil; setProjects(p) }
+        if let p = pendingItems { pendingItems = nil; setSidebar(p) }
     }
 
     /// The drag lane split into reorder *units* (visual top→bottom), the grabbed unit's index,
-    /// and the arranged-subview index where the lane's units begin. A session drag's units are
-    /// single sibling rows; a project drag's units are whole blocks (divider + its session rows)
-    /// so the block moves together while only the divider floats. The lane's units are always a
-    /// contiguous span of arranged subviews, which is what lets moveDrag reorder them in place.
+    /// and the arranged-subview index where the lane's units begin. A member drag's units are
+    /// single sibling rows; the top-level lane's units are whole blocks (group header + its
+    /// member rows, or a lone top-level workspace row) so the block moves together while only
+    /// its head floats. The lane's units are always a contiguous span of arranged subviews,
+    /// which is what lets moveDrag reorder them in place.
     private func laneUnits(for row: TaggedRow) -> (units: [[NSView]], from: Int, rangeStart: Int) {
         let arranged = projectsStack.arrangedSubviews
         if row.isSessionRow {
-            let sib = arranged.compactMap { $0 as? TaggedRow }.filter { $0.isSessionRow && $0.tag1 == row.tag1 }
+            let sib = arranged.compactMap { $0 as? TaggedRow }.filter { $0.isSessionRow && $0.groupIdx == row.groupIdx }
             let units = sib.map { [$0] as [NSView] }
             let from = sib.firstIndex { $0 === row } ?? 0
             let start = sib.first.flatMap { first in arranged.firstIndex { $0 === first } } ?? 0
             return (units, from, start)
         }
-        // Project lane: group each divider with the session rows that follow it → one unit/block.
+        // Top-level lane: head each unit with a non-member row and absorb the member rows
+        // that follow it → a group block, or a lone top-level workspace row.
         var units: [[NSView]] = []
         var current: [NSView] = []
         for v in arranged {
@@ -884,9 +944,44 @@ final class VestaWindowController: NSWindowController {
             }
         }
         if !current.isEmpty { units.append(current) }
-        let dividers = arranged.compactMap { $0 as? TaggedRow }.filter { !$0.isSessionRow }
-        let from = dividers.firstIndex { $0 === row } ?? 0
+        let heads = arranged.compactMap { $0 as? TaggedRow }.filter { !$0.isSessionRow }
+        let from = heads.firstIndex { $0 === row } ?? 0
         return (units, from, 0)
+    }
+
+    /// The group header row under `point` (WINDOW coords) — the drop-on-header target, or nil
+    /// for an ordinary reorder. Only a TOP-LEVEL WORKSPACE row can join a group by being
+    /// dropped on a header: a dragged header over another header is a plain reorder, and a
+    /// member row never leaves its group's lane at all. Neither the dragged row (not a header)
+    /// nor its floating snapshot (not an arranged subview) can be its own target.
+    private func groupHeaderUnder(_ point: NSPoint, dragged row: TaggedRow) -> TaggedRow? {
+        guard !row.isSessionRow, !row.isGroupHeader else { return nil }
+        // Header rows are direct subviews of projectsStack, so one window→stack conversion (the
+        // same one moveDrag does for the gap math) lets us test their frames directly. Frames
+        // are read LIVE, after setVisualGap's permutation — the user drops on what they see.
+        let p = projectsStack.convert(point, from: nil)
+        return projectsStack.arrangedSubviews
+            .compactMap { $0 as? TaggedRow }
+            .first { $0.isGroupHeader && $0 !== row && $0.frame.contains(p) }
+    }
+
+    /// The currently-arranged row carrying `identity`. Every setSidebar replaces the rows
+    /// wholesale, so a reference frozen at pickup can be detached (and its tag1 stale) by the
+    /// time the drop commits — re-find by identity instead. `isHeader` keeps the two id
+    /// namespaces (Group.id vs PaneTree.paneID) from ever crossing.
+    private func arrangedRow(identity: String, isHeader: Bool) -> TaggedRow? {
+        projectsStack.arrangedSubviews
+            .compactMap { $0 as? TaggedRow }
+            .first { $0.identity == identity && $0.isGroupHeader == isHeader }
+    }
+
+    /// Self-check hook (chromeSelfCheck): the lane split for the arranged workspace row with
+    /// `identity`, as (unit count, grabbed unit's index, lane's first arranged index). The
+    /// lane semantics have no UI test; this is the cheap headless cover for them.
+    fileprivate func laneProbe(_ identity: String) -> (Int, Int, Int)? {
+        guard let row = arrangedRow(identity: identity, isHeader: false) else { return nil }
+        let lane = laneUnits(for: row)
+        return (lane.units.count, lane.from, lane.rangeStart)
     }
 
     private func beginDrag(_ row: TaggedRow) {
@@ -911,10 +1006,10 @@ final class VestaWindowController: NSWindowController {
         }
         suppressRebuild = true
         dragRow = row
-        dragGap = row.isSessionRow ? row.tag2 : row.tag1   // its own slot → an un-moved drop is a no-op
         let (units, from, rangeStart) = laneUnits(for: row)
         dragUnits = units; dragUnitFrom = from; dragRangeStart = rangeStart
-        // Candidate anchor rows (the session row itself, or a block's divider) drive the gap math.
+        dragGap = from   // its own slot → an un-moved drop is a no-op
+        // Candidate anchor rows (the member row itself, or a block's head) drive the gap math.
         let anchors = units.compactMap { $0.first as? TaggedRow }
         dragMidYs = anchors.map { $0.convert(NSPoint(x: 0, y: $0.bounds.midY), to: nil).y }
         dragLaneMinY = anchors.map { $0.frame.minY }.min() ?? row.frame.minY
@@ -929,7 +1024,10 @@ final class VestaWindowController: NSWindowController {
         dragSnapshot = snap
         row.alphaValue = 0
 
-        let cursorY = projectsStack.convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil).y
+        // Seed the drop point from the live cursor: a drag that somehow ends without a single
+        // moveDrag must not hit-test against a point left over from the previous drag.
+        dragLastPoint = window?.mouseLocationOutsideOfEventStream ?? .zero
+        let cursorY = projectsStack.convert(dragLastPoint, from: nil).y
         dragGrabOffset = row.frame.origin.y - cursorY
 
         // Esc cancels the drag (defensive teardown also lives in endDrag).
@@ -941,6 +1039,7 @@ final class VestaWindowController: NSWindowController {
 
     private func moveDrag(to windowPoint: NSPoint) {
         guard let snap = dragSnapshot else { return }
+        dragLastPoint = windowPoint   // where the drop will be decided (see endDrag)
         // Float the snapshot with the cursor, clamped to the lane (sessions can't leave their
         // project's rows; a divider can't leave the divider column).
         let cursorY = projectsStack.convert(windowPoint, from: nil).y
@@ -1009,6 +1108,13 @@ final class VestaWindowController: NSWindowController {
         let row = dragRow
         let snap = dragSnapshot
         let gap = dragGap
+        let from = dragUnitFrom   // the grabbed unit's slot in its lane, frozen at pickup
+        // Drop-on-header is decided HERE, not in finalize: it needs the cursor's last window
+        // point against the LIVE row frames, and finalize's rebuild destroys both. Non-nil ⇒
+        // join that group INSTEAD of reordering (the two are mutually exclusive); a cancelled
+        // drag (Esc, window close) never gets here with commit == true, so it does neither.
+        var joinGroup: String? = nil
+        if commit, let row { joinGroup = groupHeaderUnder(dragLastPoint, dragged: row)?.identity }
 
         // Finalize: tear down drag state, then replay the stash + commit EXACTLY as before.
         let finalize = { [weak self] in
@@ -1019,21 +1125,32 @@ final class VestaWindowController: NSWindowController {
             self.dragUnits = []
             self.dragSettling = false
             self.suppressRebuild = false
-            let pending = self.pendingProjects; self.pendingProjects = nil
+            let pending = self.pendingItems; self.pendingItems = nil
             guard commit, let row else {
-                self.setProjects(pending ?? self.lastProjects)   // cancelled → rebuild from latest truth
+                self.setSidebar(pending ?? self.lastItems)   // cancelled → rebuild from latest truth
                 return
             }
             // Replay the freshest stashed render FIRST: a no-op drop (gap==from, or the
             // identity-mismatch abort — exactly the case where the store changed mid-drag)
             // fires no broadcast, and the stash would otherwise be silently dropped. The
             // model call below uses the frozen tags + identity, so rebuilding first is safe.
-            if let pending { self.setProjects(pending) }
+            if let pending { self.setSidebar(pending) }
+            // Dropped on a group header → join that group; never also reorder. moveToGroup
+            // takes a flat INDEX and (unlike the reorder ops) has no identity guard of its own,
+            // so do the guarding here: re-find both ends by identity in the just-rebuilt stack
+            // and use the row's FRESH tag1. Either one gone (closed / ungrouped mid-drag) ⇒
+            // no-op, rather than moving some other workspace into some other group.
+            if let joinGroup {
+                guard let live = self.arrangedRow(identity: row.identity, isHeader: false),
+                      self.arrangedRow(identity: joinGroup, isHeader: true) != nil else { return }
+                self.onMoveToGroup(live.tag1, joinGroup)
+                return
+            }
             // row.identity travels with the drop: the store can mutate mid-drag (another
             // window, `vesta kill`, a shell exiting) — the model verifies the item at the
             // frozen index is still the one that was picked up, else aborts as a no-op.
-            if row.isSessionRow { self.onReorderSession(row.tag1, row.tag2, gap, row.identity) }
-            else { self.onReorderProject(row.tag1, gap, row.identity) }
+            if row.isSessionRow { self.onReorderMember(row.groupIdx, from, gap, row.identity) }
+            else { self.onReorderTopLevel(from, gap, row.identity) }
             // The reorder renders immediately (handleChange → store.renderNow).
         }
 
@@ -1046,6 +1163,9 @@ final class VestaWindowController: NSWindowController {
         pendingFinalize = finalize
         // Settle the float into the gap (commit) or back to its origin (cancel), THEN finalize —
         // the row visibly lands before the model rebuild swaps in the identical committed order.
+        // A drop-on-header settles into the same GAP (the animation is gap-based and the row's
+        // real landing spot — the end of the group's span — isn't laid out yet); it reads a
+        // touch off for one frame, then finalize's committed rebuild snaps it exactly right.
         let target = commit ? row.frame : dragOriginFrame
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.16
@@ -1078,10 +1198,9 @@ final class VestaWindowController: NSWindowController {
         return bar
     }
 
-    // MARK: – Project rename / recolor (right-click context menu)
+    // MARK: – Workspace / group rename + recolor (right-click context menu)
 
-    /// Preset project tints (mockup-friendly muted tones). "Custom…" opens the
-    /// system color panel; "Reset" clears back to the accent.
+    /// Preset tints (mockup-friendly muted tones). "Reset" clears back to the accent.
     private static let colorPresets: [(String, NSColor)] = [
         ("Mint",   NSColor(srgbRed: 0.55, green: 0.73, blue: 0.66, alpha: 1)),
         ("Blue",   NSColor(srgbRed: 0.46, green: 0.62, blue: 0.80, alpha: 1)),
@@ -1091,45 +1210,9 @@ final class VestaWindowController: NSWindowController {
         ("Slate",  NSColor(srgbRed: 0.58, green: 0.60, blue: 0.64, alpha: 1)),
     ]
 
-    private func makeProjectMenu(_ pi: Int, name: String, hasColor: Bool) -> NSMenu {
-        let menu = NSMenu()
-        menu.addItem(BlockMenuItem(title: "Rename…") { [weak self] in self?.promptRename(pi, current: name) })
-        menu.addItem(BlockMenuItem(title: "New worktree session…") { [weak self] in
-            self?.promptWorktree(pi)
-        })
-
-        let colorItem = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
-        let colorMenu = NSMenu()
-        for (label, color) in Self.colorPresets {
-            let item = BlockMenuItem(title: label) { [weak self] in self?.onSetProjectColor(pi, color) }
-            item.image = Self.swatch(color)
-            colorMenu.addItem(item)
-        }
-        colorMenu.addItem(.separator())
-        colorMenu.addItem(BlockMenuItem(title: "Reset to accent") { [weak self] in self?.onSetProjectColor(pi, nil) })
-        colorItem.submenu = colorMenu
-        menu.addItem(colorItem)
-
-        menu.addItem(.separator())
-        menu.addItem(BlockMenuItem(title: "Remove Project") { [weak self] in
-            self?.confirmRemove(pi, name: name)
-        })
-        return menu
-    }
-
-    /// Removing a project tears down its live terminal sessions — confirm first.
-    private func confirmRemove(_ pi: Int, name: String) {
-        let alert = NSAlert()
-        alert.messageText = "Remove “\(name)”?"
-        alert.informativeText = "This closes the project's sessions and any running programs in them."
-        alert.addButton(withTitle: "Remove")
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn { onRemoveProject(pi) }
-    }
-
     /// 12×12 filled rounded swatch for the color submenu.
     // ponytail: cache the rasterized swatch per color — every sidebar rebuild remade one
-    // NSImage (lockFocus) per preset × project. Colors are a fixed handful; no eviction.
+    // NSImage (lockFocus) per preset × row. Colors are a fixed handful; no eviction.
     private static var swatchCache: [NSColor: NSImage] = [:]
     private static func swatch(_ color: NSColor) -> NSImage {
         if let img = swatchCache[color] { return img }
@@ -1143,10 +1226,125 @@ final class VestaWindowController: NSWindowController {
         return img
     }
 
-    /// Lazy native rename: a small modal NSAlert with a text field.
-    private func promptRename(_ pi: Int, current: String) {
+    /// Shared "Color ▸" submenu — presets + reset, both routed through one setter, so the
+    /// workspace and group menus can't drift apart.
+    private func colorMenuItem(_ set: @escaping (NSColor?) -> Void) -> NSMenuItem {
+        let item = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for (label, color) in Self.colorPresets {
+            let entry = BlockMenuItem(title: label) { set(color) }
+            entry.image = Self.swatch(color)
+            sub.addItem(entry)
+        }
+        sub.addItem(.separator())
+        sub.addItem(BlockMenuItem(title: "Reset to accent") { set(nil) })
+        item.submenu = sub
+        return item
+    }
+
+    /// Right-click menu of a workspace card. `groups` are the move-to targets — the caller has
+    /// already dropped the row's OWN group (moving a workspace where it already is is a no-op).
+    /// Rebuilt with the row on every setSidebar pass, so it always reflects current truth.
+    private func makeWorkspaceMenu(_ w: SidebarWorkspace, groups: [(id: String, name: String)]) -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(BlockMenuItem(title: "Rename…") { [weak self] in
+            self?.promptRenameWorkspace(w.index, current: w.label)
+        })
+        menu.addItem(colorMenuItem { [weak self] color in self?.onSetWorkspaceColor(w.index, color) })
+        menu.addItem(BlockMenuItem(title: "New worktree workspace…") { [weak self] in
+            self?.promptWorktree(w.index, id: w.treeID)
+        })
+
+        // Grouping. An ungrouped workspace can start a group around itself; a grouped one
+        // already has one, so it only moves (or leaves).
+        menu.addItem(.separator())
+        if !w.grouped {
+            menu.addItem(BlockMenuItem(title: "New group from workspace") { [weak self] in
+                self?.onGroupFromWorkspace(w.index)
+            })
+        }
+        if !groups.isEmpty || w.grouped {
+            let move = NSMenuItem(title: "Move to group", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for g in groups {
+                sub.addItem(BlockMenuItem(title: g.name) { [weak self] in self?.onMoveToGroup(w.index, g.id) })
+            }
+            if w.grouped {
+                if !groups.isEmpty { sub.addItem(.separator()) }
+                sub.addItem(BlockMenuItem(title: "Remove from group") { [weak self] in
+                    self?.onMoveToGroup(w.index, nil)
+                })
+            }
+            move.submenu = sub
+            menu.addItem(move)
+        }
+
+        menu.addItem(.separator())
+        menu.addItem(BlockMenuItem(title: "Close Workspace") { [weak self] in
+            self?.confirmCloseWorkspace(w.index, name: w.label, id: w.treeID)
+        })
+        return menu
+    }
+
+    /// Right-click menu of a group divider. Ungroup keeps every workspace (only the packaging
+    /// goes); Remove Group closes them — hence the confirm on one and not the other.
+    private func makeGroupMenu(_ g: SidebarGroup) -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(BlockMenuItem(title: "Rename…") { [weak self] in
+            self?.promptRenameGroup(g.groupIndex, current: g.name)
+        })
+        menu.addItem(colorMenuItem { [weak self] color in self?.onSetGroupColor(g.groupIndex, color) })
+        menu.addItem(BlockMenuItem(title: "Ungroup (keep workspaces)") { [weak self] in
+            self?.onUngroup(g.groupIndex)
+        })
+
+        menu.addItem(.separator())
+        menu.addItem(BlockMenuItem(title: "Remove Group…") { [weak self] in
+            self?.confirmRemoveGroup(g.groupIndex, name: g.name, count: g.members.count)
+        })
+        return menu
+    }
+
+    /// A confirm whose FIRST button destroys something must not answer itself: AppKit gives
+    /// button 0 the Return key equivalent, so a stray Return (or a held-down key from the
+    /// terminal underneath) would close workspaces and kill their shells. Mark it destructive
+    /// (red, per HIG) and take Return away — the only ways out are a deliberate click or Esc,
+    /// which AppKit keeps on the "Cancel" button. Return is deliberately left inert rather
+    /// than reassigned to Cancel: an NSButton has ONE key equivalent, so giving Cancel "\r"
+    /// would take Esc away from it, trading one lost escape hatch for another.
+    private static func disarmReturn(_ alert: NSAlert) {
+        guard let destructive = alert.buttons.first else { return }
+        destructive.hasDestructiveAction = true
+        destructive.keyEquivalent = ""
+    }
+
+    /// Removing a group tears down the live workspaces inside it — confirm first.
+    private func confirmRemoveGroup(_ gi: Int, name: String, count: Int) {
         let alert = NSAlert()
-        alert.messageText = "Rename project"
+        alert.messageText = "Remove “\(name)”?"
+        alert.informativeText = "This closes the group's \(count) workspace\(count == 1 ? "" : "s") and any running programs in them."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        Self.disarmReturn(alert)
+        if alert.runModal() == .alertFirstButtonReturn { onRemoveGroup(gi) }
+    }
+
+    /// Closing a workspace kills its panes — confirm on the menu path (the hover × stays the
+    /// quick, no-questions route).
+    private func confirmCloseWorkspace(_ i: Int, name: String, id: String?) {
+        let alert = NSAlert()
+        alert.messageText = "Close “\(name)”?"
+        alert.informativeText = "This closes running programs in this workspace."
+        alert.addButton(withTitle: "Close")
+        alert.addButton(withTitle: "Cancel")
+        Self.disarmReturn(alert)
+        if alert.runModal() == .alertFirstButtonReturn { onCloseWorkspace(i, id) }
+    }
+
+    /// Lazy native rename: a small modal NSAlert with a text field (group context menu).
+    private func promptRenameGroup(_ gi: Int, current: String) {
+        let alert = NSAlert()
+        alert.messageText = "Rename group"
         alert.addButton(withTitle: "Rename")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
@@ -1154,14 +1352,14 @@ final class VestaWindowController: NSWindowController {
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
         if alert.runModal() == .alertFirstButtonReturn {
-            onRenameProject(pi, field.stringValue)
+            onRenameGroup(gi, field.stringValue)
         }
     }
 
-    /// Native rename prompt for a session (double-click a session row).
-    private func promptRenameSession(_ pi: Int, _ si: Int, current: String) {
+    /// Native rename prompt for a workspace (double-click a workspace card).
+    private func promptRenameWorkspace(_ i: Int, current: String) {
         let alert = NSAlert()
-        alert.messageText = "Rename session"
+        alert.messageText = "Rename workspace"
         alert.informativeText = "Leave blank to clear the name and use the folder name."
         alert.addButton(withTitle: "Rename")
         alert.addButton(withTitle: "Cancel")
@@ -1170,14 +1368,14 @@ final class VestaWindowController: NSWindowController {
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
         if alert.runModal() == .alertFirstButtonReturn {
-            onRenameSession(pi, si, field.stringValue)
+            onRenameWorkspace(i, field.stringValue)   // blank ⇒ setName clears it
         }
     }
 
-    /// Prompt for a branch name to create a git-worktree-isolated session.
-    private func promptWorktree(_ pi: Int) {
+    /// Prompt for a branch name to create a git-worktree-isolated workspace.
+    private func promptWorktree(_ i: Int, id: String?) {
         let alert = NSAlert()
-        alert.messageText = "New worktree session"
+        alert.messageText = "New worktree workspace"
         alert.addButton(withTitle: "Create")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
@@ -1187,7 +1385,7 @@ final class VestaWindowController: NSWindowController {
         if alert.runModal() == .alertFirstButtonReturn {
             let branch = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !branch.isEmpty else { return }
-            onNewWorktree(pi, branch)
+            onNewWorktree(i, branch, id)
         }
     }
 
@@ -1223,8 +1421,8 @@ final class VestaWindowController: NSWindowController {
         c.textColor = txt(.faint).withAlphaComponent(0.7)
         c.alignment = .center
         c.translatesAutoresizingMaskIntoConstraints = false
-        c.toolTip = "projects"
-        projCount = c   // pinned header builds this once; setProjects updates its value
+        c.toolTip = "workspaces"
+        wsCount = c   // pinned header builds this once; setSidebar updates its value
 
         let row = NSView()
         row.translatesAutoresizingMaskIntoConstraints = false
@@ -1233,7 +1431,7 @@ final class VestaWindowController: NSWindowController {
         NSLayoutConstraint.activate([
             l.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
             l.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            // Same column as the divider rows' count/+ slot: 18pt centered, 10 from the edge.
+            // Same column as the group rows' count slot: 18pt centered, 10 from the edge.
             c.widthAnchor.constraint(equalToConstant: 18),
             c.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
             c.centerYAnchor.constraint(equalTo: row.centerYAnchor),
@@ -1323,7 +1521,7 @@ final class VestaWindowController: NSWindowController {
         }
     }
 
-    // MARK: – Titlebar accessory (toggle · folder · dir)
+    // MARK: – Titlebar accessory (toggle · + · dir)
 
     private func buildTitlebarAccessory() {
         let acc = NSTitlebarAccessoryViewController()
@@ -1347,19 +1545,6 @@ final class VestaWindowController: NSWindowController {
         btn.action = #selector(toggleSidebarAction)
         toggleButton = btn
 
-        // Folder icon → change the active project's default directory.
-        let folder = BlockButton(action: { [weak self] in self?.onChangeProjectDir() })
-        folder.translatesAutoresizingMaskIntoConstraints = false
-        folder.isBordered = false
-        folder.bezelStyle = .regularSquare
-        folder.title = ""
-        folder.imagePosition = .imageOnly
-        let fcfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
-        folder.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "Change project folder")?
-            .withSymbolConfiguration(fcfg)
-        folder.contentTintColor = txt(.faint)
-        folder.toolTip = "Change the project's default folder"
-
         dirLabel = NSTextField(labelWithString: "")
         dirLabel.translatesAutoresizingMaskIntoConstraints = false
         dirLabel.attributedStringValue = dirAttributed("vesta")
@@ -1380,32 +1565,29 @@ final class VestaWindowController: NSWindowController {
         host.addSubview(pill)
         prefixPill = pill
 
-        // New-project +, promoted from the PROJECTS header — pinned (via syncTitlebarLayout)
+        // New-workspace +, promoted from the WORKSPACES header — pinned (via syncTitlebarLayout)
         // to the sidebar's right edge so it reads as the sidebar's own titlebar action.
-        let plus = BlockButton(action: { [weak self] in self?.onNewProject() })
+        let plus = BlockButton(action: { [weak self] in self?.onNewWorkspace() })
         plus.translatesAutoresizingMaskIntoConstraints = false
         plus.isBordered = false
         plus.bezelStyle = .regularSquare
         plus.title = ""
         plus.imagePosition = .imageOnly
-        plus.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add project")?
+        plus.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New workspace")?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .regular))
         plus.contentTintColor = txt(.dim)
-        plus.toolTip = "Add project"
-        newProjectBtn = plus
+        plus.toolTip = "New workspace (⌘N)"
+        newWorkspaceBtn = plus
 
         host.addSubview(btn)
         host.addSubview(plus)
-        host.addSubview(folder)
         host.addSubview(dirLabel)
 
-        // Dynamic constants (set by syncTitlebarLayout): the accessory host doesn't know
-        // where the sidebar edge is — it starts after the traffic lights — so the folder+path
-        // cluster and the + are positioned by live sidebar width minus the host's own origin.
+        // Dynamic constant (set by syncTitlebarLayout): the accessory host doesn't know where
+        // the sidebar edge is — it starts after the traffic lights — so the + is positioned by
+        // live sidebar width minus the host's own origin, and the path label trails it.
         let plusLead = plus.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 140)
-        let folderLead = folder.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 180)
         plusLeading = plusLead
-        folderLeading = folderLead
 
         NSLayoutConstraint.activate([
             btn.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 6),
@@ -1418,12 +1600,7 @@ final class VestaWindowController: NSWindowController {
             plus.widthAnchor.constraint(equalToConstant: 18),
             plus.heightAnchor.constraint(equalToConstant: 18),
 
-            folderLead,
-            folder.centerYAnchor.constraint(equalTo: host.centerYAnchor),
-            folder.widthAnchor.constraint(equalToConstant: 13),
-            folder.heightAnchor.constraint(equalToConstant: 13),
-
-            dirLabel.leadingAnchor.constraint(equalTo: folder.trailingAnchor, constant: 7),
+            dirLabel.leadingAnchor.constraint(equalTo: plus.trailingAnchor, constant: 10),
             dirLabel.centerYAnchor.constraint(equalTo: host.centerYAnchor),
             dirLabel.trailingAnchor.constraint(lessThanOrEqualTo: host.trailingAnchor, constant: -10),
 
@@ -1453,20 +1630,19 @@ final class VestaWindowController: NSWindowController {
         }
     }
 
-    /// Track the sidebar edge from the titlebar: the + hugs the sidebar's right edge and
-    /// the folder+path cluster starts at the TERMINAL's left edge. Host coords differ from
-    /// window coords (traffic lights sit before the accessory), so subtract the host origin.
+    /// Track the sidebar edge from the titlebar: the + hugs the sidebar's right edge and the
+    /// path label trails it into the TERMINAL column. Host coords differ from window coords
+    /// (traffic lights sit before the accessory), so subtract the host origin.
     func syncTitlebarLayout() {
         guard let host = titlebarAccessory, host.window != nil else { return }
         let hostX = host.convert(NSPoint.zero, to: nil).x
         let w = sidebarOpen ? openWidth : 0
-        newProjectBtn?.isHidden = !sidebarOpen        // collapsed: no sidebar edge to hug
+        newWorkspaceBtn?.isHidden = !sidebarOpen      // collapsed: no sidebar edge to hug
         plusLeading?.constant = max(40, w - hostX - 28)
-        folderLeading?.constant = max(40, w - hostX + 14)
     }
 
     /// The notifications bell, in its OWN trailing titlebar accessory so it pins to the
-    /// window's rightmost edge (the leading accessory above holds the toggle/folder/path).
+    /// window's rightmost edge (the leading accessory above holds the toggle/+/path).
     private func buildBellAccessory() {
         let acc = NSTitlebarAccessoryViewController()
         acc.layoutAttribute = .trailing
@@ -1511,8 +1687,8 @@ final class VestaWindowController: NSWindowController {
         window?.addTitlebarAccessoryViewController(acc)
     }
 
-    /// Onboarding "clean slate": hide every titlebar accessory (sidebar toggle, folder,
-    /// path, prefix pill) so only the traffic lights remain. Restored when onboarding ends.
+    /// Onboarding "clean slate": hide every titlebar accessory (sidebar toggle, +, path,
+    /// prefix pill) so only the traffic lights remain. Restored when onboarding ends.
     func setChromeHidden(_ hidden: Bool) {
         titlebarAccessory?.isHidden = hidden
         bellAccessory?.isHidden = hidden
@@ -1569,7 +1745,7 @@ final class VestaWindowController: NSWindowController {
         UserDefaults.standard.set(sidebarOpen, forKey: "VestaSidebarOpen")   // remember across launches
         // Set the model constant DIRECTLY (authoritative), then animate only the layout pass.
         // Driving the constant through .animator() changes it incrementally over the duration, so
-        // a competing layout — e.g. setProjects() firing while an agent streams output — interrupts
+        // a competing layout — e.g. setSidebar() firing while an agent streams output — interrupts
         // the animation and freezes the constant partway, parking the sidebar half-collapsed.
         // Use openWidth (updated by drag) so ⌘B restores to whatever drag set.
         sidebarWidth.constant = sidebarOpen ? openWidth : 0
@@ -1589,16 +1765,19 @@ final class VestaWindowController: NSWindowController {
 
 // MARK: – Supporting types
 
-/// A row/view that carries two integer indices for gesture handlers.
+/// A row/view that carries its model indices for gesture handlers.
 /// Index values are read at tap-time from the view — never captured in closures
-/// that outlive a setProjects rebuild — so they cannot go stale.
+/// that outlive a setSidebar rebuild — so they cannot go stale.
 final class TaggedRow: NSView {
-    var tag1 = 0   // project index
-    var tag2 = 0   // session index (unused for project rows)
-    var isSessionRow = false   // false ⇒ project divider; picks the drag lane (projects vs. sessions)
+    var tag1 = 0             // flat workspace index, or group index on a header row
+    var groupIdx = -1        // enclosing group (−1 ⇒ top-level) — picks the member drag lane
+    var isGroupHeader = false   // true ⇒ group divider, not a workspace card
+    // false ⇒ the TOP-LEVEL lane (group headers + ungrouped workspace rows);
+    // true ⇒ the member lane inside one group. Named for the old session rows it replaced.
+    var isSessionRow = false
     var onClick: (() -> Void)?
     var onDoubleClick: (() -> Void)?
-    var onHover: ((Bool) -> Void)?   // hover-revealed actions (+/×)
+    var onHover: ((Bool) -> Void)?   // hover-revealed actions (×)
     var hoverHighlight = true        // background wash on hover (off for divider rows)
 
     // Drag-to-reorder. onClick fires on mouseUp only if the press never crossed the drag
@@ -1606,7 +1785,7 @@ final class TaggedRow: NSView {
     // the whole drag/up sequence to the mouseDown view even across a sidebar rebuild, so the
     // captured indices in these closures stay valid to the drop.
     var draggable = false
-    var identity = ""                      // stable id (Proj.id / PaneTree.paneID) — drop-time guard
+    var identity = ""                      // stable id (Group.id / PaneTree.paneID) — drop-time guard
     var onDragBegin: (() -> Void)?
     var onDragMove: ((NSPoint) -> Void)?   // cursor in window coords
     var onDragEnd: ((Bool) -> Void)?       // commit flag (false ⇒ cancelled)
@@ -1865,21 +2044,34 @@ private extension Comparable {
 // MARK: – Self-check
 
 @MainActor func chromeSelfCheck() {
-    // Build with a couple of SidebarProject values: one active+expanded with 2 sessions,
-    // one collapsed. Pure AppKit — no Workspace/ghostty involved.
+    // Build a flat sidebar: an expanded group with 2 members, a collapsed group, and a
+    // top-level workspace with its own branch. Pure AppKit — no Workspace/ghostty involved.
     let wc = VestaWindowController(theme: Theme(), content: NSView())
     assert(wc.window != nil, "window must exist")
 
-    let s1 = SidebarSession(label: "shell", active: true)
-    let s2 = SidebarSession(label: "vim",   active: false)
-    let projects: [SidebarProject] = [
-        SidebarProject(name: "vesta",  branch: "main", expanded: true,  active: true,  sessions: [s1, s2]),
-        SidebarProject(name: "relay", branch: nil,    expanded: false, active: false, sessions: []),
+    let m1 = SidebarWorkspace(label: "shell", active: true,  index: 0, treeID: "t0", grouped: true)
+    let m2 = SidebarWorkspace(label: "vim",   active: false, index: 1, treeID: "t1", grouped: true)
+    let m3 = SidebarWorkspace(label: "relay", active: false, index: 2, treeID: "t2", grouped: true)
+    let solo = SidebarWorkspace(label: "scratch", active: false, index: 3,
+                                treeID: "t3", branch: "main", grouped: false)
+    let items: [SidebarItem] = [
+        .group(SidebarGroup(name: "vesta", collapsed: false, id: "g0", groupIndex: 0, members: [m1, m2])),
+        .group(SidebarGroup(name: "relay", collapsed: true,  id: "g1", groupIndex: 1, members: [m3])),
+        .workspace(solo),
     ]
-    wc.setProjects(projects)
+    wc.setSidebar(items)
 
-    // Calling setProjects again must not crash (rebuild without leaking constraints)
-    wc.setProjects(projects)
+    // Calling setSidebar again must not crash (rebuild without leaking constraints)
+    wc.setSidebar(items)
+
+    // Drag lanes. Top-level lane (dragging the solo workspace "t3"): 3 units — the expanded
+    // group's block (header + its 2 member rows), the collapsed group's lone header, and the
+    // solo row itself at index 2 — spanning the stack from arranged index 0. Member lane
+    // (dragging "t1", the 2nd member of group 0): only its 2 in-group siblings, itself at
+    // index 1, starting at arranged index 1 (right after that group's header).
+    assert(wc.laneProbe("t3").map { $0 == (3, 2, 0) } ?? false, "top-level lane: solo is unit 2 of 3")
+    assert(wc.laneProbe("t1").map { $0 == (2, 1, 1) } ?? false, "member lane: 2 siblings, dragged is #1")
+    assert(wc.laneProbe("t2") == nil, "a collapsed group's members render no rows — no lane")
 
     wc.setStatus("▌ normal · ⎇ main ↑1 · 2 dirty")
     wc.setDir("vesta / ~/dev/vesta")

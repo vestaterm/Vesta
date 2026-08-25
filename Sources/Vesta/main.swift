@@ -8,8 +8,8 @@ let argv = Array(CommandLine.arguments.dropFirst())
 if argv.first == "selfcheck" {
     // Pure-logic checks only. PaneTree/Chrome spawn real ghostty surfaces,
     // which need a live app + run loop — exercised by actually launching the app.
-    // workspaceSelfCheck tests the Proj/SidebarProject data model without ghostty.
-    _ = ghosttyConfigSelfCheck()
+    // workspaceSelfCheck tests the WS/Group data model without ghostty.
+    print(ghosttyConfigSelfCheck())   // returns its own "… OK" line, like the others print
     controlSelfCheck()
     gitSelfCheck()
     portsSelfCheck()
@@ -183,9 +183,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         PaneOutputTap.shared.reconcile(allLivePaneIDs())  // pane-output taps every live pane
     }
 
-    /// Every live pane's mux id, across all projects/sessions (pane-output subscribes to all).
+    /// Every live pane's mux id, across all workspaces (pane-output subscribes to all).
     func allLivePaneIDs() -> Set<String> {
-        Set((active?.workspace.projs ?? []).flatMap { $0.sessions.flatMap { $0.paneIDs } })
+        Set((active?.workspace.wss ?? []).flatMap { $0.tree.paneIDs })
     }
 
     // Transient glass overlays, each in a child window over the active one (see ChildOverlay).
@@ -281,14 +281,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Split Horizontal", "⌘⇧D", { let ws = $0.workspace; ws.activeTree.splitFocused(.horizontal, cwd: ws.activeTree.focusedCwd) }),
             ("Zoom Pane", "", { $0.workspace.activeTree.zoomFocused() }),
             ("Close Pane", "⌘W", { [weak self] ctx in self?.closePaneCascade(ctx) }),
-            ("Close Session", "⌘⇧W", { let ws = $0.workspace; ws.closeSession(ws.activeP, ws.activeS) }),
-            ("New Session", "⌘T", { let ws = $0.workspace; ws.newSession(ws.activeP) }),
+            ("Close Session", "⌘⇧W", { let ws = $0.workspace; ws.closeWorkspace(ws.activeW) }),
+            ("New Session", "⌘T", { $0.workspace.newWorkspace() }),
             ("New Window", "⌘N", { [weak self] _ in self?.newWindow() }),
             ("Toggle Sidebar", "⌘B", { $0.controller.toggleSidebar() }),
             ("Focus Next Pane", "⌘]", { $0.workspace.activeTree.focusNext() }),
             ("Focus Previous Pane", "⌘[", { $0.workspace.activeTree.focusPrev() }),
-            ("Next Session", "⌘}", { $0.workspace.nextSession() }),
-            ("Previous Session", "⌘{", { $0.workspace.prevSession() }),
+            ("Next Session", "⌘}", { $0.workspace.nextWorkspace() }),
+            ("Previous Session", "⌘{", { $0.workspace.prevWorkspace() }),
             ("Find in Terminal", "⌘F", { $0.workspace.activeTree.focused?.startSearch() }),
             ("Rename Session", "", { [weak self] _ in self?.promptRenameActiveSession() }),
             ("Kill Session", "", { $0.workspace.activeTree.killFocusedSession() }),
@@ -613,33 +613,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             })
     }
 
-    /// Full structured state for `vesta state`: the shared project/session pool plus every
-    /// window's view (active selection + whether it hosts the live terminal). Lets an agent
-    /// see the whole tree the sidebar shows, not just the active window's panes.
+    /// Full structured state for `vesta state`: the shared flat workspace pool + its visual
+    /// groups, plus every window's view (active selection + whether it hosts the live
+    /// terminal). Lets an agent see the whole tree the sidebar shows, not just the active
+    /// window's panes.
+    ///
+    /// `projects` is a COMPAT VIEW, not a second model: plugins written against the old
+    /// Project→Session dump keep working by reading one pseudo-project per top-level sidebar
+    /// unit (a group → its members as sessions; a bare workspace → a project holding only
+    /// itself). New consumers should read `workspaces` + `groups`.
     func fullState() -> [String: Any] {
-        let projects = store.projs.enumerated().map { (pi, p) -> [String: Any] in
-            let sessions = p.sessions.enumerated().map { (si, t) -> [String: Any] in
+        let wss = store.workspaces
+        let units = Workspace.topLevelUnits(groupIDs: wss.map(\.groupID))
+        func label(_ w: WS) -> String { w.tree.name ?? w.tree.focusedLabel }
+        func group(of w: WS) -> Group? { w.groupID.flatMap { id in store.groups.first { $0.id == id } } }
+
+        let workspaces = wss.enumerated().map { (i, w) -> [String: Any] in
+            var d: [String: Any] = [
+                "index": i, "name": label(w),
+                "panes": w.tree.paneIDs.count, "paneIDs": w.tree.paneIDs,
+            ]
+            if let c = w.tree.focusedCwd { d["cwd"] = c }
+            if let g = group(of: w) { d["group"] = g.name }
+            if let c = w.color { d["color"] = hexString(c) }
+            return d
+        }
+        let groups = store.groups.enumerated().map { (gi, g) -> [String: Any] in
+            var d: [String: Any] = [
+                "index": gi, "id": g.id, "name": g.name, "collapsed": g.collapsed,
+                "workspaces": wss.indices.filter { wss[$0].groupID == g.id },
+            ]
+            if let c = g.color { d["color"] = hexString(c) }
+            return d
+        }
+        let projects = units.enumerated().map { (pi, unit) -> [String: Any] in
+            let g = group(of: wss[unit[0]])
+            let sessions = unit.enumerated().map { (si, i) -> [String: Any] in
                 var d: [String: Any] = [
-                    "index": si, "panes": t.paneIDs.count, "paneIDs": t.paneIDs,
+                    "index": si, "workspace": i, "name": label(wss[i]),
+                    "panes": wss[i].tree.paneIDs.count, "paneIDs": wss[i].tree.paneIDs,
                 ]
-                if let n = t.name { d["name"] = n }
-                if let c = t.focusedCwd { d["cwd"] = c }
+                if let c = wss[i].tree.focusedCwd { d["cwd"] = c }
                 return d
             }
+            // A group has no cwd of its own — its first member's stands in for the old
+            // project `path`, which is all the compat readers ever used it for.
             var d: [String: Any] = [
-                "index": pi, "name": p.name, "path": p.path,
-                "expanded": p.expanded, "sessions": sessions,
+                "index": pi, "name": g?.name ?? label(wss[unit[0]]),
+                "path": wss[unit[0]].tree.focusedCwd ?? NSHomeDirectory(),
+                "expanded": !(g?.collapsed ?? false), "sessions": sessions,
             ]
-            if let c = p.color { d["color"] = hexString(c) }
+            if let c = g?.color ?? wss[unit[0]].color { d["color"] = hexString(c) }
             return d
         }
         let wins = windows.enumerated().map { (wi, w) -> [String: Any] in
-            [
-                "index": wi, "key": w === active, "activeProject": w.workspace.activeP,
-                "activeSession": w.workspace.activeS, "hostsLive": w.workspace.hostsLive,
+            let a = w.workspace.activeW
+            // Same compat view for the cursor: which unit the active row sits in, and where
+            // inside it — so `vesta sessions`' "▸ P S" marker still points at the right row.
+            let up = units.firstIndex { $0.contains(a) }
+            return [
+                "index": wi, "key": w === active, "activeWorkspace": a,
+                "activeProject": up ?? 0,
+                "activeSession": up.flatMap { units[$0].firstIndex(of: a) } ?? 0,
+                "hostsLive": w.workspace.hostsLive,
             ]
         }
-        return ["ok": true, "projects": projects, "windows": wins]
+        return ["ok": true, "workspaces": workspaces, "groups": groups,
+                "projects": projects, "windows": wins]
     }
 
     // MARK: - Window-state persistence
@@ -664,24 +704,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let ctx = newWindow(hydrateFrom: first)  // hydrates inside init when `first` is present
         guard let data, let parsed, let first else { return }
         let (version, saved) = parsed
-        // Upgrade courtesy: keep the legacy (pre-versioning) file once, so a downgraded
-        // build — which reads the v1 dict as "no saved windows" and overwrites it — can
-        // be recovered manually from windows.json.v0.
-        if version == 0 {
-            try? data.write(to: URL(fileURLWithPath: Self.windowsFile + ".v0"), options: .atomic)
+        // Upgrade courtesy: keep the PRE-migration file once, so a downgraded build — which
+        // can't read the newer shape and overwrites it — can be recovered manually from
+        // windows.json.v<old version>.
+        if version < windowsFormatVersion {
+            try? data.write(to: URL(fileURLWithPath: Self.windowsFile + ".v\(version)"),
+                            options: .atomic)
         }
         // Entry 0 (the key window at save time) is authoritative for the shared pool — already
         // hydrated inside newWindow(hydrateFrom:) above.
         if let fd = first["frame"] as? String { ctx.controller.window?.setFrame(from: fd) }
         ctx.refresh()
         // v1+: recreate the other windows as views over the SAME pool — only their
-        // selection + frame are per-window (sessions live once, in the shared store).
+        // selection + frame are per-window (workspaces live once, in the shared store).
         // Legacy (version 0) files collapse to one window, as before.
         guard version >= 1 else { return }
         for entry in saved.dropFirst() {
             let extra = newWindow()
-            extra.workspace.selectSession(entry["activeProject"] as? Int ?? 0,
-                                          entry["activeSession"] as? Int ?? 0)
+            extra.workspace.selectWorkspace(entry["activeWorkspace"] as? Int ?? 0)
             if let fd = entry["frame"] as? String { extra.controller.window?.setFrame(from: fd) }
             extra.refresh()
         }
@@ -692,7 +732,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Persist every window's projects + sessions-by-cwd. Coalesced so rapid
+    /// Persist every window's workspaces + groups. Coalesced so rapid
     /// changes (focus/git callbacks) don't write on every tick.
     private func scheduleSave() {
         // relaunchingForUpdate too: this fires 0.6s late, so a save armed just before the
@@ -712,9 +752,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func saveWindows() {
         guard !windows.isEmpty else { return }
         let key = active
-        // ponytail: every entry repeats the shared project pool (Workspace.serialize
+        // ponytail: every entry repeats the shared workspace pool (Workspace.serialize
         // includes it; entry 0 is authoritative on restore). Split pool vs. per-window
-        // state in a v2 format if the duplication ever matters.
+        // state in a later format if the duplication ever matters.
         let ordered = [key].compactMap { $0 } + windows.filter { $0 !== key }
         let entries = ordered.map { w -> [String: Any] in
             var e = w.workspace.serialize()
@@ -778,11 +818,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // only the relay; commands live on the daemon's pty and never change the pid).
         TailStore.shared.onCommandDone = { [weak self] paneID, _, duration in
             guard let self, duration >= 3 else { return }   // quick commands don't ring
-            for proj in self.store.projs {
-                for tree in proj.sessions where !tree.isDormant && tree.paneIDs.contains(paneID) {
-                    self.windows.forEach { $0.workspace.markAttention(tree) }   // no-op for the active one
-                    return
-                }
+            for tree in self.store.workspaces.map(\.tree)
+            where !tree.isDormant && tree.paneIDs.contains(paneID) {
+                self.windows.forEach { $0.workspace.markAttention(tree) }   // no-op for the active one
+                return
             }
         }
 
@@ -956,10 +995,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// mid-stagger just no-ops here.
     private func scheduleBackgroundMaterialize() {
         guard VestaConfig.shared.sidebarTails else { return }
-        // Re-scan the shared pool each tick (covers all projects, incl. collapsed) and
+        // Re-scan the shared pool each tick (covers every workspace, incl. collapsed groups) and
         // materialize the next still-dormant tree; stop when none remain.
         func step() {
-            guard let tree = store.projs.flatMap(\.sessions).first(where: { $0.isDormant }) else {
+            guard let tree = store.workspaces.map(\.tree).first(where: { $0.isDormant }) else {
                 windows.forEach { $0.refresh() }   // all live → tails/heat now render
                 return
             }
@@ -987,7 +1026,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let overlay = OnboardingOverlay(
             theme: theme,
-            addProject: { [weak self] path in self?.active?.workspace.newProject(at: path) },
+            addWorkspace: { [weak self] path in self?.active?.workspace.newWorkspace(at: path) },
             onFinish: { [weak self] in
                 guard let self else { return }
                 self.onboardingActive = false
@@ -1251,8 +1290,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let ws = ctx.workspace
         if ws.activeTree.paneCount > 1 {
             ws.activeTree.killFocusedSession()          // 1) close the pane (kills its shell)
-        } else if ws.totalSessions > 1 {
-            ws.closeSession(ws.activeP, ws.activeS)     // 2) close the session (kills its shells)
+        } else if ws.wss.count > 1 {
+            ws.closeWorkspace(ws.activeW)               // 2) close the workspace (kills its shells)
         } else {
             ctx.controller.window?.performClose(nil)    // 3) last one → close the window
         }
@@ -1360,7 +1399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // daemon). Result: every ⌘W stranded a live shell forever, still holding its
             // ports. Detach-and-keep-the-shell is prefix-d, which is an explicit choice.
             case "w":
-                if shift { ws.closeSession(ws.activeP, ws.activeS) } else { closePaneCascade(ctx) }
+                if shift { ws.closeWorkspace(ws.activeW) } else { closePaneCascade(ctx) }
                 return nil
             // ⌘F: in-terminal search (⌃⌘F is full screen — let that fall through)
             case "f" where !e.modifierFlags.contains(.control):
@@ -1381,21 +1420,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "[":
                 ws.activeTree.focusPrev()
                 return nil
-            // ⌘T: new session in the active project (cwd = ~)
+            // ⌘T: new workspace (cwd = the active one's, so ⌘T continues where you stand)
             case "t":
-                ws.newSession(ws.activeP)
+                ws.newWorkspace()
                 return nil
-            // ⌘}/⌘{: cycle sessions within the active project
+            // ⌘}/⌘{: cycle workspaces
             case "}":
-                ws.nextSession()
+                ws.nextWorkspace()
                 return nil
             case "{":
-                ws.prevSession()
+                ws.prevWorkspace()
                 return nil
-            // ⌘1–9: select session n in the active project
+            // ⌘1–9: select the nth sidebar row (1-based)
             case "1", "2", "3", "4", "5", "6", "7", "8", "9":
                 if let n = Int(e.charactersIgnoringModifiers ?? "") {
-                    ws.selectSessionInActiveProject(n)
+                    ws.selectWorkspaceNumber(n)
                 }
                 return nil
             // ⌘⇧Return: open browser at the focused session's first detected port, else about:blank
@@ -1437,9 +1476,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .focusLeft, .focusUp: ws.activeTree.focusPrev()
         case .focusRight, .focusDown: ws.activeTree.focusNext()
         case .zoom: ws.activeTree.zoomFocused()
-        case .newSession: ws.newSession(ws.activeP)
-        case .nextSession: ws.nextSession()
-        case .prevSession: ws.prevSession()
+        case .newSession: ws.newWorkspace()
+        case .nextSession: ws.nextWorkspace()
+        case .prevSession: ws.prevWorkspace()
         case .rename: promptRenameActiveSession()
         // Detach: close the pane → relay EOFs → shell lives on under vestad.
         case .detach: ws.activeTree.closeFocused()
@@ -1448,7 +1487,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Prefix-`,` rename: rename the ACTIVE session (Workspace.renameSession, added in M2).
+    /// Prefix-`,` rename: rename the ACTIVE workspace. Blank clears the custom name (nil),
+    /// falling back to the folder label — same trim-empty→nil convention as the sidebar.
     private func promptRenameActiveSession() {
         guard let ws = active?.workspace else { return }
         let alert = NSAlert()
@@ -1460,25 +1500,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
         if alert.runModal() == .alertFirstButtonReturn {
-            ws.renameSession(ws.activeP, ws.activeS, field.stringValue)
+            let t = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            ws.renameWorkspace(ws.activeW, t.isEmpty ? nil : t)
         }
     }
 }
 
-/// Append config projects from `vesta-projects = ~/a, ~/b` into the workspace.
-/// The home project (index 0) is already created by Workspace.init; config
-/// projects are appended as collapsed + empty (lazy).
+/// Seed the `vesta-projects = ~/a, ~/b` paths as dormant top-level workspaces. Runs on
+/// EVERY window that owns the pool, not just an empty one — appendConfigWorkspace dedupes on
+/// the seeded path it recorded (falling back to the live cwd), so a path added to the config
+/// after a restore still shows up, and a restored row is never duplicated even after you `cd`
+/// its shell somewhere else.
 @MainActor
-func loadProjects(_ settings: [String: String], into workspace: Workspace) {
+func seedConfigWorkspaces(_ settings: [String: String], into workspace: Workspace) {
     let raw =
         settings["vesta-projects"]?
         .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } ?? []
-    let home = NSHomeDirectory()
     for raw in raw {
-        let path = (raw as NSString).expandingTildeInPath
-        guard path != home else { continue }  // don't duplicate the home project
-        let name = (path as NSString).lastPathComponent
-        workspace.appendProject(name: name, path: path)
+        workspace.appendConfigWorkspace(path: (raw as NSString).expandingTildeInPath)
     }
 }
 

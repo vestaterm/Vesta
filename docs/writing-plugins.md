@@ -65,15 +65,20 @@ return { version = "1.0.0", priority = 0 }
 | `vesta.send(text)` | Send text/keystrokes to the active pane. |
 | `vesta.active()` | `{ cwd, title, paneID }` of the focused pane, or `nil`. |
 | `vesta.capture([scrollback])` | Focused pane's text as a string. |
-| `vesta.state()` | The full project/session tree as a table. |
+| `vesta.state()` | The whole sidebar as a table: `workspaces` (the flat rows) + `groups`, plus a `projects` compat view (one pseudo-project per top-level row — a group with its members as sessions, or a bare workspace holding only itself). |
 | `vesta.split([horizontal])` | Split the focused pane. |
 | `vesta.tab([action])` | `"new"` / `"next"` / `"prev"` / `"close"`. |
-| `vesta.select(project, session)` | Jump to a session by index (0-based). |
+| `vesta.select(project, session)` | Jump to a row by index (0-based). One index selects a workspace by its flat index; the `project, session` pair still resolves through the top-level rows. The reply carries `workspace` (flat index) plus the legacy `project`/`session` pair. |
 | `vesta.zoom()` | Toggle zoom on the focused pane. |
 | `vesta.open(path)` | Open a new session at a path. |
 | `vesta.browser([url])` | Open a browser pane. |
 | `vesta.focus([id])` | Focus a pane by id, or cycle to the next pane. |
 | `vesta.cmd(verb, ...args)` | Low-level: run any control verb, returns a table. |
+
+**Sessions.** `vesta.cmd("sessions", "--json")` lists one record per sidebar row. `id` keeps
+its `"project.session"` form (the top-level row, then the position inside it) and `workspace`
+is the flat index of the same row — `select` takes either. `project` is the row's group name,
+falling back to its own label, and `--project <name>` still filters on it.
 
 ### UI
 

@@ -4,11 +4,11 @@ import CoreImage
 /// First-run onboarding: a full-window overlay shown exactly once (gated on the
 /// `VestaDidOnboard` UserDefaults flag — a plain bool, never keyed to version, so
 /// app updates don't re-trigger it). Flow: V-flame intro animation → a short
-/// feature tour → install the `vesta` CLI → add a first project. Every step is
+/// feature tour → install the `vesta` CLI → add a first workspace. Every step is
 /// skippable; the top-right Skip ends the whole thing. Respects Reduce Motion.
 final class OnboardingOverlay: NSView {
     private let theme: Theme
-    private let addProject: (String) -> Void
+    private let addWorkspace: (String) -> Void
     private let onFinish: () -> Void
 
     private let mark = OnboardingMark()
@@ -22,13 +22,13 @@ final class OnboardingOverlay: NSView {
     private let dots = NSStackView()
 
     // Pages after the intro. The intro is page -1 (animation), auto-advancing to 0.
-    private enum Page: Int, CaseIterable { case welcome, tour1, tour2, tour3, cli, project }
+    private enum Page: Int, CaseIterable { case welcome, tour1, tour2, tour3, cli, workspace }
     private var page = Page.welcome
     private var inIntro = true
     private var markCenterY: NSLayoutConstraint!
 
-    init(theme: Theme, addProject: @escaping (String) -> Void, onFinish: @escaping () -> Void) {
-        self.theme = theme; self.addProject = addProject; self.onFinish = onFinish
+    init(theme: Theme, addWorkspace: @escaping (String) -> Void, onFinish: @escaping () -> Void) {
+        self.theme = theme; self.addWorkspace = addWorkspace; self.onFinish = onFinish
         super.init(frame: .zero)
         wantsLayer = true
         autoresizingMask = [.width, .height]
@@ -168,7 +168,7 @@ final class OnboardingOverlay: NSView {
     private func runAction() {
         switch page {
         case .cli: installCLI()
-        case .project: pickProject()
+        case .workspace: pickWorkspace()
         default: break
         }
     }
@@ -193,14 +193,14 @@ final class OnboardingOverlay: NSView {
                 "A native macOS terminal built on real libghostty — persistent sessions, tmux-style splits, and a scriptable CLI. A quick tour, then we'll get you set up.", nil)
             case .tour1: return ("Sessions that outlive the app",
                 "Your shells run under a tiny daemon, not the window. Quit Vesta with ⌘Q, reopen it, and every pane comes back — same shell, recent output and all.", nil)
-            case .tour2: return ("Splits & a project sidebar",
-                "⌘D / ⌘⇧D split a pane; click to focus, ⌘B toggles the sidebar. Projects own sessions down the left — drag to resize, right-click to rename or recolor.", nil)
+            case .tour2: return ("Splits & a workspace sidebar",
+                "⌘D / ⌘⇧D split a pane; click to focus, ⌘B toggles the sidebar. Workspaces stack down the left, one row per session — drag to reorder, right-click to rename, recolor or group them.", nil)
             case .tour3: return ("Drive it from the CLI — and Lua",
                 "The `vesta` command talks to the live app over a socket, so agents can open, split, and read panes. Drop an `init.lua` in ~/.config/vesta/plugins to script it yourself.", nil)
             case .cli: return ("Install the `vesta` command",
                 "Copies vesta, vestad and vesta-attach to /usr/local/bin so the CLI works from any terminal. Needs your password (writing to a system path).", "Install CLI")
-            case .project: return ("Add your first project",
-                "Pick a folder to open as your first project. A session starts there right away — you can add more any time from the sidebar.", "Choose folder…")
+            case .workspace: return ("Add a workspace",
+                "Pick a folder to open as your first workspace. A shell starts there right away — you can add more any time with ⌘T or the sidebar's + button.", "Choose folder…")
             }
         }()
 
@@ -211,7 +211,7 @@ final class OnboardingOverlay: NSView {
         else { actionBtn.isHidden = true }
 
         backBtn.isHidden = (page == .welcome)
-        nextBtn.title = (page == .project) ? "Get started" : "Next"
+        nextBtn.title = (page == .workspace) ? "Get started" : "Next"
 
         for (i, v) in dots.arrangedSubviews.enumerated() {
             (v as? Dot)?.on = (i == page.rawValue)
@@ -273,19 +273,19 @@ final class OnboardingOverlay: NSView {
         }
     }
 
-    // MARK: - First project
+    // MARK: - First workspace
 
-    private func pickProject() {
+    private func pickWorkspace() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.prompt = "Add project"
-        panel.message = "Choose a folder to open as your first project"
+        panel.prompt = "Add workspace"
+        panel.message = "Choose a folder to open as your first workspace"
         panel.begin { [weak self] resp in
             guard let self, resp == .OK, let url = panel.url else { return }
-            self.addProject(url.path)
+            self.addWorkspace(url.path)
             self.finish()
         }
     }
