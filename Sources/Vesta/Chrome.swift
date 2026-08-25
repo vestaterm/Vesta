@@ -1645,9 +1645,10 @@ final class VestaWindowController: NSWindowController {
     func syncTitlebarLayout() {
         guard let host = titlebarAccessory, host.window != nil else { return }
         let hostX = host.convert(NSPoint.zero, to: nil).x
-        let w = sidebarOpen ? openWidth : 0
         newWorkspaceBtn?.isHidden = !sidebarOpen      // collapsed: no sidebar edge to hug
-        plusLeading?.constant = max(40, w - hostX - 28)
+        // Collapsed: the + is hidden but still anchors the path label (dir = plus.trailing + 26),
+        // so park it at -6 → the path starts 10pt after the toggle instead of 84pt out.
+        plusLeading?.constant = sidebarOpen ? max(40, openWidth - hostX - 28) : -6
     }
 
     /// The notifications bell, in its OWN trailing titlebar accessory so it pins to the
