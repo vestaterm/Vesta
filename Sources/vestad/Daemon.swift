@@ -353,13 +353,27 @@ final class Daemon {
             // Clean reattach: replay the raw output ring verbatim. ghostty parses it,
             // so the screen comes back byte-exact (colors/cursor/alt-screen and all),
             // and recent lines land in native scrollback for free. Empty for a fresh shell.
-            // Skipped when the client opted out (wantReplay: false) — a relay reconnecting
-            // across a daemon restart/upgrade still has its screen; replaying the ring
-            // there paints the whole history a SECOND time (the post-update duplicate-text
-            // bug). The ring itself is untouched — the next fresh attach replays as ever.
-            let replay = s.snapshot()
-            if wantReplay, !replay.isEmpty, !sendFrame(fd, encode(ServerFrame.output(replay))) {
-                closeClient(fd); return
+            //
+            // wantReplay: false = a relay RECONNECTING across a daemon restart/upgrade.
+            // On the reattach branch its screen survived untouched, so replaying the ring
+            // would paint the whole history a SECOND time (the post-update duplicate-text
+            // bug) — send nothing. On the FRESH branch that same screen is a liability:
+            // it still shows the DEAD shell, possibly mid-TUI (alt screen, mouse tracking
+            // on), and the ring holds those very bytes — so send only the cold-restore
+            // banner: it resets terminal modes and marks the cut without repeating history.
+            // Known gap (needs a ring sequence number to fix): output produced while zero
+            // clients were connected — e.g. a build printing during the daemon swap — is in
+            // the ring but never delivered to a wantReplay:false client.
+            // The ring itself is untouched either way — the next fresh attach replays as ever.
+            if wantReplay {
+                let replay = s.snapshot()
+                if !replay.isEmpty, !sendFrame(fd, encode(ServerFrame.output(replay))) {
+                    closeClient(fd); return
+                }
+            } else if !resumed {
+                if !sendFrame(fd, encode(ServerFrame.output(coldRestoreBanner(cwd: cwd)))) {
+                    closeClient(fd); return
+                }
             }
         case let .input(data):
             // Input-from-any: any client's keystrokes go to the single PTY master.

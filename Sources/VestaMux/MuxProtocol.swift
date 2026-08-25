@@ -253,14 +253,21 @@ public func muxProtocolSelfCheck() {
     }
     // An OLD client's hello — no trailing wantReplay byte (v4 shape: paneID, cols, rows,
     // optStr cwd) — must decode with wantReplay: true, so old relays still get their replay.
-    var legacyHello = Data()
     var lp = Data()
     putStr("old-relay", into: &lp); putU32(80, into: &lp); putU32(24, into: &lp); putOptStr(nil, into: &lp)
-    legacyHello = frame(0x01, lp)
+    var legacyHello = frame(0x01, lp)
     assert(decodeClientFrame(from: &legacyHello)
            == .hello(paneID: "old-relay", cols: 80, rows: 24, cwd: nil, wantReplay: true),
            "legacy hello decodes as wantReplay: true")
     assert(legacyHello.isEmpty, "legacy hello fully consumed")
+    // The v3 shape — payload ends right after rows (no cwd flag byte at all).
+    var lp3 = Data()
+    putStr("v3-relay", into: &lp3); putU32(80, into: &lp3); putU32(24, into: &lp3)
+    var v3Hello = frame(0x01, lp3)
+    assert(decodeClientFrame(from: &v3Hello)
+           == .hello(paneID: "v3-relay", cols: 80, rows: 24, cwd: nil, wantReplay: true),
+           "v3 hello decodes as cwd nil + wantReplay true")
+    assert(v3Hello.isEmpty, "v3 hello fully consumed")
     // An old daemon's helloAck — [len=5][tag 0x11][u32 version], no resumed byte —
     // still decodes, as resumed: true.
     var legacyAck = Data([0, 0, 0, 5, 0x11, 0, 0, 0, 5])

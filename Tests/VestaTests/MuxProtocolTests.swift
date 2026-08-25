@@ -10,6 +10,8 @@ final class MuxProtocolTests: XCTestCase {
         .hello(paneID: "abc-123", cols: 80, rows: 24, cwd: "/tmp/x"),
         .hello(paneID: "no-cwd", cols: 80, rows: 24, cwd: nil),
         .hello(paneID: "", cols: 0, rows: 0, cwd: ""),
+        .hello(paneID: "reconnect", cols: 80, rows: 24, cwd: "/tmp/x", wantReplay: false),
+        .hello(paneID: "no-cwd-no-replay", cols: 80, rows: 24, cwd: nil, wantReplay: false),
         .input(Data([0x01, 0x02, 0xff, 0x00])),
         .input(Data()),
         .resize(cols: 120, rows: 40),
