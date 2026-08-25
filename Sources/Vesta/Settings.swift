@@ -491,6 +491,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
     }
     @objc private func liteChanged(_ b: NSButton) {
         setVestaConfigKey("vesta-lite", b.state == .on ? "true" : "false")
+        onReload()   // refresh VestaConfig.shared so the next ⌘N honors it immediately
     }
     @objc private func scrollbackChanged(_ b: NSButton) {
         setVestaConfigKey("vesta-persist-scrollback", b.state == .on ? "true" : "false")

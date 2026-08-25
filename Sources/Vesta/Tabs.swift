@@ -744,7 +744,9 @@ final class Workspace {
     /// on first activation (mountLive → rootView → materialize). This is the launch-time win —
     /// hydrate makes every non-active session dormant.
     private func makeDormant(layout: [String: Any], name: String? = nil, tail: [String] = []) -> PaneTree {
-        wire(PaneTree(theme: theme, dormant: layout, name: name, tail: tail))
+        // bare: lite is unreachable today (lite skips hydrate + config seeding) but keeps the
+        // "lite ⇒ bare shells" invariant from silently breaking if a dormant path appears.
+        wire(PaneTree(theme: theme, dormant: layout, name: name, tail: tail, bare: lite))
     }
 
     private func wire(_ tree: PaneTree) -> PaneTree {

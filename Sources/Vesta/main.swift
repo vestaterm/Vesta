@@ -99,6 +99,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // we rebuild windows at launch; `savePending` coalesces rapid changes.
     private var restoring = false
     private var savePending = false
+    // windows.json has been read into the shared pool this launch (or the launch legitimately
+    // started fresh). Stays false across a vesta-lite launch, so the first full window created
+    // later lazy-hydrates the saved layout instead of clobbering it — see newWindow.
+    private var poolHydrated = false
     /// Set while Updater.relaunch is swapping this process for the freshly installed one.
     /// Suppresses the quit confirm (the user already chose to update) and the terminate-time
     /// window save (the incoming instance owns windows.json by then — see applicationWillTerminate).
@@ -121,6 +125,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     func newWindow(hydrateFrom: [String: Any]? = nil, frame: String? = nil,
                    lite: Bool = false, cwd: String? = nil) -> WindowContext {
+        var hydrateFrom = hydrateFrom, frame = frame
+        // Launched lite → the shared pool never read windows.json. The FIRST full window
+        // must hydrate from it, or it would seed a fresh pool over the empty store and the
+        // next save would overwrite the user's entire saved layout with it. (Only entry 0 —
+        // the authoritative pool — is recovered; extra windows' selections are not.)
+        if !lite, !poolHydrated {
+            poolHydrated = true
+            if store.workspaces.isEmpty, hydrateFrom == nil,
+               let data = try? Data(contentsOf: URL(fileURLWithPath: Self.windowsFile)) {
+                let first = parseWindowsFile(data).windows.first
+                if (first?["workspaces"] as? [[String: Any]])?.isEmpty == false {
+                    hydrateFrom = first
+                    if frame == nil { frame = first?["frame"] as? String }
+                }
+            }
+        }
         let prev = active?.controller.window ?? windows.last?.controller.window
         // Wire the cross-window broadcast once: any pool change refreshes every window's
         // sidebar, reconciles which window shows each session live vs frozen, and persists.
@@ -205,7 +225,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Every live pane's mux id, across all workspaces (pane-output subscribes to all).
     func allLivePaneIDs() -> Set<String> {
-        Set((active?.workspace.wss ?? []).flatMap { $0.tree.paneIDs })
+        // The SHARED pool, not the key window's view — pre-lite those were the same thing,
+        // but a lite key window's private store would unsubscribe every daemon pane's tap.
+        // (Lite panes are bare shells with no daemon presence — never tappable anyway.)
+        Set(store.workspaces.flatMap { $0.tree.paneIDs })
     }
 
     // Transient glass overlays, each in a child window over the active one (see ChildOverlay).
@@ -726,11 +749,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         defer { restoring = false }
         // vesta-lite launch: one fresh lite window, ghostty-style. windows.json is neither
         // read nor written — the full setup (and its vestad shells) is untouched, so
-        // flipping the key back restores everything on the next launch.
+        // flipping the key back restores everything on the next launch. poolHydrated stays
+        // false: the first FULL window created later (Settings untick → ⌘N) lazy-hydrates
+        // the saved pool in newWindow instead of seeding an empty one over it.
         if VestaConfig.shared.lite {
             _ = newWindow(lite: true)
             return
         }
+        poolHydrated = true   // this launch reads windows.json (or legitimately starts fresh)
         // Parse windows.json BEFORE creating the first window, so the saved state can be
         // handed into the Workspace at init — otherwise the first window seeds a throwaway
         // home session (real surface + daemon login shell) that hydrate discards, leaking
@@ -792,7 +818,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // windows are open, the last full-window close already wrote the file.
         let real = windows.filter { !$0.lite }
         guard !real.isEmpty else { return }
-        let key = active.flatMap { $0.lite ? nil : $0 }
+        // Lite key window: fall back to the most recently created full window so restore
+        // still re-fronts something sensible (entry 0 is authoritative for the pool).
+        let key = active.flatMap { $0.lite ? nil : $0 } ?? real.last
         // ponytail: every entry repeats the shared workspace pool (Workspace.serialize
         // includes it; entry 0 is authoritative on restore). Split pool vs. per-window
         // state in a later format if the duplication ever matters.
@@ -868,11 +896,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        server = ControlServer(workspaceProvider: { [weak self] in self?.active?.workspace })
+        // CLI/Lua workspace verbs act on the FULL model only. A lite window's private store is
+        // invisible (no sidebar) and unaddressable (`vesta sessions` reads the shared pool), so
+        // mutating it from the CLI would strand shells behind a view with no way back.
+        server = ControlServer(workspaceProvider: { [weak self] in
+            guard let self else { return nil }
+            return (self.active?.lite == false ? self.active : nil)?.workspace
+                ?? self.windows.last(where: { !$0.lite })?.workspace
+        })
         server.onReload = { [weak self] in self?.reloadConfig() }
         luaReloadHook = { [weak self] in self?.reloadConfig() }  // sandbox auto-disable → full reload
         server.onNewWindow = { [weak self] in
-            self?.newWindow()
+            _ = self?.newWindow(lite: VestaConfig.shared.lite)   // bare `vesta` respects lite
             NSApp.activate(ignoringOtherApps: true)
         }
         server.stateProvider = { [weak self] in self?.fullState() ?? ["ok": false] }
@@ -1546,6 +1581,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func dispatchPrefix(_ action: PrefixAction) {
         guard let ctx = active else { return }
         let ws = ctx.workspace
+        // Lite window: same ops the ⌘ chords and palette kill — a new/next workspace would
+        // swap the visible terminal with no sidebar or chord to ever get back.
+        if ctx.lite {
+            switch action {
+            case .newSession, .nextSession, .prevSession, .rename: return
+            default: break
+            }
+        }
         switch action {
         case .splitVertical:
             _ = ws.activeTree.splitFocused(.vertical, cwd: ws.activeTree.focusedCwd)
