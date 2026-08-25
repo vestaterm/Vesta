@@ -68,17 +68,33 @@ return { version = "1.0.0", priority = 0 }
 | `vesta.state()` | The whole sidebar as a table: `workspaces` (the flat rows) + `groups`, plus a `projects` compat view (one pseudo-project per top-level row — a group with its members as sessions, or a bare workspace holding only itself). |
 | `vesta.split([horizontal])` | Split the focused pane. |
 | `vesta.tab([action])` | `"new"` / `"next"` / `"prev"` / `"close"`. |
-| `vesta.select(project, session)` | Jump to a row by index (0-based). One index selects a workspace by its flat index; the `project, session` pair still resolves through the top-level rows. The reply carries `workspace` (flat index) plus the legacy `project`/`session` pair. |
+| `vesta.select(n)` / `vesta.select(project, session)` | Jump to a row by index (0-based). One index is the workspace's flat index; the legacy `project, session` pair still resolves through the top-level rows. The reply carries `workspace` (flat index) plus that legacy pair. |
 | `vesta.zoom()` | Toggle zoom on the focused pane. |
-| `vesta.open(path)` | Open a new session at a path. |
+| `vesta.open(path)` | Open a new workspace at a path. |
 | `vesta.browser([url])` | Open a browser pane. |
 | `vesta.focus([id])` | Focus a pane by id, or cycle to the next pane. |
 | `vesta.cmd(verb, ...args)` | Low-level: run any control verb, returns a table. |
 
+**State.** `vesta.state()` is the whole sidebar, not just the active window:
+`workspaces` (flat rows: `index`, `name`, `cwd`, `panes`, `paneIDs`, plus `group`/`color`
+when set), `groups` (`index`, `id`, `name`, `collapsed`, `color`, and `workspaces` = the
+member indices), and `windows` (`index`, `key`, `activeWorkspace`, `hostsLive`, plus the
+legacy `activeProject`/`activeSession` cursor). New code should read `workspaces` +
+`groups`. The `projects` key is a **compat view**, not a second model — one pseudo-project
+per top-level row, `expanded` mirroring the group's collapse. Caveat: a group has no
+directory of its own, so `projects[].path` is its **first member's cwd** — which follows
+that shell (a `cd` moves it). Don't treat it as a stable project root; read each session's
+own `cwd`.
+
 **Sessions.** `vesta.cmd("sessions", "--json")` lists one record per sidebar row. `id` keeps
 its `"project.session"` form (the top-level row, then the position inside it) and `workspace`
 is the flat index of the same row — `select` takes either. `project` is the row's group name,
-falling back to its own label, and `--project <name>` still filters on it.
+falling back to its own label, and `--project <name>` still filters on it. `group` is set only
+when the row really is in one — `project` is always there, so a nil `group` marks a bare
+top-level row. Each record also carries `name`, `panes`, `active`, `attention` — plus
+`cwd`, but only when the row has one to report: it comes from the focused pane's OSC 7
+(or a dormant row's saved layout), so a browser leaf or a shell that hasn't reported yet
+leaves the key out. Read it defensively.
 
 ### UI
 
@@ -134,9 +150,9 @@ Register with `vesta.on(name, fn)`. Handlers receive the relevant `paneID`
 | `config-reloaded` | After init/plugins (re)load. |
 | `dir-changed` | The focused pane's working dir changed. |
 | `command-finished` | A foreground program returned to the shell. |
-| `session-opened` | A new session was created. |
-| `focus-changed` | The active session changed. |
-| `session-closed` | The user closed a session. |
+| `session-opened` | A new workspace was created (the event name predates the rename). |
+| `focus-changed` | The active workspace changed. |
+| `session-closed` | The user closed a workspace. |
 | `session-exited` | A shell exited on its own. |
 | `pane-output` | Raw output bytes from any live pane: `fn(paneID, chunk)`. |
 
@@ -144,7 +160,7 @@ Register with `vesta.on(name, fn)`. Handlers receive the relevant `paneID`
 use `chunk:find(needle, 1, true)`). It's best-effort and coalesced under load, and
 only works in persist mode (the default) where a daemon owns the PTY.
 
-**Dormant sessions:** after relaunch, a session that has never been clicked is dormant — `dir-changed`, `command-finished`, and the attention badge don't fire for it until it's first activated; `pane-output` is unaffected and taps the daemon directly regardless.
+**Dormant workspaces:** after relaunch, a workspace that has never been clicked is dormant — `dir-changed`, `command-finished`, and the attention badge don't fire for it until it's first activated; `pane-output` is unaffected and taps the daemon directly regardless.
 
 ## Safety
 

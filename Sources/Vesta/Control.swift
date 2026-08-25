@@ -8,7 +8,48 @@ func controlSocketPath() -> String {
     return base + "/control.sock"
 }
 
-let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser", "reload", "search", "kill", "new-window", "state", "sessions", "select", "rename", "project", "notify", "run", "plugins", "pane"]
+let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser", "reload", "search", "kill", "new-window", "state", "sessions", "select", "rename", "ws", "group", "project", "notify", "run", "plugins", "pane"]
+
+// MARK: - Argument parsing (pure — pinned by controlSelfCheck)
+
+/// A workspace named on the command line: the flat store index, or the legacy
+/// `<project> <session>` pair that the sidebar's top-level units resolve.
+enum WorkspaceTarget: Equatable {
+    case flat(Int)
+    case pair(project: Int, session: Int)
+}
+
+/// Every form a workspace-naming verb accepts: `3` (flat index), `1.0` (the dotted `P.S`
+/// string `sessions --json` reports as `id`, which plugins echo straight back), and the
+/// legacy two-argument `1 0`. nil ⇒ nothing usable. Kept pure so both `select` and
+/// `send-keys --session` parse identically and the selfcheck can pin it without an app.
+func parseWorkspaceTarget(_ args: [String]) -> WorkspaceTarget? {
+    // The dotted id only means a pair when it IS the whole argument — "1.0" as one of two
+    // args is a typo, not half a pair, and falls through to the int scan below (which drops it).
+    if args.count == 1, args[0].contains(".") {
+        let parts = args[0].split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2, let p = Int(parts[0]), let s = Int(parts[1]) else { return nil }
+        return .pair(project: p, session: s)
+    }
+    let ix = args.compactMap { Int($0) }
+    switch ix.count {
+    case 1: return .flat(ix[0])
+    case 2...: return .pair(project: ix[0], session: ix[1])
+    default: return nil
+    }
+}
+
+/// A path argument as typed in a shell → absolute. `~` expands, an absolute path passes
+/// through, and a RELATIVE path resolves against the caller's cwd — the app's own cwd is
+/// `/`, so shipping the literal would silently open the wrong directory.
+func absolutize(_ path: String, cwd: String = FileManager.default.currentDirectoryPath) -> String {
+    let p = (path as NSString).expandingTildeInPath   // a quoted "~/x" reaches us intact
+    guard !p.hasPrefix("/") else { return p }
+    // isDirectory: true on the BASE — without it URL treats cwd as a file and drops its last
+    // component, so `vesta ws new sub` from /a/b would resolve to /a/sub.
+    return URL(fileURLWithPath: p, relativeTo: URL(fileURLWithPath: cwd, isDirectory: true))
+        .standardizedFileURL.path
+}
 
 // MARK: - Socket helpers
 
@@ -303,11 +344,14 @@ final class ControlServer: @unchecked Sendable {
             } else if let i = rest.firstIndex(of: "--session") {
                 guard i + 1 < rest.count else { return ["ok": false, "error": "send-keys --session <N>"] }
                 let sid = rest[i + 1]; rest.removeSubrange(i...(i + 1))
-                // "3" is the flat workspace index; "1.0" is the legacy P.S pair, resolved
-                // through the same top-level units `select` uses.
-                let ix = sid.split(separator: ".").compactMap { Int($0) }
-                let flat: Int? = ix.count == 1 ? ix[0]
-                    : (ix.count == 2 ? flatIndex(workspace, unit: ix[0], member: ix[1]) : nil)
+                // "3" is the flat workspace index; "1.0" is the legacy P.S pair — the same
+                // parse `select` uses, so both verbs take exactly the same ids.
+                let flat: Int?
+                switch parseWorkspaceTarget([sid]) {
+                case .flat(let n): flat = n
+                case .pair(let p, let s): flat = flatIndex(workspace, unit: p, member: s)
+                case nil: flat = nil
+                }
                 guard let f = flat, workspace.wss.indices.contains(f) else {
                     return ["ok": false, "error": "send-keys --session <N> (select-style index)"]
                 }
@@ -349,6 +393,10 @@ final class ControlServer: @unchecked Sendable {
                 return ["ok": false, "error": "pane status <paneID>"]
             }
             let paneID = args[1]
+            // `session` keeps its pre-flat-model `"P.S"` string (what a plugin splits and feeds
+            // back to `select`); the flat store index rides alongside as the int `workspace` —
+            // the same compat pairing `sessions --json` uses.
+            let legacyID = Workspace.legacyIDs(groupIDs: workspace.wss.map(\.groupID))
             for (i, w) in workspace.wss.enumerated() {
                 let t = w.tree
                 // paneIDs works while dormant (reads the layout); materialize on match so a
@@ -358,7 +406,7 @@ final class ControlServer: @unchecked Sendable {
                 guard let pane = t.panes.first(where: { $0.paneID == paneID }) else { continue }
                 let fg = pane.foregroundPID   // read once: `alive` and `pid` must agree
                 var d: [String: Any] = [
-                    "ok": true, "paneID": paneID, "workspace": i, "session": "\(i)",
+                    "ok": true, "paneID": paneID, "workspace": i, "session": legacyID[i],
                     "project": projectName(workspace, i),
                     "title": pane.title, "alive": fg != nil,
                     "attention": workspace.hasAttention(t),
@@ -405,15 +453,16 @@ final class ControlServer: @unchecked Sendable {
             workspace.activeTree.focused?.search(args.first ?? "")
             return ["ok": true]
         case "select":
-            // One index = the flat workspace (what `sessions --json` reports as `id`). Two =
-            // the legacy <project> <session> pair, resolved through the top-level units.
-            let ix = args.compactMap { Int($0) }
+            // One index = the flat workspace. `P.S` (the dotted id `sessions --json` reports,
+            // which is what plugins have to hand) and the two-argument `P S` are the legacy
+            // pair, resolved through the top-level units.
             let target: Int?
-            switch ix.count {
-            case 1: target = ix[0]
-            case 2...: target = flatIndex(workspace, unit: ix[0], member: ix[1])
-            default:
-                return ["ok": false, "error": "select: <workspace> (0-based), or <project> <session>"]
+            switch parseWorkspaceTarget(args) {
+            case .flat(let n): target = n
+            case .pair(let p, let s): target = flatIndex(workspace, unit: p, member: s)
+            case nil:
+                return ["ok": false,
+                        "error": "select: <workspace> (0-based), <project>.<session>, or <project> <session>"]
             }
             guard let t = target, workspace.wss.indices.contains(t) else {
                 return ["ok": false, "error": "select: no such workspace (\(args.joined(separator: " ")))"]
@@ -429,8 +478,69 @@ final class ControlServer: @unchecked Sendable {
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             workspace.renameWorkspace(workspace.activeW, trimmed.isEmpty ? nil : trimmed)
             return ["ok": true, "name": name]
+        case "ws":
+            // The flat model's own verb: always the WORKSPACE (the row), never its group.
+            switch args.first {
+            case "new":
+                // `ws new [PATH] [--name X]` — PATH is the positional after "new" (the CLI
+                // injects the caller's cwd when omitted; nil → the active workspace's cwd).
+                let path = (args.count >= 2 && !args[1].hasPrefix("--")) ? args[1] : nil
+                workspace.newWorkspace(at: path)
+                if let name = argValue(args, "--name") { workspace.renameWorkspace(workspace.activeW, name) }
+            case "rename":
+                guard args.count >= 2 else { return ["ok": false, "error": "ws rename <name>"] }
+                // Blank clears the custom name and falls back to the folder label (as `rename` does).
+                let trimmed = args[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                workspace.renameWorkspace(workspace.activeW, trimmed.isEmpty ? nil : trimmed)
+            case "color":
+                guard args.count >= 2 else { return ["ok": false, "error": "ws color <#hex|none>"] }
+                workspace.setWorkspaceColor(workspace.activeW,
+                                            args[1] == "none" ? nil : ghosttyColor(args[1]))
+            case "close":
+                // No id: the CLI names the row by "whatever is active right now", so there is
+                // no earlier moment whose identity we could be checking against.
+                workspace.closeWorkspace(workspace.activeW)
+            default:
+                return ["ok": false, "error": "ws: new [PATH] [--name X] | rename <name> | color <#hex|none> | close"]
+            }
+            return ["ok": true, "workspace": workspace.activeW]
+        case "group":
+            // Acts on the active workspace's group. Every verb but `new` needs one to exist.
+            let g = activeGroup(workspace)
+            switch args.first {
+            case "new":
+                guard g == nil else { return ["ok": false, "error": "active workspace is already in a group"] }
+                workspace.newGroupFromWorkspace(workspace.activeW)
+                // The new group is named after the row; an explicit name overrides that.
+                if args.count >= 2, let ng = activeGroup(workspace) { workspace.renameGroup(ng, args[1]) }
+            case "rename":
+                guard let g else { return ["ok": false, "error": "active workspace is not in a group"] }
+                guard args.count >= 2 else { return ["ok": false, "error": "group rename <name>"] }
+                workspace.renameGroup(g, args[1])   // renameGroup ignores a blank name (a group must be named)
+            case "color":
+                guard let g else { return ["ok": false, "error": "active workspace is not in a group"] }
+                guard args.count >= 2 else { return ["ok": false, "error": "group color <#hex|none>"] }
+                workspace.setGroupColor(g, args[1] == "none" ? nil : ghosttyColor(args[1]))
+            case "ungroup":
+                guard let g else { return ["ok": false, "error": "active workspace is not in a group"] }
+                // Name the group in the reply BEFORE it stops existing.
+                let name = workspace.groups[g].name
+                workspace.ungroup(g)
+                return ["ok": true, "group": name, "workspace": workspace.activeW]
+            case "remove":
+                guard let g else { return ["ok": false, "error": "active workspace is not in a group"] }
+                let name = workspace.groups[g].name
+                workspace.removeGroup(g)   // closes every member, then drops the group
+                return ["ok": true, "group": name, "workspace": workspace.activeW]
+            default:
+                return ["ok": false, "error": "group: new [name] | rename <name> | color <#hex|none> | ungroup | remove"]
+            }
+            guard let now = activeGroup(workspace) else {
+                return ["ok": false, "error": "active workspace is not in a group"]
+            }
+            return ["ok": true, "group": workspace.groups[now].name, "workspace": workspace.activeW]
         case "project":
-            // Compat verb over the flat model: it acts on the active row's GROUP when it has
+            // Legacy alias of `ws`/`group`: it acts on the active row's GROUP when it has
             // one, else on the workspace itself — which is exactly what a "project" was.
             let g = activeGroup(workspace)
             switch args.first {
@@ -489,11 +599,23 @@ func controlSocketAlive() -> Bool { socketIsLive(controlSocketPath()) }
 func runControlCLI(_ args: [String]) -> Int32 {
     guard let verb = args.first else { return 1 }
     var rest = Array(args.dropFirst())
-    // `vesta project new` with no PATH → default to the caller's working directory (resolved
-    // here, since the app's cwd differs from the shell's). An explicit path is left untouched.
-    if verb == "project", rest.first == "new",
-       !(rest.count >= 2 && !rest[1].hasPrefix("--")) {
-        rest.insert(FileManager.default.currentDirectoryPath, at: 1)
+    // Every path a verb takes is absolutized HERE, in the client, because only this process
+    // knows the shell's working directory — the app's own is `/`, so a relative path shipped
+    // literally would silently open the wrong place.
+    //
+    // `vesta ws new` (and its legacy alias `project new`) with no PATH additionally defaults
+    // to the caller's cwd.
+    if verb == "ws" || verb == "project", rest.first == "new" {
+        if rest.count >= 2, !rest[1].hasPrefix("--") { rest[1] = absolutize(rest[1]) }
+        else { rest.insert(FileManager.default.currentDirectoryPath, at: 1) }
+    }
+    // `open [PATH]` — the bare form still means ~ (resolved app-side), so only touch a real
+    // positional. A flag-looking first arg isn't a path.
+    if verb == "open", let first = rest.first, !first.hasPrefix("--") { rest[0] = absolutize(first) }
+    // `--cwd DIR` — split / new-pane / tab new all take it, and it has the same problem.
+    var i = 0
+    while i + 1 < rest.count {
+        if rest[i] == "--cwd" { rest[i + 1] = absolutize(rest[i + 1]); i += 2 } else { i += 1 }
     }
 
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -556,6 +678,8 @@ func runControlCLI(_ args: [String]) -> Int32 {
         print("ok (\(n) pane\(n == 1 ? "" : "s"))")
     } else if verb == "sessions", let projects = obj["projects"] as? [[String: Any]] {
         // The key window's active (project,session) — marked with ▸ so `vesta select` is obvious.
+        // Both indices `select` accepts are printed: the flat workspace in brackets (`select N`)
+        // and the legacy P S pair beside it (`select P S`), so neither form has to be guessed.
         let key = (obj["windows"] as? [[String: Any]])?.first { ($0["key"] as? Bool) == true }
         let ap = key?["activeProject"] as? Int, asn = key?["activeSession"] as? Int
         for p in projects {
@@ -563,10 +687,11 @@ func runControlCLI(_ args: [String]) -> Int32 {
             let pname = p["name"] as? String ?? "?"
             for s in (p["sessions"] as? [[String: Any]] ?? []) {
                 let si = s["index"] as? Int ?? 0
+                let wi = s["workspace"] as? Int ?? 0
                 let name = (s["name"] as? String) ?? (s["cwd"] as? String).map { ($0 as NSString).lastPathComponent } ?? "shell"
                 let cwd = s["cwd"] as? String ?? ""
                 let mark = (pi == ap && si == asn) ? "▸" : " "
-                print("\(mark) \(pi) \(si)\t\(pname) / \(name)\t\(cwd)")
+                print("\(mark) [\(wi)] \(pi) \(si)\t\(pname) / \(name)\t\(cwd)")
             }
         }
     } else if verb == "capture", let text = obj["text"] as? String {
@@ -611,10 +736,16 @@ func printUsage() {
       plugins enable|disable <name>         turn a plugin on/off and reload
       state                                 dump workspaces + groups + windows as JSON (plus a `projects` compat view)
       sessions [--json] [--project <name>]  readable workspace list (▸ = active); --json for structured records (--project implies --json)
+                                            columns: "▸ [N] P S" — [N] is the flat index for `select N`, P S the legacy pair for `select P S`
       select <workspace>                    switch the active window to a workspace (0-based flat index)
-      select <project> <session>            legacy form: group P, member S
+      select <project> <session>            legacy form: group P, member S (also accepts the dotted `P.S` id from `sessions --json`)
       rename <name>                         rename the active workspace (blank clears it)
-      project new [PATH] [--name X]|rename <name>|remove|color <#hex|none>   acts on the active row's group, else the workspace (new: PATH or caller's cwd)
+      ws new [PATH] [--name X]              open a new workspace (PATH defaults to — and a relative PATH resolves against — the caller's cwd)
+      ws rename <name>|color <#hex|none>|close   act on the active workspace (rename: blank clears)
+      group new [name]                      wrap the active workspace in a new group (named after it by default)
+      group rename <name>|color <#hex|none>|ungroup|remove   act on the active workspace's group
+      project rename|remove|color           legacy alias: the row's group when grouped, else the workspace itself
+      project new [PATH] [--name X]         = `ws new` (`project dir` is gone — each workspace owns its cwd)
       kill <id>                             terminate a workspace's shell under the daemon
 
     Config (in your ghostty config; libghostty ignores the vesta- keys):
@@ -645,6 +776,31 @@ func controlSelfCheck() {
     assert((back["args"] as? [Any])?.count == 1)
     assert(controlVerbs.contains("split"))
     assert(controlVerbs.contains("pane"))
+    // The flat model's verbs, plus the legacy alias they replaced — argv routing sends a verb to
+    // the socket only if it's in this set, so a missing entry makes `vesta ws new` launch a
+    // SECOND app instance instead of talking to the running one.
+    assert(controlVerbs.contains("ws"))
+    assert(controlVerbs.contains("group"))
+    assert(controlVerbs.contains("project"))
+
+    // THE CASE THE BUG TURNED ON: `sessions --json` reports `id` as "P.S", the docs tell
+    // plugins to feed it straight back to `select`, and the old int-only scan dropped it —
+    // `select 0.1` failed with "no such workspace". All three forms must parse.
+    assert(parseWorkspaceTarget(["3"]) == .flat(3), "a lone int is the flat workspace index")
+    assert(parseWorkspaceTarget(["0.1"]) == .pair(project: 0, session: 1), "the dotted id is the legacy pair")
+    assert(parseWorkspaceTarget(["1", "0"]) == .pair(project: 1, session: 0), "two ints stay the legacy pair")
+    assert(parseWorkspaceTarget([]) == nil, "no argument names no workspace")
+    assert(parseWorkspaceTarget(["x"]) == nil, "a non-number names no workspace")
+    assert(parseWorkspaceTarget(["1.2.3"]) == nil, "a pair has exactly two components")
+    assert(parseWorkspaceTarget(["1."]) == nil, "a trailing dot is not a pair")
+
+    // Relative paths are resolved in the CLI because the app's own cwd is `/`. The base must
+    // be treated as a DIRECTORY or the last component is dropped (`/a/b` + `sub` → `/a/sub`).
+    assert(absolutize("sub", cwd: "/a/b") == "/a/b/sub", "relative resolves against the caller's cwd")
+    assert(absolutize("./sub", cwd: "/a/b") == "/a/b/sub", "./ is stripped, not appended")
+    assert(absolutize("../c", cwd: "/a/b") == "/a/c", "..' climbs from the caller's cwd")
+    assert(absolutize("/x/y", cwd: "/a/b") == "/x/y", "absolute passes through untouched")
+    assert(absolutize("~", cwd: "/a/b") == NSHomeDirectory(), "a quoted tilde still expands")
 
     // socketIsLive decides whether run() logs a takeover, and controlSocketAlive (the bare-argv
     // bootstrap) is the same call — so the states it must tell apart are pinned against a real

@@ -282,16 +282,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Split Horizontal", "⌘⇧D", { let ws = $0.workspace; ws.activeTree.splitFocused(.horizontal, cwd: ws.activeTree.focusedCwd) }),
             ("Zoom Pane", "", { $0.workspace.activeTree.zoomFocused() }),
             ("Close Pane", "⌘W", { [weak self] ctx in self?.closePaneCascade(ctx) }),
-            ("Close Session", "⌘⇧W", { let ws = $0.workspace; ws.closeWorkspace(ws.activeW) }),
-            ("New Session", "⌘T", { $0.workspace.newWorkspace() }),
+            ("Close Workspace", "⌘⇧W", { let ws = $0.workspace; ws.closeWorkspace(ws.activeW) }),
+            ("New Workspace", "⌘T", { $0.workspace.newWorkspace() }),
             ("New Window", "⌘N", { [weak self] _ in self?.newWindow() }),
             ("Toggle Sidebar", "⌘B", { $0.controller.toggleSidebar() }),
             ("Focus Next Pane", "⌘]", { $0.workspace.activeTree.focusNext() }),
             ("Focus Previous Pane", "⌘[", { $0.workspace.activeTree.focusPrev() }),
-            ("Next Session", "⌘}", { $0.workspace.nextWorkspace() }),
-            ("Previous Session", "⌘{", { $0.workspace.prevWorkspace() }),
+            ("Next Workspace", "⌘}", { $0.workspace.nextWorkspace() }),
+            ("Previous Workspace", "⌘{", { $0.workspace.prevWorkspace() }),
             ("Find in Terminal", "⌘F", { $0.workspace.activeTree.focused?.startSearch() }),
-            ("Rename Session", "", { [weak self] _ in self?.promptRenameActiveSession() }),
+            ("Rename Workspace", "", { [weak self] _ in self?.promptRenameActiveSession() }),
             ("Kill Session", "", { $0.workspace.activeTree.killFocusedSession() }),
             ("Open Browser Pane", "⌘⇧↵", { ctx in
                 let tree = ctx.workspace.activeTree
@@ -1493,7 +1493,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func promptRenameActiveSession() {
         guard let ws = active?.workspace else { return }
         let alert = NSAlert()
-        alert.messageText = "Rename session"
+        alert.messageText = "Rename workspace"
         alert.informativeText = "Leave blank to clear the name and use the folder name."
         alert.addButton(withTitle: "Rename")
         alert.addButton(withTitle: "Cancel")

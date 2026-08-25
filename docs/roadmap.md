@@ -3,6 +3,42 @@
 Working notes on what's being built and what's deliberately parked. Update as
 things land. (Created on the `feat/plugin-events` branch.)
 
+## Shipped: cmux workspaces (flat model + cold restore)
+
+Spec: `docs/superpowers/specs/2026-08-24-cmux-workspaces-design.md`. Delivered in
+three PRs; the Project → Sessions two-level model is gone.
+
+1. **Flat workspaces** — one sidebar row = one workspace (a terminal session at a
+   cwd, splits inside; one workspace = one "tab" to the CLI's `tab` verb). Groups
+   are visual only: name, color, collapse, member count — no cwd, no behavior.
+   `+` / `⌘T` opens a workspace instantly at the active cwd (the folder picker and
+   per-project `+` are gone). Drag-reorder at top level and inside a group;
+   drop-on-header joins a group, but only for an ungrouped top-level row (a member
+   moves via the context menu); context menus for rename / color / new group /
+   move to group / ungroup / close.
+2. **windows.json v2 + migration** — per-window `groups` + flat `workspaces` +
+   `activeWorkspace`; array order is sidebar order. v0/v1 files migrate on launch
+   (1-session project → a workspace keeping its name/color, ≥2 → a group of
+   workspaces, never-opened config project → a dormant row), pre-migration file
+   kept once as `windows.json.v<old>`. `projects.json` retired; `vesta-projects`
+   now seeds dormant workspaces (existing dirs only, deduped by provenance).
+3. **Cold restore** — the daemon's `.hello` reply carries `resumed`, so a
+   post-reboot session is no longer mistaken for a reattach: fresh shell in the
+   saved cwd, layout rebuilt, on-disk history replayed above a
+   `── vesta: session restarted — new shell in <dir> ──` divider.
+   `vesta-persist-scrollback` now defaults **on** (0600 logs; explicit `false`
+   still opts out, which also drops ring bytes from the upgrade snapshot).
+4. **CLI** — `ws new|rename|color|close` and `group new|rename|color|ungroup|remove`;
+   `project` stays as a legacy alias (group when grouped, else the workspace;
+   `project new` = `ws new`, `project dir` removed with an error). `select` takes a
+   flat index or the legacy `P S` pair; `sessions --json` adds the flat `workspace`
+   int beside the legacy `"P.S"` `id`; `vesta state` reports `workspaces` + `groups`
+   with `projects` kept as a compat view.
+
+Parked from this spec: **lite mode** (`vesta-lite`) — see §6 of
+`docs/superpowers/specs/2026-08-24-cmux-workspaces-design.md` — plus group
+icons, pinning, and PR/branch badges from cmux.
+
 ## Shipped on feat/plugin-events-2 (continuation)
 
 Next increment across all four themes; builds on feat/plugin-events.

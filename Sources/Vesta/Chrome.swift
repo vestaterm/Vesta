@@ -1576,7 +1576,7 @@ final class VestaWindowController: NSWindowController {
         plus.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New workspace")?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .regular))
         plus.contentTintColor = txt(.dim)
-        plus.toolTip = "New workspace (⌘N)"
+        plus.toolTip = "New workspace (⌘T)"   // ⌘N is New Window — the + makes a workspace
         newWorkspaceBtn = plus
 
         host.addSubview(btn)

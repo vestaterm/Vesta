@@ -89,8 +89,7 @@ fresh shells.
 - **Lite mode** (`vesta-lite`): ghostty-like chrome-free window — no
   sidebar/titlebar accessories/footer, skip sidebar-feeding background work,
   plugins still load. Hook points: early-out in `buildContent`/`makeSidebar`
-  (Chrome.swift), suppress `snapshot()`/tails/materialize. Tracked in
-  PARKED.md.
+  (Chrome.swift), suppress `snapshot()`/tails/materialize.
 - Group icons (SF Symbols), pinning, PR/branch badges from cmux.
 
 ## Delivery (small PRs)
