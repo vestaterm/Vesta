@@ -8,7 +8,7 @@ func controlSocketPath() -> String {
     return base + "/control.sock"
 }
 
-let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser", "reload", "search", "kill", "new-window", "state", "sessions", "select", "rename", "project", "notify", "run", "plugins", "pane"]
+let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser", "reload", "search", "kill", "new-window", "state", "sessions", "select", "rename", "ws", "group", "project", "notify", "run", "plugins", "pane"]
 
 // MARK: - Socket helpers
 
@@ -429,8 +429,69 @@ final class ControlServer: @unchecked Sendable {
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             workspace.renameWorkspace(workspace.activeW, trimmed.isEmpty ? nil : trimmed)
             return ["ok": true, "name": name]
+        case "ws":
+            // The flat model's own verb: always the WORKSPACE (the row), never its group.
+            switch args.first {
+            case "new":
+                // `ws new [PATH] [--name X]` — PATH is the positional after "new" (the CLI
+                // injects the caller's cwd when omitted; nil → the active workspace's cwd).
+                let path = (args.count >= 2 && !args[1].hasPrefix("--")) ? args[1] : nil
+                workspace.newWorkspace(at: path)
+                if let name = argValue(args, "--name") { workspace.renameWorkspace(workspace.activeW, name) }
+            case "rename":
+                guard args.count >= 2 else { return ["ok": false, "error": "ws rename <name>"] }
+                // Blank clears the custom name and falls back to the folder label (as `rename` does).
+                let trimmed = args[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                workspace.renameWorkspace(workspace.activeW, trimmed.isEmpty ? nil : trimmed)
+            case "color":
+                guard args.count >= 2 else { return ["ok": false, "error": "ws color <#hex|none>"] }
+                workspace.setWorkspaceColor(workspace.activeW,
+                                            args[1] == "none" ? nil : ghosttyColor(args[1]))
+            case "close":
+                // No id: the CLI names the row by "whatever is active right now", so there is
+                // no earlier moment whose identity we could be checking against.
+                workspace.closeWorkspace(workspace.activeW)
+            default:
+                return ["ok": false, "error": "ws: new [PATH] [--name X] | rename <name> | color <#hex|none> | close"]
+            }
+            return ["ok": true, "workspace": workspace.activeW]
+        case "group":
+            // Acts on the active workspace's group. Every verb but `new` needs one to exist.
+            let g = activeGroup(workspace)
+            switch args.first {
+            case "new":
+                guard g == nil else { return ["ok": false, "error": "active workspace is already in a group"] }
+                workspace.newGroupFromWorkspace(workspace.activeW)
+                // The new group is named after the row; an explicit name overrides that.
+                if args.count >= 2, let ng = activeGroup(workspace) { workspace.renameGroup(ng, args[1]) }
+            case "rename":
+                guard let g else { return ["ok": false, "error": "active workspace is not in a group"] }
+                guard args.count >= 2 else { return ["ok": false, "error": "group rename <name>"] }
+                workspace.renameGroup(g, args[1])   // renameGroup ignores a blank name (a group must be named)
+            case "color":
+                guard let g else { return ["ok": false, "error": "active workspace is not in a group"] }
+                guard args.count >= 2 else { return ["ok": false, "error": "group color <#hex|none>"] }
+                workspace.setGroupColor(g, args[1] == "none" ? nil : ghosttyColor(args[1]))
+            case "ungroup":
+                guard let g else { return ["ok": false, "error": "active workspace is not in a group"] }
+                // Name the group in the reply BEFORE it stops existing.
+                let name = workspace.groups[g].name
+                workspace.ungroup(g)
+                return ["ok": true, "group": name, "workspace": workspace.activeW]
+            case "remove":
+                guard let g else { return ["ok": false, "error": "active workspace is not in a group"] }
+                let name = workspace.groups[g].name
+                workspace.removeGroup(g)   // closes every member, then drops the group
+                return ["ok": true, "group": name, "workspace": workspace.activeW]
+            default:
+                return ["ok": false, "error": "group: new [name] | rename <name> | color <#hex|none> | ungroup | remove"]
+            }
+            guard let now = activeGroup(workspace) else {
+                return ["ok": false, "error": "active workspace is not in a group"]
+            }
+            return ["ok": true, "group": workspace.groups[now].name, "workspace": workspace.activeW]
         case "project":
-            // Compat verb over the flat model: it acts on the active row's GROUP when it has
+            // Legacy alias of `ws`/`group`: it acts on the active row's GROUP when it has
             // one, else on the workspace itself — which is exactly what a "project" was.
             let g = activeGroup(workspace)
             switch args.first {
@@ -489,9 +550,10 @@ func controlSocketAlive() -> Bool { socketIsLive(controlSocketPath()) }
 func runControlCLI(_ args: [String]) -> Int32 {
     guard let verb = args.first else { return 1 }
     var rest = Array(args.dropFirst())
-    // `vesta project new` with no PATH → default to the caller's working directory (resolved
-    // here, since the app's cwd differs from the shell's). An explicit path is left untouched.
-    if verb == "project", rest.first == "new",
+    // `vesta ws new` (and its legacy alias `project new`) with no PATH → default to the caller's
+    // working directory (resolved here, since the app's cwd differs from the shell's). An
+    // explicit path is left untouched.
+    if verb == "ws" || verb == "project", rest.first == "new",
        !(rest.count >= 2 && !rest[1].hasPrefix("--")) {
         rest.insert(FileManager.default.currentDirectoryPath, at: 1)
     }
@@ -614,7 +676,11 @@ func printUsage() {
       select <workspace>                    switch the active window to a workspace (0-based flat index)
       select <project> <session>            legacy form: group P, member S
       rename <name>                         rename the active workspace (blank clears it)
-      project new [PATH] [--name X]|rename <name>|remove|color <#hex|none>   acts on the active row's group, else the workspace (new: PATH or caller's cwd)
+      ws new [PATH] [--name X]              open a new workspace (PATH defaults to the caller's cwd)
+      ws rename <name>|color <#hex|none>|close   act on the active workspace (rename: blank clears)
+      group new [name]                      wrap the active workspace in a new group (named after it by default)
+      group rename <name>|color <#hex|none>|ungroup|remove   act on the active workspace's group
+      project …                             legacy alias: `ws` when the row is bare, `group` when it's grouped
       kill <id>                             terminate a workspace's shell under the daemon
 
     Config (in your ghostty config; libghostty ignores the vesta- keys):
@@ -645,6 +711,12 @@ func controlSelfCheck() {
     assert((back["args"] as? [Any])?.count == 1)
     assert(controlVerbs.contains("split"))
     assert(controlVerbs.contains("pane"))
+    // The flat model's verbs, plus the legacy alias they replaced — argv routing sends a verb to
+    // the socket only if it's in this set, so a missing entry makes `vesta ws new` launch a
+    // SECOND app instance instead of talking to the running one.
+    assert(controlVerbs.contains("ws"))
+    assert(controlVerbs.contains("group"))
+    assert(controlVerbs.contains("project"))
 
     // socketIsLive decides whether run() logs a takeover, and controlSocketAlive (the bare-argv
     // bootstrap) is the same call — so the states it must tell apart are pinned against a real
