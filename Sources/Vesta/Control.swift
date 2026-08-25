@@ -551,11 +551,21 @@ func runControlCLI(_ args: [String]) -> Int32 {
     guard let verb = args.first else { return 1 }
     var rest = Array(args.dropFirst())
     // `vesta ws new` (and its legacy alias `project new`) with no PATH → default to the caller's
-    // working directory (resolved here, since the app's cwd differs from the shell's). An
-    // explicit path is left untouched.
-    if verb == "ws" || verb == "project", rest.first == "new",
-       !(rest.count >= 2 && !rest[1].hasPrefix("--")) {
-        rest.insert(FileManager.default.currentDirectoryPath, at: 1)
+    // working directory (resolved here, since the app's cwd differs from the shell's). A
+    // RELATIVE path is resolved against that same cwd for the same reason — the app would
+    // otherwise anchor it at its own (`/`), silently opening the wrong directory.
+    if verb == "ws" || verb == "project", rest.first == "new" {
+        let cwd = FileManager.default.currentDirectoryPath
+        if rest.count >= 2, !rest[1].hasPrefix("--") {
+            let p = (rest[1] as NSString).expandingTildeInPath   // a quoted "~/x" reaches us intact
+            // isDirectory: true on the BASE — without it URL treats cwd as a file and drops its
+            // last component, so `vesta ws new sub` from /a/b would resolve to /a/sub.
+            rest[1] = p.hasPrefix("/") ? p
+                : URL(fileURLWithPath: p, relativeTo: URL(fileURLWithPath: cwd, isDirectory: true))
+                    .standardizedFileURL.path
+        } else {
+            rest.insert(cwd, at: 1)
+        }
     }
 
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -676,11 +686,12 @@ func printUsage() {
       select <workspace>                    switch the active window to a workspace (0-based flat index)
       select <project> <session>            legacy form: group P, member S
       rename <name>                         rename the active workspace (blank clears it)
-      ws new [PATH] [--name X]              open a new workspace (PATH defaults to the caller's cwd)
+      ws new [PATH] [--name X]              open a new workspace (PATH defaults to — and a relative PATH resolves against — the caller's cwd)
       ws rename <name>|color <#hex|none>|close   act on the active workspace (rename: blank clears)
       group new [name]                      wrap the active workspace in a new group (named after it by default)
       group rename <name>|color <#hex|none>|ungroup|remove   act on the active workspace's group
-      project …                             legacy alias: `ws` when the row is bare, `group` when it's grouped
+      project rename|remove|color           legacy alias: the row's group when grouped, else the workspace itself
+      project new [PATH] [--name X]         = `ws new` (`project dir` is gone — each workspace owns its cwd)
       kill <id>                             terminate a workspace's shell under the daemon
 
     Config (in your ghostty config; libghostty ignores the vesta- keys):
