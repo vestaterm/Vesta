@@ -118,7 +118,7 @@ jobs:
           SHA=$(shasum -a 256 dist/Vesta.dmg | awk '{print $1}')
           git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/vestaterm/homebrew-tap.git" tap
           sed -i '' -e "s/^  version \".*\"/  version \"${VERSION}\"/" \
-                    -e "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" tap/Casks/vesta.rb
+                    -e "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" tap/Casks/vesta-terminal.rb
           cd tap
           git config user.name "vesta-release-bot"
           git config user.email "releases@users.noreply.github.com"
