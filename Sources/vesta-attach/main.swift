@@ -177,16 +177,22 @@ if !send(.hello(paneID: paneID, cols: cols0, rows: rows0, cwd: spawnCwd)) {
     close(sock); exit(1)
 }
 
-// ── SIGWINCH → resize ────────────────────────────────────────────────────────
-// C signal handlers can't capture Swift state; stash the socket fd globally.
-var gSock: Int32 = sock
-signal(SIGWINCH) { _ in
-    var ws = winsize()
-    if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0, ws.ws_col > 0 {
-        let d = encode(ClientFrame.resize(cols: Int(ws.ws_col), rows: Int(ws.ws_row)))
-        d.withUnsafeBytes { raw in _ = write(gSock, raw.baseAddress, raw.count) }
-    }
-}
+// ── SIGWINCH → resize, debounced through the pump loop ───────────────────────
+// The handler only sets a flag; the loop sends the resize ~150ms after the LAST winch.
+// Two reasons this is not sent from the handler anymore:
+//  1. Teardown safety: quitting the GUI shrinks the surface as it dies, which winches
+//     this pty one last time. Forwarding that resize made the daemon shell rewrap and
+//     redraw (cursor-up + erase-below) INTO the replay ring as its final bytes — and the
+//     next reattach's replay then erased the restored history off the screen. With the
+//     debounce, the relay is dead before the deadline, so the shell never hears about it.
+//  2. Stream safety: a handler-time write() could interleave with a partial send() the
+//     pump had in flight on the same socket, desyncing the frame stream.
+// Real window resizes still land — coalesced to one resize per settle, which is kinder
+// to the shell than a winch per drag tick anyway.
+var gWinch: Int32 = 0
+signal(SIGWINCH) { _ in gWinch = 1 }
+let resizeDebounce: TimeInterval = 0.15
+var resizeDeadline: Date? = nil
 
 // ── reconnect ────────────────────────────────────────────────────────────────
 // A daemon-socket EOF/error is NOT session death: the daemon may have restarted (in-place
@@ -207,7 +213,7 @@ signal(SIGWINCH) { _ in
         if !socketAlive(MuxPaths.daemonSocket) { spawnDaemon() }
         guard let fd = connectSocket() else { continue }
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK)
-        sock = fd; gSock = fd            // route send()/SIGWINCH at the new fd
+        sock = fd                        // route send() at the new fd
         inbuf.removeAll(keepingCapacity: true)   // the old frame stream is gone; start clean
         let (c, r) = currentWinsize()
         if send(.hello(paneID: paneID, cols: c, rows: r, cwd: spawnCwd)) { return true }
@@ -223,9 +229,25 @@ var inbuf = Data()
 outer: while true {
     var rset = fd_set(); __darwin_fd_set(STDIN_FILENO, &rset); __darwin_fd_set(sock, &rset)
     let maxFD = max(STDIN_FILENO, sock)
+    // Wake at the resize deadline while one is pending; idle heartbeat otherwise.
     var tv = timeval(tv_sec: 30, tv_usec: 0)
+    if let d = resizeDeadline {
+        let remaining = max(0, d.timeIntervalSinceNow)
+        tv = timeval(tv_sec: Int(remaining), tv_usec: Int32((remaining * 1_000_000).truncatingRemainder(dividingBy: 1_000_000)))
+    }
     let n = select(maxFD + 1, &rset, nil, nil, &tv)
+    // Arm/extend the debounce BEFORE the EINTR continue — the winch is what interrupted us.
+    if gWinch != 0 { gWinch = 0; resizeDeadline = Date().addingTimeInterval(resizeDebounce) }
     if n < 0 { if errno == EINTR { continue }; break }    // EINTR from SIGWINCH is fine
+    // Deadline passed with no newer winch → send ONE resize at the settled size.
+    if let d = resizeDeadline, Date() >= d {
+        resizeDeadline = nil
+        let (c, r) = currentWinsize()
+        if !send(.resize(cols: c, rows: r)) {
+            if !reconnect() { writeErr("vesta-attach: daemon unreachable after retries — detaching\r\n"); break outer }
+            _ = send(.resize(cols: c, rows: r))
+        }
+    }
     // stdin → input frames.
     if __darwin_fd_isset(STDIN_FILENO, &rset) != 0 {
         var tmp = [UInt8](repeating: 0, count: 65536)
