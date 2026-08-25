@@ -1683,7 +1683,10 @@ final class VestaWindowController: NSWindowController {
         newWorkspaceBtn?.isHidden = !sidebarOpen      // collapsed: no sidebar edge to hug
         // Collapsed: the + is hidden but still anchors the path label (dir = plus.trailing + 26),
         // so park it at -6 → the path starts 10pt after the toggle instead of 84pt out.
-        plusLeading?.constant = sidebarOpen ? max(40, openWidth - hostX - 28) : -6
+        // Collapsed: -6 puts the path 10pt after the (visible) toggle. Lite hides the
+        // toggle too, so park the chain further left — the path starts 8pt after the
+        // traffic lights instead of hanging where the toggle would have been.
+        plusLeading?.constant = sidebarOpen ? max(40, openWidth - hostX - 28) : (lite ? -36 : -6)
     }
 
     /// The notifications bell, in its OWN trailing titlebar accessory so it pins to the
