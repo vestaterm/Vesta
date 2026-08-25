@@ -42,9 +42,14 @@ final class Session {
     private var logFD: Int32 = -1
     private var logBytes = 0
     private static let logCap = 512 * 1024
+    /// True when this session's replay ring was seeded from a PRIOR on-disk log — i.e. a cold
+    /// restore: the scrollback outlived the daemon (reboot / crash) but the shell behind it did
+    /// not. The daemon uses this to stamp a restart divider into the ring (see coldRestoreBanner);
+    /// it stays false for a genuinely new pane and for an upgrade-adopted (live) session.
+    private(set) var seededFromLog = false
 
-    /// Whether to persist scrollback to disk (off by default — terminal output can hold
-    /// secrets; opt in via `vesta-persist-scrollback = true`). Read once by the daemon.
+    /// Whether to persist scrollback to disk (on by default, 0600 — opt out via
+    /// `vesta-persist-scrollback = false` when output may hold secrets). Read once by the daemon.
     private let logEnabled: Bool
 
     init?(paneID: String, cols rawCols: Int32, rows rawRows: Int32, cwd: String? = nil, logEnabled: Bool = false, shellIntegration: Bool = false) {
@@ -135,13 +140,14 @@ final class Session {
     /// Seed the replay ring from the prior on-disk log (scrollback from before a daemon
     /// restart), then open the log for append. The new shell's output continues the file.
     private func seedRingAndOpenLog() {
-        guard logEnabled else { return }   // opt-in: no on-disk scrollback by default
+        guard logEnabled else { return }   // opted out: no on-disk scrollback
         let path = MuxPaths.sessionLog(paneID)
         if let data = FileManager.default.contents(atPath: path), !data.isEmpty {
             // Resume at the next ESC or newline, not wherever 256 KB happens to land — a
             // mid-sequence cut replays as literal junk (`;2;215;119;87m`) across the pane.
             ring = ringSuffixFromSafeBoundary(data, cap: Session.ringCap)
             logBytes = data.count
+            seededFromLog = true   // history from a dead daemon's shell — the caller marks the cut
         }
         logFD = open(path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
         setCloseOnExec(logFD)   // scrollback log must not leak into forked shells

@@ -32,16 +32,18 @@ final class Daemon {
     // UI). Their logs are deleted IMMEDIATELY on reap — no resurrection is expected, so the
     // grace delay (which exists only to survive a racing daemon death) doesn't apply.
     private var explicitKills: Set<String> = []
-    // Persist scrollback to disk? Off by default; read once from config at startup.
+    // Persist scrollback to disk? On by default; read once from config at startup.
     private let logEnabled = Daemon.scrollbackEnabled()
     // Inject our zsh shell integration (OSC 133 command marks → sidebar heat)? On by default;
     // opt out with `vesta-shell-integration = false`. Read once from config at startup.
     private let shellIntegration = Daemon.boolConfig("vesta-shell-integration", default: true)
 
-    /// Read `vesta-persist-scrollback` from the Vesta config (XDG-aware). Default false —
-    /// terminal output can contain secrets, so on-disk persistence is strictly opt-in.
+    /// Read `vesta-persist-scrollback` from the Vesta config (XDG-aware). Default true — cold
+    /// restore (scrollback + the restart divider after a reboot) works out of the box. The logs
+    /// are 0600 under the mux dir and capped; opt out with `vesta-persist-scrollback = false`
+    /// when terminal output may hold secrets you don't want on disk.
     private static func scrollbackEnabled() -> Bool {
-        boolConfig("vesta-persist-scrollback", default: false)
+        boolConfig("vesta-persist-scrollback", default: true)
     }
 
     /// Read a boolean `key = true/1/yes` from the Vesta config (XDG-aware), or `default` if
@@ -308,6 +310,9 @@ final class Daemon {
             // version via helloAck (below); the CLIENT (vesta-attach, Task 3.8) compares
             // helloAck.version to its own muxProtocolVersion and bails on mismatch. This
             // is what makes remote attach (M5) against a newer/older daemon safe.
+            // Capture this BEFORE the create-branch: it's what helloAck reports back, so the
+            // caller can tell a reattached pty from a silently forked fresh shell.
+            let resumed = sessions[paneID] != nil
             let s: Session
             if let existing = sessions[paneID] {
                 s = existing
@@ -326,6 +331,15 @@ final class Daemon {
                 // grace-delete left over from a prior shell exit so we don't delete it out
                 // from under the new shell 5s later.
                 pendingDeletes[paneID] = nil
+                // Cold restore (machine rebooted / daemon died): the ring was reseeded from disk
+                // but the shell is brand new. Stamp a reset + divider INTO the ring so every
+                // future replay shows history, then a visible cut, then the fresh prompt —
+                // instead of half-drawn TUI state with no process behind it. Ingested BEFORE the
+                // `snapshot()` below, so even this first attach replays it; later reattaches take
+                // the `existing` branch and never re-ingest, so it appears exactly once. It lands
+                // in the on-disk log too — by design: the cut becomes part of history.
+                // coldRestoreBanner lives in VestaMux (pure, so `vesta selfcheck` covers it).
+                if fresh.seededFromLog { fresh.ingest(coldRestoreBanner(cwd: cwd)) }
             }
             // Bind any subscribers that arrived before this session existed (review finding B).
             if let waiting = pendingSubscribers.removeValue(forKey: paneID) {
@@ -333,7 +347,7 @@ final class Daemon {
             }
             s.addClient(fd: fd)
             clientSession[fd] = paneID
-            if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion))) {
+            if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion, resumed: resumed))) {
                 closeClient(fd); return
             }
             // Clean reattach: replay the raw output ring verbatim. ghostty parses it,
@@ -378,7 +392,8 @@ final class Daemon {
             subscriberSession[fd] = paneID
             if let s = sessions[paneID] { s.addSubscriber(fd: fd) }
             else { pendingSubscribers[paneID, default: []].append(fd) }
-            if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion))) { closeClient(fd) }
+            // A subscriber never spawns anything, so there's no fork to report: resumed: true.
+            if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion, resumed: true))) { closeClient(fd) }
         case let .upgrade(path):
             performUpgrade(newBinary: path, replyTo: fd)
         case .info:

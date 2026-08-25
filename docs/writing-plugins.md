@@ -55,7 +55,7 @@ return { version = "1.0.0", priority = 0 }
 | `vesta.bind(chord, fn)` | Keybind, e.g. `"cmd+shift+h"`. Lua binds win over built-ins, so avoid `"cmd+shift+p"` (the command palette). |
 | `vesta.on(event, fn)` | Register an event handler (see Events). |
 | `vesta.timer(seconds, fn)` | Call `fn` every `seconds` (repeating). |
-| `vesta.set(key, value)` | Override a config value (Vesta or ghostty key). Short chrome aliases get the `vesta-` prefix automatically: `accent`, `surface`, `font-family`, `font-size`, `sidebar-width`, `divider-width`, `sidebar-opacity`, `glass-sidebar`, `sidebar-tails`, `sidebar-panes`, `persist-scrollback`. Raw ghostty keys (e.g. `background-opacity` for terminal transparency) pass through as-is. |
+| `vesta.set(key, value)` | Override a config value (Vesta or ghostty key). Short chrome aliases get the `vesta-` prefix automatically: `accent`, `surface`, `font-family`, `font-size`, `sidebar-width`, `divider-width`, `sidebar-opacity`, `glass-sidebar`, `sidebar-tails`, `sidebar-panes`, `persist`. Raw ghostty keys (e.g. `background-opacity` for terminal transparency) pass through as-is. Daemon-side keys (`vesta-persist-scrollback`, `vesta-shell-integration`) are read by `vestad` from the config file at startup and cannot be set from Lua — put them in `~/.config/vesta/config`. |
 | `vesta.plugin(repo [, opts])` | Declare a plugin dependency (clone/pin). |
 
 ### Acting on the terminal

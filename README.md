@@ -201,7 +201,7 @@ look, so an untouched config changes nothing.
 | `vesta-divider-width` | 8 | split divider grab width (1px hairline drawn) |
 | `vesta-projects` | — | comma-separated project paths to preload |
 | `vesta-persist` | true | run shells under `vestad` (survive quit); `false` = plain shells |
-| `vesta-persist-scrollback` | false | mirror scrollback to disk so it survives a daemon restart — or a reboot. **Off by default** — terminal output can contain secrets (see [SECURITY.md](SECURITY.md)) |
+| `vesta-persist-scrollback` | true | mirror scrollback to disk (0600) so it survives a daemon restart — or a reboot, where a reattached session gets a `── vesta: session restarted — new shell in <dir> ──` divider above the fresh prompt. `false` = opt out; terminal output can contain secrets (see [SECURITY.md](SECURITY.md)) |
 | `vesta-sidebar-tails` | true | session cards show the last ~4 rendered lines of their focused pane (content-aware for TUI agents: anchors on Claude Code's last `⏺` block, filters its input box). Also gates background materialization of restored sessions at launch |
 | `vesta-sidebar-panes` | false | multi-pane cards draw their real split layout (focused pane highlighted); off = a dim `⊞N` count still shows |
 | `vesta-glass-sidebar` | false | translucent sidebar — behind-window blur with the surface color as a tint; titlebar over the sidebar matches. Applies on relaunch |

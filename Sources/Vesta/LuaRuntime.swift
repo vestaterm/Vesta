@@ -184,11 +184,17 @@ private func l_vesta_status(_ L: OpaquePointer?) -> Int32 {
 /// aliases (accent/surface/…) get the `vesta-` prefix; any other key is treated as a raw
 /// ghostty key (e.g. `background`) and reaches libghostty. Value coerced to a string.
 /// Short names that map to Vesta's own chrome knobs (everything else is a raw ghostty key).
+///
+/// DAEMON-SIDE KEYS DO NOT BELONG HERE. `vesta.set` only populates `luaConfigOverrides`, which
+/// lives in the app process; vestad is a separate process that parses `~/.config/vesta/config`
+/// itself and never sees those overrides. `persist-scrollback` and `shell-integration` were
+/// listed here and silently did nothing — worst of all for `persist-scrollback`, where a user
+/// opting out of writing terminal output to disk got no opt-out at all. They now fall through
+/// as raw ghostty keys; set them in the config file instead.
 private let vestaConfigAliases: Set<String> = [
     "accent", "surface", "font-family", "sidebar-width", "font-size", "divider-width",
     // glass/sidebar knobs (raw ghostty keys like background-opacity pass through as-is)
-    "sidebar-opacity", "glass-sidebar", "sidebar-tails", "sidebar-panes", "persist-scrollback",
-    "persist", "shell-integration"]
+    "sidebar-opacity", "glass-sidebar", "sidebar-tails", "sidebar-panes", "persist"]
 
 private func l_vesta_set(_ L: OpaquePointer?) -> Int32 {
     guard let kc = luaL_checklstring(L, 1, nil) else { return 0 }

@@ -267,7 +267,7 @@ outer: while true {
                 writeOut(bytes)
             case .exited:
                 break outer        // shell exited → relay ends
-            case let .helloAck(version):
+            case let .helloAck(version, _):
                 // Version gate: refuse a skewed daemon rather than misparse its frames
                 // (critical for remote attach). Never kill the old daemon — it only
                 // lingers because it still owns live shells (it idle-exits otherwise).

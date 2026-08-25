@@ -22,15 +22,28 @@ Callbacks are error-isolated (a throwing plugin can't crash Vesta, and a
 runaway loop is aborted), and a plugin that errors repeatedly is auto-disabled —
 but that is a stability guard, **not** a security boundary.
 
-## Scrollback on disk is off by default
+## Scrollback on disk is on by default
 
-By default Vesta does **not** write terminal output to disk. If you set
-`vesta-persist-scrollback = true`, the daemon mirrors each pane's scrollback to
+By default the daemon mirrors each pane's scrollback to
 `~/Library/Application Support/vesta/sessions/<paneID>.log` (mode `0600`, owner-only)
-so history survives a daemon restart. Terminal output can contain passwords, API
-tokens, and SSH keys — enable this only if you accept on-disk persistence of that
-data. Logs are removed when a session ends cleanly; a daemon crash can leave the
-last ~512 KB on disk until the next clean exit. The daemon reads this setting once
+so history survives a daemon restart — or a reboot. Terminal output can contain
+passwords, API tokens, and SSH keys; set `vesta-persist-scrollback = false` if you
+do not want that data on disk (the trade-off: sessions come back empty after a
+restart). Logs are removed when a session ends cleanly; a daemon crash can leave the
+last ~512 KB on disk until the next clean exit.
+
+The session logs are not the only file involved: an **in-place daemon upgrade** first
+writes a `0600` snapshot of its live state to
+`~/Library/Application Support/vesta/upgrade-state.bin` so the re-executed daemon can
+adopt the running shells. The snapshot always carries each session's metadata (pane id,
+pid, size, cwd, name); its replay-ring bytes (up to ~256 KB of recent terminal output
+per pane) are included **only when `vesta-persist-scrollback` is on** — with the
+opt-out set the ring field is empty and panes replay blank after an in-place upgrade,
+the same privacy choice the session logs honor. The file is unlinked as soon as the new
+image adopts the state, and immediately if the write or the exec fails; but a hard kill
+inside that brief window can leave it on disk until the next upgrade overwrites it.
+
+The daemon reads this setting once
 at startup, so toggling it applies on the next daemon start (quit Vesta and let
 `vestad` exit, or `kill` it).
 
