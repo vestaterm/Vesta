@@ -52,7 +52,8 @@ import GhosttyKit
     /// The last content size we were told about, used when backing props change.
     private var contentSize: NSSize = .init(width: 800, height: 600)
 
-    init(id: Int, theme: Theme, cwd: String? = nil, paneID: String = UUID().uuidString) {
+    init(id: Int, theme: Theme, cwd: String? = nil, paneID: String = UUID().uuidString,
+         bare: Bool = false) {
         self.id = id
         self.paneID = paneID
         self.cwd = cwd
@@ -74,8 +75,9 @@ import GhosttyKit
 
         // When persist is on, run `vesta-attach <paneID>` instead of a bare shell
         // so the pane connects to (or creates) the daemon session for this paneID.
-        // `vesta-persist = false` in config restores the bare-shell fallback.
-        let muxCommand: String? = VestaConfig.shared.persist
+        // `vesta-persist = false` in config restores the bare-shell fallback;
+        // `bare` forces it per-pane (lite windows: shells die with the window).
+        let muxCommand: String? = (VestaConfig.shared.persist && !bare)
             ? "\(muxHelperPath()) \(paneID)" : nil
 
         // The working directory string must outlive the ghostty_surface_new call.

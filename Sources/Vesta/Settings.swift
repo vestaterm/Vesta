@@ -158,7 +158,11 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
         let shellBox = check(settingBool("vesta-shell-integration", default: true),
             #selector(shellIntegrationChanged(_:)),
             tip: "Inject zsh OSC 133 marks so card heat (✓/✗) works out of the box.")
+        let liteBox = check(cfg.lite, #selector(liteChanged(_:)),
+            tip: "New windows open ghostty-like: no sidebar, plain shells that die on close.")
         addSection("Sessions", [
+            row("Lite mode", liteBox, key: "vesta-lite"),
+            caption("New windows (and the next launch) open lite: titlebar + terminal only, no workspaces, shells end when the window closes. Your full workspace setup is kept and returns when turned off. ⌥⌘N opens a single lite window any time."),
             row("Persist shells", persistBox, key: "vesta-persist"),
             caption("Shells survive quitting the app. Off: new sessions are plain shells — nothing survives quit, and daemon features (heat, in-place updates) are off."),
             row("Persist scrollback", scrollbackBox, key: "vesta-persist-scrollback"),
@@ -484,6 +488,10 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
     // Sessions — the daemon reads these at (next) startup; no live reload.
     @objc private func persistChanged(_ b: NSButton) {
         setVestaConfigKey("vesta-persist", b.state == .on ? "true" : "false")
+    }
+    @objc private func liteChanged(_ b: NSButton) {
+        setVestaConfigKey("vesta-lite", b.state == .on ? "true" : "false")
+        onReload()   // refresh VestaConfig.shared so the next ⌘N honors it immediately
     }
     @objc private func scrollbackChanged(_ b: NSButton) {
         setVestaConfigKey("vesta-persist-scrollback", b.state == .on ? "true" : "false")
