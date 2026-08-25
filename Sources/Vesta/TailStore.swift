@@ -17,6 +17,11 @@ final class TailStore {
     private var lastActivity: [String: Date] = [:]
     private var lastExit: [String: (code: Int, at: Date)] = [:]  // OSC 133;D per pane (card heat)
     private var cmdStart: [String: Date] = [:]                    // OSC 133;C per pane
+    // When each pane's feed first produced bytes. The opening seconds of a feed are
+    // reattach churn, not news: reconnecting resizes the pty and zsh re-emits its prompt
+    // marks, so recording those as exit heat lit every restored card "✓ · now" on relaunch.
+    private var firstFeed: [String: Date] = [:]
+    private static let exitGrace: TimeInterval = 5
 
     /// Fired on each command completion (paneID, exit code, duration since its 133;C).
     /// AppDelegate uses this for background-attention — the old pid heuristic can't see
@@ -58,7 +63,12 @@ final class TailStore {
         // parked in the partial would re-record every ingest and pin its age at "now").
         // ponytail: a marker split across chunks is missed; fine, the next command re-emits.
         if Self.hasStartMarker(s) { cmdStart[paneID] = Date() }
-        if let code = Self.lastExitMarker(s) {
+        // Exit-heat grace: markers inside the feed's opening seconds are reattach echo
+        // (see firstFeed above) — swallow them so relaunch doesn't ring every card. A real
+        // command that STARTS during the grace finishes after it and records normally.
+        let feedStart = firstFeed[paneID] ?? { let now = Date(); firstFeed[paneID] = now; return now }()
+        let inGrace = Date().timeIntervalSince(feedStart) < Self.exitGrace
+        if let code = Self.lastExitMarker(s), !inGrace {
             lastExit[paneID] = (code, Date())
             let dur = cmdStart[paneID].map { Date().timeIntervalSince($0) } ?? 0
             cmdStart[paneID] = nil
@@ -84,8 +94,12 @@ final class TailStore {
 
     func forget(_ paneID: String) {
         tails[paneID] = nil; partial[paneID] = nil; lastActivity[paneID] = nil
-        lastExit[paneID] = nil; cmdStart[paneID] = nil
+        lastExit[paneID] = nil; cmdStart[paneID] = nil; firstFeed[paneID] = nil
     }
+
+    /// End a pane's exit-heat grace immediately (selfcheck seam — production panes
+    /// simply age past it).
+    func expireExitGrace(_ paneID: String) { firstFeed[paneID] = .distantPast }
 
     /// Last `ESC ] 133 ; D [; code] (BEL | ESC \)` in a chunk → exit code (no code ⇒ 0).
     /// Emitted by ghostty/iTerm2-style shell integration when a command finishes.
@@ -174,9 +188,13 @@ func tailStoreSelfCheck() {
     assert(TailStore.hasStartMarker("run: \u{1B}]133;C\u{07}x"), "start marker seen")
     assert(!TailStore.hasStartMarker("plain"), "no false start")
     // onCommandDone: C then D in separate chunks fires with a real duration; C+D in ONE
-    // chunk yields dur≈0 (no ring); forget clears pending starts.
+    // chunk yields dur≈0 (no ring); forget clears pending starts. Markers inside a feed's
+    // opening grace are reattach echo — swallowed until the grace expires.
     var fired: [(String, Int, TimeInterval)] = []
     ts.onCommandDone = { fired.append(($0, $1, $2)) }
+    ts.ingest(paneID: "c", chunk: Data("\u{1B}]133;D;1\u{07}".utf8))
+    assert(fired.isEmpty && ts.exitState("c") == nil, "in-grace marker is reattach echo — no heat, no ring")
+    ts.expireExitGrace("c")
     ts.ingest(paneID: "c", chunk: Data("\u{1B}]133;C\u{07}building…\n".utf8))
     ts.ingest(paneID: "c", chunk: Data("done\u{1B}]133;D;0\u{07}".utf8))
     assert(fired.count == 1 && fired[0].0 == "c" && fired[0].1 == 0 && fired[0].2 >= 0, "C→D fires")
@@ -184,6 +202,7 @@ func tailStoreSelfCheck() {
     assert(fired.count == 2 && fired[1].1 == 2 && fired[1].2 < 1, "same-chunk C+D ≈ zero duration")
     ts.ingest(paneID: "c", chunk: Data("\u{1B}]133;C\u{07}".utf8))
     ts.forget("c")
+    ts.expireExitGrace("c")   // forget also reset the grace — end it so the D below records
     ts.ingest(paneID: "c", chunk: Data("\u{1B}]133;D;0\u{07}".utf8))
     assert(fired.count == 3 && fired[2].2 == 0, "forget cleared the pending start (dur 0)")
     // End-to-end: the EXACT bytes our generated zsh integration emits must parse. Uses the

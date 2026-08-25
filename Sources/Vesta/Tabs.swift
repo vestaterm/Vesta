@@ -185,7 +185,12 @@ final class Workspace {
             // always owns a tree, so there is nothing to lazy-create here.
             activeW = min(max(store.lastActive, 0), wss.count - 1)
         }
-        showActive()
+        // Init does NOT mount: the window doesn't exist yet, so mounting here would
+        // materialize the active pane at a zero/default size — its shell then reattaches
+        // at the wrong winsize, the later frame restore fires a SIGWINCH, and zsh's redraw
+        // (cursor-up + erase-below) is recorded into the daemon ring, corrupting the NEXT
+        // replay. WindowContext.start() mounts after the window is up at its real frame.
+        store.lastActive = activeW
     }
 
     // MARK: - Workspace operations
@@ -501,6 +506,11 @@ final class Workspace {
             if let c = g.color { d["color"] = hexString(c) }
             return d
         }
+        // Card tails survive relaunch (a dormant row has no viewport to capture). Gated on
+        // the same key as the daemon's scrollback log: "terminal output on disk" is ONE
+        // privacy choice, not two — opting out there opts out here.
+        let persistTails = (GhosttyApp.shared.settings["vesta-persist-scrollback"]
+            .map { $0 != "false" && $0 != "0" }) ?? true
         let wsData: [[String: Any]] = wss.map { w in
             var d: [String: Any] = ["paneID": w.tree.paneID,
                                     "cwd": w.tree.focusedCwd ?? NSHomeDirectory(),
@@ -510,6 +520,10 @@ final class Workspace {
             if let g = w.groupID { d["groupID"] = g }
             // Provenance for the config-seeding pass (additive — older readers ignore it).
             if let s = w.seededFrom { d["seededFrom"] = s }
+            if persistTails {
+                let t = w.tree.tailLines
+                if !t.isEmpty { d["tail"] = t }
+            }
             return d
         }
         return ["groups": groupsData, "workspaces": wsData, "activeWorkspace": activeW]
@@ -570,7 +584,8 @@ final class Workspace {
                 groups.contains { $0.id == id } ? id : nil
             }
             wss.append(WS(tree: makeDormant(layout: fixDirs(layout, fallback: cwd),
-                                            name: d["name"] as? String),
+                                            name: d["name"] as? String,
+                                            tail: d["tail"] as? [String] ?? []),
                           color: (d["color"] as? String).flatMap { ghosttyColor($0) },
                           groupID: gid,
                           seededFrom: d["seededFrom"] as? String))
@@ -598,7 +613,9 @@ final class Workspace {
         // A group nothing points at has no rows to draw — same ≥1-member invariant the
         // ops enforce via dropGroupIfEmpty.
         groups.removeAll { g in !wss.contains { $0.groupID == g.id } }
-        showActive()
+        // Bookkeeping only — hydrate runs during init, before the window exists; see the
+        // init comment for why mounting waits for start().
+        store.lastActive = activeW
     }
 
     // MARK: - Cycle workspaces
@@ -720,8 +737,8 @@ final class Workspace {
     /// A DORMANT session: keeps its persisted layout as data, builds ghostty surfaces only
     /// on first activation (mountLive → rootView → materialize). This is the launch-time win —
     /// hydrate makes every non-active session dormant.
-    private func makeDormant(layout: [String: Any], name: String? = nil) -> PaneTree {
-        wire(PaneTree(theme: theme, dormant: layout, name: name))
+    private func makeDormant(layout: [String: Any], name: String? = nil, tail: [String] = []) -> PaneTree {
+        wire(PaneTree(theme: theme, dormant: layout, name: name, tail: tail))
     }
 
     private func wire(_ tree: PaneTree) -> PaneTree {

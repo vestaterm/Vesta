@@ -177,11 +177,12 @@ final class PaneTree {
     /// window displays materializes on mount, the rest stay data. The big launch-time win.
     /// Each leaf carries its own persisted paneID for daemon reattach; divider ratios are
     /// best-effort, applied after the tree is mounted (see applyPendingRatios).
-    init(theme: Theme, dormant layout: [String: Any], name: String? = nil) {
+    init(theme: Theme, dormant layout: [String: Any], name: String? = nil, tail: [String] = []) {
         self.theme = theme
         self.paneID = PaneTree.firstLeafID(layout) ?? UUID().uuidString
         self.name = normalizedSessionName(name)
         self.dormantLayout = layout
+        self.restoredTail = tail
         VestaSplitView.surface = theme.background
         root = NSView()
         root.wantsLayer = true
@@ -245,9 +246,15 @@ final class PaneTree {
     /// Sidebar tail: last rendered lines of the focused pane's VIEWPORT. Reading the
     /// grid (not the byte stream) is what makes TUI apps work — claude/vim repaint via
     /// cursor moves with no newlines, so a stream tail collapses to one line.
+    /// Last-known card tail restored from windows.json — what a dormant row shows, and the
+    /// fallback while a just-materialized surface waits for its daemon replay to paint. Live
+    /// capture takes over the moment the viewport has content.
+    private var restoredTail: [String] = []
+
     var tailLines: [String] {
-        guard dormantLayout == nil, let f = focused else { return [] }
-        return PaneTree.lastLines(f.capture(scrollback: false), max: TailStore.maxLines)
+        guard dormantLayout == nil, let f = focused else { return restoredTail }
+        let live = PaneTree.lastLines(f.capture(scrollback: false), max: TailStore.maxLines)
+        return live.isEmpty ? restoredTail : live
     }
 
     /// Last ≤max non-empty, non-chrome lines of a viewport, anchored on the latest activity.
