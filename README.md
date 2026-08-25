@@ -328,7 +328,7 @@ attention rings, the richer sidebar (cards with tails/heat), embedded browser pa
 And **cmux workspaces** (`2026-08-24-cmux-workspaces-design.md`) — the flat
 workspace model with visual groups, `windows.json` v2 + migration, `ws`/`group`
 CLI verbs, and clean cold restore after a reboot. Deferred there: lite mode
-(`vesta-lite`, see `PARKED.md`), group icons, pinning, PR/branch badges.
+(`vesta-lite`), group icons, pinning, PR/branch badges.
 
 ## Self-checks
 

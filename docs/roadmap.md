@@ -35,7 +35,8 @@ three PRs; the Project → Sessions two-level model is gone.
    int beside the legacy `"P.S"` `id`; `vesta state` reports `workspaces` + `groups`
    with `projects` kept as a compat view.
 
-Parked from this spec: **lite mode** (`vesta-lite`) — see `PARKED.md` — plus group
+Parked from this spec: **lite mode** (`vesta-lite`) — see §6 of
+`docs/superpowers/specs/2026-08-24-cmux-workspaces-design.md` — plus group
 icons, pinning, and PR/branch badges from cmux.
 
 ## Shipped on feat/plugin-events-2 (continuation)
