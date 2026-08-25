@@ -218,6 +218,7 @@ final class VestaWindowController: NSWindowController {
     private var newWorkspaceBtn: NSButton?       // titlebar +, pinned to the sidebar edge
     private var plusLeading: NSLayoutConstraint?    // syncTitlebarLayout-driven
     private var titlebarBand: NSView?   // glass mode's full-width titlebar tint strip
+    private var frozenShade: NSView?    // opaque strip shown while the terminal is frozen
 
     func flattenTitlebar() {
         window?.titlebarSeparatorStyle = .none
@@ -320,6 +321,7 @@ final class VestaWindowController: NSWindowController {
         rootGlass?.isHidden = !glass
         titlebarBand?.isHidden = !glass
         titlebarBand?.layer?.backgroundColor = t.background.withAlphaComponent(VestaConfig.shared.terminalOpacity).cgColor
+        frozenShade?.layer?.backgroundColor = t.background.cgColor
         sidebar?.layer?.backgroundColor = glass
             ? surface.withAlphaComponent(VestaConfig.shared.sidebarOpacity).cgColor : surface.cgColor
         if let projScroll { applyScrollAppearance(projScroll) }
@@ -479,6 +481,25 @@ final class VestaWindowController: NSWindowController {
                 band.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             ])
         }
+        // Frozen shade: the strip over the terminal when this window shows a FROZEN
+        // snapshot (its workspace is live in another window). The snapshot paints an
+        // OPAQUE theme background, but the glass band above it stays translucent — so the
+        // titlebar kept the live wallpaper glow while the content dimmed. Opaque and above
+        // the band, it makes the whole column read as one muted piece; the titlebar text
+        // sits in accessory views (a layer above contentView) and stays legible.
+        let shade = NSView()
+        shade.wantsLayer = true
+        shade.translatesAutoresizingMaskIntoConstraints = false
+        shade.layer?.backgroundColor = theme.background.cgColor
+        shade.isHidden = true
+        root.addSubview(shade)
+        NSLayoutConstraint.activate([
+            shade.topAnchor.constraint(equalTo: root.topAnchor),
+            shade.heightAnchor.constraint(equalToConstant: 34),
+            shade.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            shade.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+        ])
+        frozenShade = shade
 
         sidebarWidth = sidebar.widthAnchor.constraint(equalToConstant: sidebarOpen ? openWidth : 0)
         NSLayoutConstraint.activate([
@@ -1709,6 +1730,12 @@ final class VestaWindowController: NSWindowController {
         acc.view = host
         bellAccessory = host
         window?.addTitlebarAccessoryViewController(acc)
+    }
+
+    /// Match the titlebar strip to the terminal's display state: frozen (workspace live in
+    /// another window) shows the opaque shade so the strip dims with the snapshot below it.
+    func setContentFrozen(_ frozen: Bool) {
+        frozenShade?.isHidden = !frozen
     }
 
     /// Onboarding "clean slate": hide every titlebar accessory (sidebar toggle, +, path,
