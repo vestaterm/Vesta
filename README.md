@@ -272,6 +272,7 @@ look, so an untouched config changes nothing.
 | `vesta-divider-width` | 8 | split divider grab width (1px hairline drawn) |
 | `vesta-projects` | — | comma-separated paths, each seeded as a dormant workspace row (skipped if the dir doesn't exist; never seeded twice) |
 | `vesta-persist` | true | run shells under `vestad` (survive quit); `false` = plain shells |
+| `vesta-lite` | false | lite mode: new windows (and the next launch) open ghostty-like — titlebar + terminal only, no sidebar/footer/workspaces; splits still work; shells are plain processes that **die when the window closes**. Your full workspace setup is untouched and returns when turned off. `⌥⌘N` opens a single lite window any time |
 | `vesta-persist-scrollback` | true | mirror scrollback to disk (0600) so it survives a daemon restart — or a reboot, where the restored workspace gets a `── vesta: session restarted — new shell in <dir> ──` divider above its fresh prompt. `false` = opt out; terminal output can contain secrets (see [SECURITY.md](SECURITY.md)) |
 | `vesta-sidebar-tails` | true | workspace cards show the last ~4 rendered lines of their focused pane (content-aware for TUI agents: anchors on Claude Code's last `⏺` block, filters its input box). Also gates background materialization of restored workspaces at launch |
 | `vesta-sidebar-panes` | false | multi-pane cards draw their real split layout (focused pane highlighted); off = a dim `⊞N` count still shows |
@@ -294,7 +295,8 @@ look, so an untouched config changes nothing.
 | `⌘1`–`⌘9` | select the Nth workspace (flat sidebar order — grouped rows count too) |
 | `⌘B` | toggle sidebar |
 | `⌘⇧P` | command palette (search + run any action or plugin command) |
-| `⌘N` | new window (same sidebar and workspace pool) |
+| `⌘N` | new window (same sidebar and workspace pool; lite when `vesta-lite` is on) |
+| `⌥⌘N` | new **lite** window — no sidebar, plain shell that dies on close (see `vesta-lite`) |
 | `ctrl+b` then a key | prefix mode (see Multiplexer & sessions) |
 
 Click a pane to focus it; click a group header to collapse or expand it.
@@ -338,8 +340,9 @@ remote attach (`vesta attach ssh://`), and inline-image replay across detach.
 attention rings, the richer sidebar (cards with tails/heat), embedded browser pane.
 And **cmux workspaces** (`2026-08-24-cmux-workspaces-design.md`) — the flat
 workspace model with visual groups, `windows.json` v2 + migration, `ws`/`group`
-CLI verbs, and clean cold restore after a reboot. Deferred there: lite mode
-(`vesta-lite`), group icons, pinning, PR/branch badges.
+CLI verbs, and clean cold restore after a reboot. (Lite mode, deferred there,
+later shipped as `vesta-lite`.) Still deferred: group icons, pinning,
+PR/branch badges.
 
 ## Self-checks
 
