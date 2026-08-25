@@ -192,7 +192,7 @@ final class Workspace {
 
     /// Open a new workspace at the end of the list, top-level (never inside a group —
     /// grouping is an explicit user act). Defaults to the active workspace's cwd, so
-    /// ⌘N continues where you were standing.
+    /// ⌘T continues where you were standing.
     func newWorkspace(at cwd: String? = nil) {
         let dir = cwd ?? activeTreeIfAny?.focusedCwd ?? NSHomeDirectory()
         let tree = makeTree(cwd: dir)

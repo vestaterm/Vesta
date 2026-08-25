@@ -37,12 +37,14 @@ and an agent-control CLI on top.
   won't ring the attention dot (its shell keeps running under the daemon
   regardless, and plugin `pane-output` taps still work).
 - **Workspace sidebar** — one flat, drag-resizable list. Each row is a
-  **workspace**: one terminal session rooted at a directory, with splits and
-  tabs inside it. The titlebar **+** (or `⌘T`) makes one instantly at the active
-  workspace's cwd — no folder picker. **Groups** are visual only — a collapsible
-  header with a name, a color and a member count, no directory and no behavior
-  of its own. Drag to reorder anywhere (top level, or within a group), drop a row
-  onto a group header to join it; right-click for rename / color / new group from
+  **workspace**: one terminal session rooted at a directory, with splits inside
+  it (one workspace is also one "tab" to the CLI). The titlebar **+** (or `⌘T`)
+  makes one instantly at the active workspace's cwd — no folder picker.
+  **Groups** are visual only — a collapsible header with a name, a color and a
+  member count, no directory and no behavior of its own. Drag to reorder anywhere
+  (top level, or within a group); drop an **ungrouped** top-level row onto a group
+  header to join it — a row that's already in a group moves via its context menu
+  (Move to group / Remove from group). Right-click for rename / color / new group from
   workspace / move to group / close, or a header for rename / color / ungroup /
   remove. The order persists across restarts.
 - **Workspace cards** — each card shows an output tail (the last ~4 rendered
@@ -128,7 +130,7 @@ vesta capture                    # dump the focused pane's screen
 vesta pane status <paneID>       # JSON for one pane: cwd, title, alive, attention, workspace, project/group
 vesta list                       # the active workspace's panes (+ tab index/count)
 vesta tab new|next|prev|close    # tab control (one workspace = one tab)
-vesta sessions [--json] [--project <name>]   # list workspaces; --json for structured records (id, workspace, name, project, cwd, panes, active/attention; --project implies --json)
+vesta sessions [--json] [--project <name>]   # list workspaces; --json for structured records (id, workspace, name, project, panes, active/attention, cwd when the row reports one; --project implies --json)
 vesta state                      # workspaces + groups + windows as JSON (plus a `projects` compat view)
 vesta kill <id>                  # end a workspace's shell (by paneID)
 vesta notify [--desktop] [--title <t>] <msg>   # toast + bell; desktop banner when backgrounded (--desktop forces)
@@ -145,7 +147,8 @@ the top-level rows (a group is one unit, its members are that unit's sessions), 
 ## Workspaces & groups
 
 One sidebar row = one **workspace** = one terminal session rooted at a directory,
-with splits/tabs inside it. There is no project layer: a workspace owns its cwd,
+with splits inside it — and one workspace is also one "tab" as far as `vesta tab`
+is concerned. There is no project layer: a workspace owns its cwd,
 and `+` / `⌘T` opens a new one at the active workspace's cwd immediately (no
 picker). Its default name is the directory basename; `⌃B ,` or `vesta rename`
 overrides it, and per-workspace / per-group colors come from the right-click menu.

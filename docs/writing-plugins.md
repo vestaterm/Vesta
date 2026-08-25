@@ -91,7 +91,10 @@ its `"project.session"` form (the top-level row, then the position inside it) an
 is the flat index of the same row — `select` takes either. `project` is the row's group name,
 falling back to its own label, and `--project <name>` still filters on it. `group` is set only
 when the row really is in one — `project` is always there, so a nil `group` marks a bare
-top-level row. Each record also carries `name`, `cwd`, `panes`, `active`, `attention`.
+top-level row. Each record also carries `name`, `panes`, `active`, `attention` — plus
+`cwd`, but only when the row has one to report: it comes from the focused pane's OSC 7
+(or a dormant row's saved layout), so a browser leaf or a shell that hasn't reported yet
+leaves the key out. Read it defensively.
 
 ### UI
 

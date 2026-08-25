@@ -9,11 +9,13 @@ Spec: `docs/superpowers/specs/2026-08-24-cmux-workspaces-design.md`. Delivered i
 three PRs; the Project → Sessions two-level model is gone.
 
 1. **Flat workspaces** — one sidebar row = one workspace (a terminal session at a
-   cwd, splits/tabs inside). Groups are visual only: name, color, collapse, member
-   count — no cwd, no behavior. `+` / `⌘T` opens a workspace instantly at the
-   active cwd (the folder picker and per-project `+` are gone). Drag-reorder at
-   top level and inside a group, drop-on-header to join one; context menus for
-   rename / color / new group / move to group / ungroup / close.
+   cwd, splits inside; one workspace = one "tab" to the CLI's `tab` verb). Groups
+   are visual only: name, color, collapse, member count — no cwd, no behavior.
+   `+` / `⌘T` opens a workspace instantly at the active cwd (the folder picker and
+   per-project `+` are gone). Drag-reorder at top level and inside a group;
+   drop-on-header joins a group, but only for an ungrouped top-level row (a member
+   moves via the context menu); context menus for rename / color / new group /
+   move to group / ungroup / close.
 2. **windows.json v2 + migration** — per-window `groups` + flat `workspaces` +
    `activeWorkspace`; array order is sidebar order. v0/v1 files migrate on launch
    (1-session project → a workspace keeping its name/color, ≥2 → a group of
