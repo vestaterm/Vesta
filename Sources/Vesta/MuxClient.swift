@@ -128,7 +128,10 @@ enum MuxClient {
     static func kill(paneID: String) -> Bool {
         guard let fd = connect() else { return false }
         defer { close(fd) }
-        guard send(fd, .hello(paneID: paneID, cols: 80, rows: 24)),   // bind this fd to the session
+        // wantReplay: false — this fd only exists to deliver the kill; the ring replay is
+        // 256 KB of noise before it. (The drain loop below stays: an OLD daemon ignores
+        // the flag and replays anyway, and draining is what lets its kill land.)
+        guard send(fd, .hello(paneID: paneID, cols: 80, rows: 24, wantReplay: false)),
               send(fd, .kill) else { return false }
         // Bound the blocking read: kill runs on main (close/quit), so a wedged daemon must not
         // beachball the app. 2s is plenty for a local socket ack; on timeout read → -1 → false.

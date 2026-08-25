@@ -216,7 +216,10 @@ var resizeDeadline: Date? = nil
         sock = fd                        // route send() at the new fd
         inbuf.removeAll(keepingCapacity: true)   // the old frame stream is gone; start clean
         let (c, r) = currentWinsize()
-        if send(.hello(paneID: paneID, cols: c, rows: r, cwd: spawnCwd)) { return true }
+        // wantReplay: false — ghostty's screen survived the outage untouched, so a ring
+        // replay here would repeat the entire visible history (seen after app updates,
+        // where the daemon self-exec drops every client and they all land here).
+        if send(.hello(paneID: paneID, cols: c, rows: r, cwd: spawnCwd, wantReplay: false)) { return true }
         close(fd); sock = -1
     }
     return false

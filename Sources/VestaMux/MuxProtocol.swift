@@ -14,7 +14,11 @@ public struct SessionInfo: Codable, Equatable {
 }
 
 public enum ClientFrame: Equatable {
-    case hello(paneID: String, cols: Int, rows: Int, cwd: String? = nil)
+    // `wantReplay`: replay the scrollback ring on attach (default). A relay RECONNECTING
+    // after a daemon restart/upgrade passes false — its ghostty screen never went away, so
+    // the replay would paint the whole ring a second time on top of it. Additive trailing
+    // byte (like v4's cwd): older daemons stop reading before it and always replay.
+    case hello(paneID: String, cols: Int, rows: Int, cwd: String? = nil, wantReplay: Bool = true)
     case input(Data)
     case resize(cols: Int, rows: Int)
     case detach
@@ -73,9 +77,10 @@ private func frame(_ tag: UInt8, _ payload: Data) -> Data {
 public func encode(_ f: ClientFrame) -> Data {
     var p = Data()
     switch f {
-    case let .hello(paneID, cols, rows, cwd):
+    case let .hello(paneID, cols, rows, cwd, wantReplay):
         putStr(paneID, into: &p); putU32(UInt32(cols), into: &p); putU32(UInt32(rows), into: &p)
         putOptStr(cwd, into: &p)   // v4: spawn cwd (older daemons stop reading after rows)
+        p.append(wantReplay ? 1 : 0)   // additive: reconnects opt out of the ring replay
         return frame(0x01, p)
     case let .input(data):
         putField(data, into: &p); return frame(0x02, p)
@@ -159,7 +164,8 @@ public func decodeClientFrame(from buf: inout Data) -> ClientFrame? {
     case 0x01:
         let id = r.str(); let c = Int(r.u32()); let rr = Int(r.u32())
         let cwd = r.remaining() > 0 ? r.optStr() : nil   // v4 field; tolerate v3 clients without it
-        return .hello(paneID: id, cols: c, rows: rr, cwd: cwd)
+        let want = r.remaining() > 0 ? r.byte() == 1 : true   // absent = old client = replay
+        return .hello(paneID: id, cols: c, rows: rr, cwd: cwd, wantReplay: want)
     case 0x02: return .input(r.field())
     case 0x03: return .resize(cols: Int(r.u32()), rows: Int(r.u32()))
     case 0x04: return .detach
@@ -210,6 +216,7 @@ public func muxProtocolSelfCheck() {
     let clientCases: [ClientFrame] = [
         .hello(paneID: "abc-123", cols: 80, rows: 24, cwd: "/tmp/x"),
         .hello(paneID: "no-cwd", cols: 80, rows: 24, cwd: nil),
+        .hello(paneID: "reconnect", cols: 80, rows: 24, cwd: "/tmp/x", wantReplay: false),
         .input(Data([0x01, 0x02, 0xff, 0x00])),
         .resize(cols: 120, rows: 40),
         .detach, .kill, .list,
@@ -244,6 +251,23 @@ public func muxProtocolSelfCheck() {
         assert(out == f, "server round-trip \(f)")
         assert(buf.isEmpty, "server decode consumed the whole frame")
     }
+    // An OLD client's hello — no trailing wantReplay byte (v4 shape: paneID, cols, rows,
+    // optStr cwd) — must decode with wantReplay: true, so old relays still get their replay.
+    var lp = Data()
+    putStr("old-relay", into: &lp); putU32(80, into: &lp); putU32(24, into: &lp); putOptStr(nil, into: &lp)
+    var legacyHello = frame(0x01, lp)
+    assert(decodeClientFrame(from: &legacyHello)
+           == .hello(paneID: "old-relay", cols: 80, rows: 24, cwd: nil, wantReplay: true),
+           "legacy hello decodes as wantReplay: true")
+    assert(legacyHello.isEmpty, "legacy hello fully consumed")
+    // The v3 shape — payload ends right after rows (no cwd flag byte at all).
+    var lp3 = Data()
+    putStr("v3-relay", into: &lp3); putU32(80, into: &lp3); putU32(24, into: &lp3)
+    var v3Hello = frame(0x01, lp3)
+    assert(decodeClientFrame(from: &v3Hello)
+           == .hello(paneID: "v3-relay", cols: 80, rows: 24, cwd: nil, wantReplay: true),
+           "v3 hello decodes as cwd nil + wantReplay true")
+    assert(v3Hello.isEmpty, "v3 hello fully consumed")
     // An old daemon's helloAck — [len=5][tag 0x11][u32 version], no resumed byte —
     // still decodes, as resumed: true.
     var legacyAck = Data([0, 0, 0, 5, 0x11, 0, 0, 0, 5])
