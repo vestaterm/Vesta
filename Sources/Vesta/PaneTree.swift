@@ -147,6 +147,10 @@ final class PaneTree {
     /// Stable per-session id (UUID string). Persisted; M3 reattaches by it.
     let paneID: String
 
+    /// Lite windows: every leaf (initial, splits, materialized) spawns a plain shell
+    /// instead of a daemon relay — the shells die with the window.
+    private let bare: Bool
+
     /// Set (or clear, when blank) this session's name. Fires onFocusChange so
     /// the sidebar + any open switcher re-render.
     func setName(_ s: String?) {
@@ -154,8 +158,10 @@ final class PaneTree {
         onFocusChange?()
     }
 
-    init(theme: Theme, cwd: String? = nil, paneID: String = UUID().uuidString, name: String? = nil) {
+    init(theme: Theme, cwd: String? = nil, paneID: String = UUID().uuidString, name: String? = nil,
+         bare: Bool = false) {
         self.theme = theme
+        self.bare = bare
         self.paneID = paneID
         self.name = normalizedSessionName(name)
         VestaSplitView.surface = theme.background
@@ -177,8 +183,10 @@ final class PaneTree {
     /// window displays materializes on mount, the rest stay data. The big launch-time win.
     /// Each leaf carries its own persisted paneID for daemon reattach; divider ratios are
     /// best-effort, applied after the tree is mounted (see applyPendingRatios).
-    init(theme: Theme, dormant layout: [String: Any], name: String? = nil, tail: [String] = []) {
+    init(theme: Theme, dormant layout: [String: Any], name: String? = nil, tail: [String] = [],
+         bare: Bool = false) {
         self.theme = theme
+        self.bare = bare
         self.paneID = PaneTree.firstLeafID(layout) ?? UUID().uuidString
         self.name = normalizedSessionName(name)
         self.dormantLayout = layout
@@ -613,7 +621,7 @@ final class PaneTree {
 
     private func makeTerminalLeaf(cwd: String?, paneID: String = UUID().uuidString) -> Leaf {
         let id = nextId; nextId += 1
-        let pane = TerminalPane(id: id, theme: theme, cwd: cwd, paneID: paneID)
+        let pane = TerminalPane(id: id, theme: theme, cwd: cwd, paneID: paneID, bare: bare)
         pane.onUpdate = { [weak self] in
             guard let self, id == self.focusedId else { return }
             self.onFocusChange?()

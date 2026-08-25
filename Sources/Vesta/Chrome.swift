@@ -44,6 +44,9 @@ final class VestaWindowController: NSWindowController {
     private let onReorderTopLevel:    (Int, Int, String) -> Void       // (from-unit, dropGap, unit id)
     private let onReorderMember:      (Int, Int, Int, String) -> Void  // (group, from, dropGap, paneID)
 
+    /// Lite window: no sidebar/footer ever (permanently collapsed), no sidebar toggle.
+    let lite: Bool
+
     private var sidebar: NSView!
     private var sidebarWidth: NSLayoutConstraint!
     private var toggleButton: NSButton!
@@ -100,7 +103,7 @@ final class VestaWindowController: NSWindowController {
     // once: flushSettle nils it before invoking, so whichever path fires first wins.
     private var pendingFinalize: (() -> Void)?
 
-    init(theme: Theme, content: NSView,
+    init(theme: Theme, content: NSView, lite: Bool = false,
          onSelectWorkspace: @escaping (Int) -> Void = { _ in },
          onCloseWorkspace:  @escaping (Int, String?) -> Void = { _, _ in },
          onNewWorkspace:    @escaping () -> Void    = {},
@@ -118,11 +121,14 @@ final class VestaWindowController: NSWindowController {
          onReorderMember:   @escaping (Int, Int, Int, String) -> Void = { _, _, _, _ in }) {
         self.theme = theme
         self.surface = theme.background
+        self.lite = lite
         // Restore the dragged sidebar width if saved, else the config default.
         let savedWidth = UserDefaults.standard.double(forKey: "VestaSidebarWidth")
         self.openWidth = savedWidth > 0 ? CGFloat(savedWidth) : CGFloat(VestaConfig.shared.sidebarWidth)
         // Restore collapsed/open state across launches (defaults to open).
-        self.sidebarOpen = UserDefaults.standard.object(forKey: "VestaSidebarOpen") as? Bool ?? true
+        // Lite: permanently collapsed — the sidebar (and the footer inside it) never shows.
+        self.sidebarOpen = lite ? false
+            : UserDefaults.standard.object(forKey: "VestaSidebarOpen") as? Bool ?? true
         self.onSelectWorkspace = onSelectWorkspace
         self.onCloseWorkspace  = onCloseWorkspace
         self.onNewWorkspace    = onNewWorkspace
@@ -349,6 +355,7 @@ final class VestaWindowController: NSWindowController {
     /// Rebuild the WORKSPACES area from the given snapshot.
     /// Single source of sidebar truth — called on every onChange.
     func setSidebar(_ items: [SidebarItem]) {
+        guard !lite else { return }   // nothing to render; skip the row rebuild entirely
         guard let stack = projectsStack else { return }
         // A press/drag is live — keep the pressed row intact; stash the data and replay it
         // when the interaction releases (endPress / endDrag), so the refresh isn't lost.
@@ -488,7 +495,12 @@ final class VestaWindowController: NSWindowController {
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
 
-        // Drag-resize grab strip pinned over the sidebar's right edge.
+        // Drag-resize grab strip pinned over the sidebar's right edge. Lite: no sidebar
+        // edge exists — a grab strip at x=0 would just eat clicks on the terminal.
+        guard !lite else {
+            window?.contentView = root
+            return
+        }
         let grab = SidebarGrabView()
         grab.translatesAutoresizingMaskIntoConstraints = false
         grab.onDrag = { [weak self] delta in self?.adjustSidebarWidth(by: delta) }
@@ -509,6 +521,7 @@ final class VestaWindowController: NSWindowController {
 
     /// Absolute sidebar-width setter (drag + Settings panel), clamped + persisted.
     func setSidebarWidth(_ w: CGFloat) {
+        guard !lite else { return }   // Settings fans this out to every window
         let clamped = w.clamped(to: 160...420)
         sidebarWidth.constant = clamped
         openWidth = clamped
@@ -1550,6 +1563,7 @@ final class VestaWindowController: NSWindowController {
         btn.contentTintColor = txt(.dim)
         btn.target = self
         btn.action = #selector(toggleSidebarAction)
+        btn.isHidden = lite      // no sidebar to toggle; path/pill/bell stay
         toggleButton = btn
 
         dirLabel = NSTextField(labelWithString: "")
@@ -1751,6 +1765,7 @@ final class VestaWindowController: NSWindowController {
     @objc private func toggleSidebarAction() { toggleSidebar() }
 
     func toggleSidebar() {
+        guard !lite else { return }   // ⌘B is a no-op in a lite window
         sidebarOpen.toggle()
         UserDefaults.standard.set(sidebarOpen, forKey: "VestaSidebarOpen")   // remember across launches
         // Set the model constant DIRECTLY (authoritative), then animate only the layout pass.
@@ -2092,5 +2107,14 @@ private extension Comparable {
     assert(wc.window?.contentView?.subviews.count ?? 0 >= 2, "sidebar + content present")
     wc.setPrefixArmed(true)
     wc.setPrefixArmed(false)   // toggling must not crash and leaves the pill hidden
+
+    // Lite controller: sidebar never built into rows, ⌘B dead, setSidebar a no-op.
+    let lc = VestaWindowController(theme: Theme(), content: NSView(), lite: true)
+    lc.setSidebar(items)
+    assert(lc.laneProbe("t0") == nil, "lite: setSidebar renders no rows")
+    lc.toggleSidebar()          // must stay collapsed (no crash, no reopen)
+    lc.setSidebarWidth(300)     // Settings fan-out must not resurrect the sidebar
+    lc.setSidebar(items)
+    assert(lc.laneProbe("t0") == nil, "lite: still no rows after toggle/resize attempts")
     print("chromeSelfCheck OK")
 }

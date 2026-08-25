@@ -37,9 +37,14 @@ final class WindowContext {
     private var refreshQueued = false
     private let refreshInterval: TimeInterval = 1.0
 
+    /// Lite window: private store, bare shells, no sidebar — see AppDelegate.newWindow.
+    var lite: Bool { workspace.lite }
+
     init(theme: Theme,
          store: SessionStore,
          hydrateFrom: [String: Any]? = nil,
+         lite: Bool = false,
+         cwd: String? = nil,
          onBecomeKey: @escaping (WindowContext) -> Void,
          onClose: @escaping (WindowContext) -> Void) {
         self.onBecomeKey = onBecomeKey
@@ -50,10 +55,11 @@ final class WindowContext {
         // untitled→1 — both live, different sessions. The store is app-owned, so closing
         // a window drops the view, never the sessions. An empty pool is populated by
         // Workspace.init (restore, else one ~ workspace) plus the config seeding below.
-        let ws = Workspace(theme: theme, store: store, hydrateFrom: hydrateFrom)
+        let ws = Workspace(theme: theme, store: store, hydrateFrom: hydrateFrom, lite: lite, cwd: cwd)
         // Unconditional: the seeding pass dedupes by cwd, so config paths added since the
-        // last save appear even when the pool was restored non-empty.
-        seedConfigWorkspaces(GhosttyApp.shared.settings, into: ws)
+        // last save appear even when the pool was restored non-empty. Lite windows skip it —
+        // their private store holds exactly one throwaway workspace.
+        if !lite { seedConfigWorkspaces(GhosttyApp.shared.settings, into: ws) }
         self.workspace = ws
 
         // Same workspace-management closures as the single-window build, bound to
@@ -61,7 +67,7 @@ final class WindowContext {
         // + is instant: a workspace inherits the active one's cwd, so there is no folder
         // picker anywhere in this path — you get a shell first and rename/move it later.
         controller = VestaWindowController(
-            theme: theme, content: ws.container,
+            theme: theme, content: ws.container, lite: lite,
             onSelectWorkspace: { [weak ws] i in ws?.selectWorkspace(i) },
             onCloseWorkspace:  { [weak ws] i, id in ws?.closeWorkspace(i, id: id) },
             onNewWorkspace:    { [weak ws] in ws?.newWorkspace() },
@@ -149,6 +155,7 @@ final class WindowContext {
     /// Rebuild the sidebar from the live snapshot, filling branch + meta from caches.
     /// Pure render — must NOT call refresh() (avoid a loop).
     private func renderSidebar() {
+        guard !lite else { return }   // no sidebar — skip the viewport captures too
         let live = Set(workspace.wss.map { ObjectIdentifier($0.tree) })
         metaCache = metaCache.filter { live.contains($0.key) }
 
@@ -193,6 +200,10 @@ final class WindowContext {
         let cwd = workspace.activeTree.focusedCwd ?? FileManager.default.currentDirectoryPath
         let liveTitle = workspace.activeTree.focusedTitle
         controller.setDir(liveTitle.isEmpty ? abbreviateHome(cwd) : liveTitle)
+
+        // Lite: the titlebar path above is the whole render — no sidebar/footer exists,
+        // so the git/ports spawns and the sidebar rebuild would feed nothing.
+        if lite { return }
 
         let key = Self.refreshKey(cwd: workspace.activeTree.focusedCwd, pid: workspace.activeTree.focusedPID)
         let now = Date()

@@ -146,9 +146,14 @@ final class Workspace {
     private let body = NSView()
     private var theme: Theme
 
-    init(theme: Theme, store: SessionStore, hydrateFrom: [String: Any]? = nil) {
+    /// Lite window: private store, plain shells (bare panes), never serialized.
+    let lite: Bool
+
+    init(theme: Theme, store: SessionStore, hydrateFrom: [String: Any]? = nil, lite: Bool = false,
+         cwd: String? = nil) {
         self.store = store
         self.theme = theme
+        self.lite = lite
         container.wantsLayer = true
         // Terminal glass: an opaque backing here would block ghostty's background-opacity
         // from ever reaching the desktop — un-paint it when the terminal is translucent.
@@ -175,9 +180,10 @@ final class Workspace {
         }
 
         if wss.isEmpty {
-            // First window for an empty pool: seed ONE workspace at ~. Config paths are
-            // appended as extra dormant workspaces by the config seeding pass.
-            wss.append(WS(tree: makeTree(cwd: NSHomeDirectory())))
+            // First window for an empty pool: seed ONE workspace at ~ (or the requested
+            // cwd — lite windows opened on a folder). Config paths are appended as extra
+            // dormant workspaces by the config seeding pass.
+            wss.append(WS(tree: makeTree(cwd: cwd ?? NSHomeDirectory())))
             activeW = 0
         } else {
             // Reusing a live pool (e.g. reopened after closing all windows): return to the
@@ -731,7 +737,7 @@ final class Workspace {
     }
 
     private func makeTree(cwd: String?, paneID: String = UUID().uuidString, name: String? = nil) -> PaneTree {
-        wire(PaneTree(theme: theme, cwd: cwd, paneID: paneID, name: name))
+        wire(PaneTree(theme: theme, cwd: cwd, paneID: paneID, name: name, bare: lite))
     }
 
     /// A DORMANT session: keeps its persisted layout as data, builds ghostty surfaces only

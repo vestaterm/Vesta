@@ -194,7 +194,7 @@ private func l_vesta_status(_ L: OpaquePointer?) -> Int32 {
 private let vestaConfigAliases: Set<String> = [
     "accent", "surface", "font-family", "sidebar-width", "font-size", "divider-width",
     // glass/sidebar knobs (raw ghostty keys like background-opacity pass through as-is)
-    "sidebar-opacity", "glass-sidebar", "sidebar-tails", "sidebar-panes", "persist"]
+    "sidebar-opacity", "glass-sidebar", "sidebar-tails", "sidebar-panes", "persist", "lite"]
 
 private func l_vesta_set(_ L: OpaquePointer?) -> Int32 {
     guard let kc = luaL_checklstring(L, 1, nil) else { return 0 }

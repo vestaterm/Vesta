@@ -43,6 +43,10 @@ func makeMainMenu(target: AppDelegate) -> NSMenu {
     fileItem.submenu = file
     file.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindowMenu), keyEquivalent: "n")
         .target = target
+    // Lite: ghostty-like window — no sidebar, plain shells that die on close.
+    let liteWin = file.addItem(withTitle: "New Lite Window", action: #selector(AppDelegate.newLiteWindowMenu), keyEquivalent: "n")
+    liteWin.keyEquivalentModifierMask = [.command, .option]
+    liteWin.target = target
 
     // ── Edit (responder chain: works in text fields; terminal uses ghostty) ───
     let editItem = NSMenuItem()
