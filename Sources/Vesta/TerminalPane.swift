@@ -148,6 +148,18 @@ import GhosttyKit
         if let surface { ghostty_surface_free(surface) }
     }
 
+    /// Release the ghostty surface NOW (quit path), closing its pty so the relay sees EOF
+    /// and exits before AppKit's window teardown can resize anything. A teardown resize
+    /// that reaches the daemon makes the shell redraw into the replay ring — the recorded
+    /// cursor-up + erase-below then wipes the restored screen on the next reattach. The
+    /// relay's debounce narrows that race; hanging up first removes it. Idempotent; deinit
+    /// sees the nil and skips its own free.
+    func hangUp() {
+        guard let s = surface else { return }
+        surface = nil
+        ghostty_surface_free(s)
+    }
+
     /// Push a freshly-loaded config to this surface (live reload, no relaunch).
     func updateConfig(_ cfg: ghostty_config_t) {
         guard let surface else { return }

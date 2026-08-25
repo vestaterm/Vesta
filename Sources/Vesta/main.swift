@@ -780,7 +780,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Do NOT save during an update relaunch. The incoming instance has already restored
         // from windows.json and owns it now; writing this dying instance's layout on top
         // clobbers what it restored, and the window count drifts by one every update.
-        if !relaunchingForUpdate { saveWindows() }
+        // Do NOT re-save after prepareToQuit either: the surfaces are hung up by then, so a
+        // save here would read degraded cwds/tails over the good snapshot it already wrote.
+        if !relaunchingForUpdate, !didQuitSave { saveWindows() }
         #if DEBUG
         // DEV builds only: kill the session daemon on quit. vestad is single-instance per
         // user, so a stale dev daemon (ad-hoc signed, often under a TCC-protected path like
@@ -1095,13 +1097,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Confirm before quitting (⌘Q) — running sessions would be killed — unless
     /// the user ticked "Don't ask again".
+    /// Quit is committed: save state while the surfaces can still answer (cwd/tails), then
+    /// hang up every pane so the relays die BEFORE AppKit's window teardown can resize a
+    /// pty. A teardown resize reaching a shell records its redraw into the replay ring and
+    /// corrupts the next reattach — the relay debounce only narrows that race; killing the
+    /// bridge first removes it deterministically.
+    private var didQuitSave = false
+    private func prepareToQuit() {
+        if !relaunchingForUpdate {   // update relaunch: the incoming instance owns windows.json
+            saveWindows()
+            didQuitSave = true
+        }
+        store.workspaces.map(\.tree).filter { !$0.isDormant }
+            .forEach { $0.panes.forEach { $0.hangUp() } }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // An update relaunch is not a user-initiated quit: they already consented by clicking
         // install. Prompting here also left BOTH instances running — old one blocked on the
         // modal, new one already up — for as long as the alert sat there, with the two of them
         // racing to write windows.json.
-        if relaunchingForUpdate { return .terminateNow }
-        if UserDefaults.standard.bool(forKey: "VestaSkipQuitConfirm") { return .terminateNow }
+        if relaunchingForUpdate { prepareToQuit(); return .terminateNow }
+        if UserDefaults.standard.bool(forKey: "VestaSkipQuitConfirm") { prepareToQuit(); return .terminateNow }
         let a = NSAlert()
         a.messageText = "Quit Vesta?"
         a.informativeText = "Your sessions keep running in the background and reattach next launch."
@@ -1114,6 +1131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if a.suppressionButton?.state == .on {
             UserDefaults.standard.set(true, forKey: "VestaSkipQuitConfirm")
         }
+        prepareToQuit()
         return .terminateNow
     }
 
