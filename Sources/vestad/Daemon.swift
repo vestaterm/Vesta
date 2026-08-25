@@ -305,7 +305,7 @@ final class Daemon {
 
     private func handle(_ frame: ClientFrame, from fd: Int32) {
         switch frame {
-        case let .hello(paneID, cols, rows, cwd):
+        case let .hello(paneID, cols, rows, cwd, wantReplay):
             // No server-side version gate: the server unconditionally advertises its
             // version via helloAck (below); the CLIENT (vesta-attach, Task 3.8) compares
             // helloAck.version to its own muxProtocolVersion and bails on mismatch. This
@@ -353,8 +353,12 @@ final class Daemon {
             // Clean reattach: replay the raw output ring verbatim. ghostty parses it,
             // so the screen comes back byte-exact (colors/cursor/alt-screen and all),
             // and recent lines land in native scrollback for free. Empty for a fresh shell.
+            // Skipped when the client opted out (wantReplay: false) — a relay reconnecting
+            // across a daemon restart/upgrade still has its screen; replaying the ring
+            // there paints the whole history a SECOND time (the post-update duplicate-text
+            // bug). The ring itself is untouched — the next fresh attach replays as ever.
             let replay = s.snapshot()
-            if !replay.isEmpty, !sendFrame(fd, encode(ServerFrame.output(replay))) {
+            if wantReplay, !replay.isEmpty, !sendFrame(fd, encode(ServerFrame.output(replay))) {
                 closeClient(fd); return
             }
         case let .input(data):
