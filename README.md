@@ -31,7 +31,8 @@ brew install --cask vestaterm/tap/vesta-terminal
 ```
 
 Installs the signed + notarized app plus the `vesta` CLI on your PATH. Upgrades come
-via `brew upgrade --cask vesta-terminal` or the app's built-in updater. Prefer a plain
+via `brew update && brew upgrade --cask vesta-terminal --greedy` (the cask is marked
+`auto_updates`, so plain `brew upgrade` defers to it) or the app's built-in updater. Prefer a plain
 download? Grab the DMG from the [latest release](https://github.com/vestaterm/Vesta/releases/latest).
 
 ## Highlights
