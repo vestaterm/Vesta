@@ -394,7 +394,9 @@ final class VestaWindowController: NSWindowController {
                     // Top-level workspace: full stack width, no group indent.
                     let row = makeWorkspaceRow(w, groups: groups)
                     stack.addArrangedSubview(row)
-                    row.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
+                    // Cards never touch the sidebar's right hairline — same 8pt inset member
+                    // cards get (only group-header dividers run the full width).
+                    row.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -8).isActive = true
                     last = row
                 case let .group(g):
                     let header = makeGroupRow(g)
@@ -403,7 +405,7 @@ final class VestaWindowController: NSWindowController {
                     header.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
                     last = header
                     if !g.collapsed {
-                        stack.setCustomSpacing(3, after: header)   // tighter gap before members
+                        stack.setCustomSpacing(6, after: header)   // members clear the header's hairline
                         for m in g.members {
                             let row = makeWorkspaceRow(m, groupIdx: g.groupIndex,
                                                        groups: groups.filter { $0.id != g.id })
@@ -831,9 +833,10 @@ final class VestaWindowController: NSWindowController {
         case .need: tint
         case .warn: Self.heatAmber
         case .ok:   tint.withAlphaComponent(0.45)
-        // Resting sits well BELOW .ok's 0.45: at equal alpha a merely-colored workspace was
-        // indistinguishable from one reporting an unseen success. Identity, not a signal.
-        case .none: active ? .clear : (w.color?.withAlphaComponent(0.22) ?? .clear)
+        // Resting sits BELOW .ok's 0.45: at equal alpha a merely-colored workspace was
+        // indistinguishable from one reporting an unseen success. Identity, not a signal —
+        // the outline + wash below carry most of the color's visibility.
+        case .none: active ? .clear : (w.color?.withAlphaComponent(0.35) ?? .clear)
         }
         let bar = accentBar(railColor)
 
@@ -844,10 +847,14 @@ final class VestaWindowController: NSWindowController {
         row.wantsLayer = true
         row.layer?.cornerRadius = 7
         row.layer?.borderWidth = 1
-        // Outline: the plain hairline (white) unless the workspace carries its own color,
-        // which then shows at the SAME alphas — so an uncolored card looks exactly as before.
-        row.layer?.borderColor = (w.color ?? .white).withAlphaComponent(active ? 0.16 : 0.07).cgColor
-        row.layer?.backgroundColor = active ? tint.withAlphaComponent(0.07).cgColor : NSColor.clear.cgColor
+        // Outline: the plain hairline (white) at the old alphas, UNLESS the workspace carries
+        // its own color — a 1px line at hairline alpha renders a color invisible, so colored
+        // cards get a stronger outline plus a faint wash. Uncolored cards look exactly as before.
+        row.layer?.borderColor = w.color.map { $0.withAlphaComponent(active ? 0.55 : 0.32) }?.cgColor
+            ?? NSColor.white.withAlphaComponent(active ? 0.16 : 0.07).cgColor
+        row.layer?.backgroundColor = active
+            ? tint.withAlphaComponent(0.07).cgColor
+            : (w.color?.withAlphaComponent(0.05) ?? .clear).cgColor
         row.onHover = { [weak closeBtn] inside in closeBtn?.alphaValue = inside ? 1 : 0 }
         // Row-level legend for the heat paint (rail + tinted meta) — only when it's lit.
         switch w.heat {
@@ -1600,7 +1607,9 @@ final class VestaWindowController: NSWindowController {
             plus.widthAnchor.constraint(equalToConstant: 18),
             plus.heightAnchor.constraint(equalToConstant: 18),
 
-            dirLabel.leadingAnchor.constraint(equalTo: plus.trailingAnchor, constant: 10),
+            // 26 = 10 gap past the + plus a 16pt inset beyond the sidebar hairline, so the
+            // path never sits flush against the edge (the + trails the sidebar by -10).
+            dirLabel.leadingAnchor.constraint(equalTo: plus.trailingAnchor, constant: 26),
             dirLabel.centerYAnchor.constraint(equalTo: host.centerYAnchor),
             dirLabel.trailingAnchor.constraint(lessThanOrEqualTo: host.trailingAnchor, constant: -10),
 
