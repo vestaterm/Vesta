@@ -24,6 +24,16 @@ a Ghostty fork). It renders with Ghostty's Metal engine, reads your existing
 `~/.config/ghostty/config` as-is, and adds a workspace sidebar, tmux-style splits,
 and an agent-control CLI on top.
 
+## Install
+
+```sh
+brew install --cask vestaterm/tap/vesta
+```
+
+Installs the signed + notarized app plus the `vesta` CLI on your PATH. Upgrades come
+via `brew upgrade --cask vesta` or the app's built-in updater. Prefer a plain
+download? Grab the DMG from the [latest release](https://github.com/vestaterm/Vesta/releases/latest).
+
 ## Highlights
 
 - **Real libghostty** — Ghostty's Metal renderer, your ghostty config and
