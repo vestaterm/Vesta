@@ -114,9 +114,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelViews: [Int: [ObjectIdentifier: PanelOverlay]] = [:]  // id → window → overlay
     private var luaPanelCounter = 0
 
-    /// Create, show, and track a new window. ⌘N / first launch.
+    /// Create, show, and track a new window. ⌘N / first launch. `frame` (a saved
+    /// frameDescriptor) is applied BEFORE start() so the first pane materializes at its
+    /// real size — mounting first and resizing after made every relaunch SIGWINCH the
+    /// reattached shell, whose redraw bytes then poisoned the daemon ring's next replay.
     @discardableResult
-    func newWindow(hydrateFrom: [String: Any]? = nil) -> WindowContext {
+    func newWindow(hydrateFrom: [String: Any]? = nil, frame: String? = nil) -> WindowContext {
         let prev = active?.controller.window ?? windows.last?.controller.window
         // Wire the cross-window broadcast once: any pool change refreshes every window's
         // sidebar, reconciles which window shows each session live vs frozen, and persists.
@@ -153,12 +156,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyUpdatePhase(to: ctx.controller, Updater.shared.phase)   // reflect current state in the new window
         windows.append(ctx)
         lastKey = ctx
-        // Only the first window autosaves its frame; later ones cascade off it by default
-        // (restoreWindows overrides with the per-entry frame saved in windows.json).
+        // Only the first window autosaves its frame; later ones cascade off it by default —
+        // unless a saved windows.json frame was handed in, which wins outright.
         if let prev, let win = ctx.controller.window {
             win.setFrameAutosaveName("")
-            win.setFrameOrigin(NSPoint(x: prev.frame.minX + 26, y: prev.frame.minY - 26))
+            if frame == nil {
+                win.setFrameOrigin(NSPoint(x: prev.frame.minX + 26, y: prev.frame.minY - 26))
+            }
         }
+        if let frame, let win = ctx.controller.window { win.setFrame(from: frame) }
         ctx.start()
         renderPanels()  // a new window immediately shows "all"-scoped panels
         return ctx
@@ -702,8 +708,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let data = try? Data(contentsOf: URL(fileURLWithPath: Self.windowsFile))
         let parsed = data.map { parseWindowsFile($0) }
         let first = parsed?.windows.first
-        let ctx = newWindow(hydrateFrom: first)  // hydrates inside init when `first` is present
-        guard let data, let parsed, let first else { return }
+        let ctx = newWindow(hydrateFrom: first,  // hydrates inside init when `first` is present
+                            frame: first?["frame"] as? String)
+        guard let data, let parsed, first != nil else { return }
         let (version, saved) = parsed
         // Upgrade courtesy: keep the PRE-migration file once, so a downgraded build — which
         // can't read the newer shape and overwrites it — can be recovered manually from
@@ -713,17 +720,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             options: .atomic)
         }
         // Entry 0 (the key window at save time) is authoritative for the shared pool — already
-        // hydrated inside newWindow(hydrateFrom:) above.
-        if let fd = first["frame"] as? String { ctx.controller.window?.setFrame(from: fd) }
+        // hydrated inside newWindow(hydrateFrom:frame:) above, sized before its first mount.
         ctx.refresh()
         // v1+: recreate the other windows as views over the SAME pool — only their
         // selection + frame are per-window (workspaces live once, in the shared store).
         // Legacy (version 0) files collapse to one window, as before.
         guard version >= 1 else { return }
         for entry in saved.dropFirst() {
-            let extra = newWindow()
+            // Frame first (via newWindow) — selectWorkspace mounts, and a mount before the
+            // frame lands re-creates the resize-on-reattach ring poison fixed above.
+            let extra = newWindow(frame: entry["frame"] as? String)
             extra.workspace.selectWorkspace(entry["activeWorkspace"] as? Int ?? 0)
-            if let fd = entry["frame"] as? String { extra.controller.window?.setFrame(from: fd) }
             extra.refresh()
         }
         if windows.count > 1 {
