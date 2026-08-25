@@ -219,6 +219,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let key = active else { return }
         key.workspace.reconcile(preferLive: true)
         for w in windows where w !== key { w.workspace.reconcile(preferLive: false) }
+        // Reflect the outcome in the chrome: a frozen window's titlebar strip dims with
+        // its snapshot (hostsLive touches only the active tree — already materialized
+        // by the reconcile above).
+        for w in windows { w.controller.setContentFrozen(!w.workspace.hostsLive) }
         renderPanels()  // active-scoped panels follow focus; new windows pick up "all" panels
         PaneOutputTap.shared.reconcile(allLivePaneIDs())  // pane-output taps every live pane
     }
