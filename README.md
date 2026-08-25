@@ -14,14 +14,14 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero.png" width="840" alt="Two Claude Code agents running side by side in Vesta, with the project sidebar showing 'halo · 2 panes'">
+  <img src="assets/hero.png" width="840" alt="Two Claude Code agents running side by side in Vesta, with the workspace sidebar showing 'halo · 2 panes'">
 </p>
 
 ---
 
 Vesta is a Swift/AppKit terminal that links **GhosttyKit.xcframework** (it is not
 a Ghostty fork). It renders with Ghostty's Metal engine, reads your existing
-`~/.config/ghostty/config` as-is, and adds a project sidebar, tmux-style splits,
+`~/.config/ghostty/config` as-is, and adds a workspace sidebar, tmux-style splits,
 and an agent-control CLI on top.
 
 ## Highlights
@@ -31,18 +31,21 @@ and an agent-control CLI on top.
 - **Persistent sessions (tmux-style)** — shells survive Vesta quitting and
   reattach cleanly. A small daemon (`vestad`) holds the PTYs; panes connect
   through a relay (`vesta-attach`). Prefix-key mode for tmux muscle memory.
-  Restore is lazy: at launch only the visible session reattaches; the rest
+  Restore is lazy: at launch only the visible workspace reattaches; the rest
   stay listed in the sidebar and attach instantly on first click, so a big
-  saved workspace opens fast. Until a restored session is first activated it
+  saved sidebar opens fast. Until a restored workspace is first activated it
   won't ring the attention dot (its shell keeps running under the daemon
   regardless, and plugin `pane-output` taps still work).
-- **Projects → sessions sidebar** — vertical, drag-resizable. Each project owns
-  sessions; rename / recolor / remove from the right-click menu. Projects render
-  as full-width dividers, with the session count and the **+** new-session
-  control sharing one trailing slot. Drag to reorder — sessions within their
-  project, projects as whole blocks — with neighbors sliding out of the way;
-  the order persists across restarts.
-- **Session cards** — each card shows an output tail (the last ~4 rendered
+- **Workspace sidebar** — one flat, drag-resizable list. Each row is a
+  **workspace**: one terminal session rooted at a directory, with splits and
+  tabs inside it. The titlebar **+** (or `⌘T`) makes one instantly at the active
+  workspace's cwd — no folder picker. **Groups** are visual only — a collapsible
+  header with a name, a color and a member count, no directory and no behavior
+  of its own. Drag to reorder anywhere (top level, or within a group), drop a row
+  onto a group header to join it; right-click for rename / color / new group from
+  workspace / move to group / close, or a header for rename / color / ungroup /
+  remove. The order persists across restarts.
+- **Workspace cards** — each card shows an output tail (the last ~4 rendered
   lines of its focused pane, Claude Code-aware: anchored on the last `⏺` block,
   input-box chrome filtered), pane counts (`⊞N`, or the real split topology — nested ratios, focused pane lit — with
   `vesta-sidebar-panes`), and **heat**: an unseen failure flips the card amber
@@ -107,22 +110,62 @@ Drives the running app over `~/Library/Application Support/vesta/control.sock`.
 
 ```sh
 vesta help                       # list every verb + config key
-vesta open <path>                # new session at <path>
+vesta open <path>                # new workspace at <path>
+vesta ws new [PATH] [--name X]   # new workspace (PATH defaults to the dir you ran it in)
+vesta ws rename <name> | ws color <#hex|none> | ws close    # act on the active workspace
+vesta group new [name]           # wrap the active workspace in a group (named after it by default)
+vesta group rename <name> | group color <#hex|none> | group ungroup | group remove
+vesta select <n>                 # switch to workspace n (0-based, flat sidebar order)
+vesta rename <name>              # rename the active workspace (blank clears it)
 vesta split -v | -h              # split the focused pane (side-by-side / stacked)
 vesta new-pane --cwd <path>      # new pane in a dir
 vesta focus <id> | vesta focus next
 vesta zoom                       # toggle zoom on the focused pane
 vesta close                      # close the focused pane
 vesta send-keys <target> <text>  # type into a pane + run it (target = pane id or "focused"; --no-enter to skip the Return)
-vesta send-keys --all|--session <P.S>|--project <name> <text>   # broadcast: focused session's panes / session P.S / all of a project (reply: pane count)
+vesta send-keys --all|--session <N>|--project <name> <text>   # broadcast: active workspace's panes / workspace N (or legacy P.S) / every workspace in group <name> — a bare row answers to its own name (reply: pane count)
 vesta capture                    # dump the focused pane's screen
-vesta pane status <paneID>       # JSON for one pane: cwd, title, alive, attention
-vesta list                       # the focused session's panes (+ tab index/count)
-vesta tab new|next|prev|close    # tab control
-vesta sessions [--json] [--project <name>]   # list sessions; --json for structured records (id, name, cwd, panes, active/attention; --project implies --json)
-vesta kill <id>                  # end a session's shell (by paneID)
+vesta pane status <paneID>       # JSON for one pane: cwd, title, alive, attention, workspace, project/group
+vesta list                       # the active workspace's panes (+ tab index/count)
+vesta tab new|next|prev|close    # tab control (one workspace = one tab)
+vesta sessions [--json] [--project <name>]   # list workspaces; --json for structured records (id, workspace, name, project, cwd, panes, active/attention; --project implies --json)
+vesta state                      # workspaces + groups + windows as JSON (plus a `projects` compat view)
+vesta kill <id>                  # end a workspace's shell (by paneID)
 vesta notify [--desktop] [--title <t>] <msg>   # toast + bell; desktop banner when backgrounded (--desktop forces)
 ```
+
+**Legacy compat.** `vesta project rename|remove|color` still works: it acts on the
+active row's **group** when it has one, else on the workspace itself. `project new`
+is `ws new`; `project dir` is gone (each workspace owns its cwd — `cd` in the shell)
+and returns an error saying so. `select <project> <session>` still resolves through
+the top-level rows (a group is one unit, its members are that unit's sessions), and
+`sessions --json` keeps reporting that pair as the string `id` alongside the flat
+`workspace` index — `select` takes either.
+
+## Workspaces & groups
+
+One sidebar row = one **workspace** = one terminal session rooted at a directory,
+with splits/tabs inside it. There is no project layer: a workspace owns its cwd,
+and `+` / `⌘T` opens a new one at the active workspace's cwd immediately (no
+picker). Its default name is the directory basename; `⌃B ,` or `vesta rename`
+overrides it, and per-workspace / per-group colors come from the right-click menu.
+
+**Groups** are packaging, nothing more — name, color, collapse, member count. They
+have no directory, can't be empty (the last member leaving deletes the group), and
+`Ungroup` keeps every workspace while `Remove Group…` closes them (with a confirm).
+
+**Persistence.** The sidebar lives in `windows.json` (format **v2**: per-window
+`groups` + flat `workspaces` + `activeWorkspace` + frame; array order *is* sidebar
+order). Older files auto-migrate on launch, preserving order: a project with one
+session becomes a workspace keeping the project's name and color, a project with
+two or more becomes a group holding its sessions, and a never-opened config project
+becomes a dormant workspace at its path. The pre-migration file is kept once as
+`windows.json.v<old version>` in case you downgrade. `projects.json` is retired.
+
+`vesta-projects = ~/a, ~/b` seeds each path as a **dormant** workspace row at the
+end of the list — clickable, costing no shell until you click it. A path that isn't
+an existing directory is skipped, and a row already seeded from that path (tracked
+by provenance, so `cd`-ing out of it doesn't matter) is never seeded twice.
 
 ## Multiplexer & sessions
 
@@ -138,14 +181,23 @@ What you get:
 - **Survive quit** — `⌘Q`, reopen Vesta: panes come back with their shells and
   recent output.
 - **Close ends the shell** — `⌘W` cascades: it closes the focused pane **and
-  kills its shell**, or with one pane left closes the session (killing its
-  shells), or with one session left closes the window — and *that* last step
+  kills its shell**, or with one pane left closes the workspace (killing its
+  shells), or with one workspace left closes the window — and *that* last step
   keeps the shells, so they reattach on relaunch. `⌘⇧W` always closes and kills
-  the session. Closing a pane drops it from the sidebar too, so a shell left
+  the workspace. Closing a pane drops it from the sidebar too, so a shell left
   running there would be unreachable forever — anything it still held (a dev
   server's port, for one) would leak. Shells survive only across window-close /
   `⌘Q` quit. To keep a shell but drop the pane, prefix-`d` (detach) — note it
-  needs a second pane to detach from, since a session always keeps one.
+  needs a second pane to detach from, since a workspace always keeps one.
+- **Survive reboot (cold restore)** — a reboot kills every pty, so there is
+  nothing to reattach to. The workspace still comes back under its own name, in
+  its sidebar position, with its split layout rebuilt and a **fresh shell in the
+  saved directory**; the on-disk scrollback replays above it as inert history,
+  followed by a dim divider:
+  `── vesta: session restarted — new shell in <dir> ──`. This needs
+  `vesta-persist-scrollback` (**on by default** — see Configuration for the
+  privacy trade-off and how to opt out). An ordinary quit/relaunch with the
+  daemon still alive is unchanged: it reattaches to the live shells, no divider.
 - **Prefix mode** — tmux muscle memory. Press the prefix (`ctrl+b` by default,
   `vesta-prefix`), then a key (table below). Empty `vesta-prefix` disables it.
 - **Explicit kill** — prefix-`x`, or `vesta kill <id>` — when you actually mean
@@ -162,8 +214,12 @@ What you get:
 #    close the window (not ⌘⇧W) → its shells keep running; relaunch → they reattach.
 #    or prefix-d a pane to detach it (shell lives on under vestad).
 
-# 3. from the CLI, watch the daemon hold sessions
-vesta sessions            # lists live + detached sessions with attach counts
+# 3. reboot restore (with vesta-persist-scrollback on, the default)
+#    reboot → reopen Vesta: each workspace is back in its saved dir with its old
+#    history above a "── vesta: session restarted …" divider and a fresh prompt.
+
+# 4. from the CLI, read the sidebar the daemon is holding up
+vesta sessions            # one line per workspace, ▸ marks the active one
 vesta kill <id>           # ends one for real
 ```
 
@@ -175,9 +231,9 @@ daemon is single-instance per user.
 
 | Key | Action | Key | Action |
 |-----|--------|-----|--------|
-| `%` | split vertical | `c` | new session |
-| `"` | split horizontal | `n` / `p` | next / prev session |
-| `h j k l` / arrows | focus pane | `,` | rename session |
+| `%` | split vertical | `c` | new workspace |
+| `"` | split horizontal | `n` / `p` | next / prev workspace |
+| `h j k l` / arrows | focus pane | `,` | rename workspace |
 | `z` | zoom pane | `d` | detach pane |
 | `x` | kill shell |  |  |
 
@@ -199,10 +255,10 @@ look, so an untouched config changes nothing.
 | `vesta-font-mono` | MartianMono | mono font |
 | `vesta-font-size` | 13 | chrome font size |
 | `vesta-divider-width` | 8 | split divider grab width (1px hairline drawn) |
-| `vesta-projects` | — | comma-separated project paths to preload |
+| `vesta-projects` | — | comma-separated paths, each seeded as a dormant workspace row (skipped if the dir doesn't exist; never seeded twice) |
 | `vesta-persist` | true | run shells under `vestad` (survive quit); `false` = plain shells |
-| `vesta-persist-scrollback` | true | mirror scrollback to disk (0600) so it survives a daemon restart — or a reboot, where a reattached session gets a `── vesta: session restarted — new shell in <dir> ──` divider above the fresh prompt. `false` = opt out; terminal output can contain secrets (see [SECURITY.md](SECURITY.md)) |
-| `vesta-sidebar-tails` | true | session cards show the last ~4 rendered lines of their focused pane (content-aware for TUI agents: anchors on Claude Code's last `⏺` block, filters its input box). Also gates background materialization of restored sessions at launch |
+| `vesta-persist-scrollback` | true | mirror scrollback to disk (0600) so it survives a daemon restart — or a reboot, where the restored workspace gets a `── vesta: session restarted — new shell in <dir> ──` divider above its fresh prompt. `false` = opt out; terminal output can contain secrets (see [SECURITY.md](SECURITY.md)) |
+| `vesta-sidebar-tails` | true | workspace cards show the last ~4 rendered lines of their focused pane (content-aware for TUI agents: anchors on Claude Code's last `⏺` block, filters its input box). Also gates background materialization of restored workspaces at launch |
 | `vesta-sidebar-panes` | false | multi-pane cards draw their real split layout (focused pane highlighted); off = a dim `⊞N` count still shows |
 | `vesta-glass-sidebar` | false | translucent sidebar — behind-window blur with the surface color as a tint; titlebar over the sidebar matches. Applies on relaunch |
 | `vesta-sidebar-opacity` | 0.55 | sidebar tint strength in glass mode (0..1) |
@@ -216,28 +272,33 @@ look, so an untouched config changes nothing.
 | Keys | Action |
 |------|--------|
 | `⌘D` / `⌘⇧D` | split vertical / horizontal |
-| `⌘W` / `⌘⇧W` | close pane / close session |
-| `⌘T` | new session in active project (cwd = project dir) |
-| `⌘]` | focus next pane |
-| `⌘{` / `⌘}` | previous / next session |
-| `⌘1`–`⌘9` | select session N |
+| `⌘W` / `⌘⇧W` | close pane / close workspace |
+| `⌘T` | new workspace at the active workspace's cwd (`$HOME` if there is none) |
+| `⌘]` / `⌘[` | focus next / previous pane |
+| `⌘{` / `⌘}` | previous / next workspace |
+| `⌘1`–`⌘9` | select the Nth workspace (flat sidebar order — grouped rows count too) |
 | `⌘B` | toggle sidebar |
 | `⌘⇧P` | command palette (search + run any action or plugin command) |
+| `⌘N` | new window (same sidebar and workspace pool) |
 | `ctrl+b` then a key | prefix mode (see Multiplexer & sessions) |
 
-Click a pane to focus it; click a project to expand it; right-click a project
-to rename / recolor / remove it. `⌘W` closes the focused pane **and kills** its
-shell; `⌘⇧W` closes **and kills** its session — see Multiplexer & sessions.
+Click a pane to focus it; click a group header to collapse or expand it.
+Right-click a workspace to rename / recolor / group / close it, a group header
+to rename / recolor / ungroup / remove it. `⌘W` closes the focused pane **and
+kills** its shell; `⌘⇧W` closes **and kills** the whole workspace — see
+Multiplexer & sessions.
 
 ## Architecture
 
 - `Sources/Vesta/Ghostty/` — libghostty init, config sync, runtime callbacks.
 - `TerminalPane.swift` — a ghostty surface (input / IME / mouse / resize / cwd / title).
 - `PaneTree.swift` — tmux-style splits as nested `NSSplitView`s.
-- `Tabs.swift` — the `Workspace` model: projects own sessions.
+- `Tabs.swift` — the flat model: a shared `SessionStore` (workspaces + visual
+  groups, array order = sidebar order) and a per-window `Workspace` view over it,
+  plus `windows.json` (de)serialization and the v0/v1 → v2 migration.
 - `Chrome.swift` — window, titlebar, sidebar rendering.
 - `TailStore.swift` — cleaned per-pane output tails (ANSI-stripped, OSC 133
-  exit marks parsed) feeding the session cards.
+  exit marks parsed) feeding the workspace cards.
 - `Glass.swift` — native-blur base for ephemeral chrome ("glass moments") and
   the glass sidebar.
 - `Control.swift` — the `vesta` CLI + socket server.
@@ -260,6 +321,10 @@ remote attach (`vesta attach ssh://`), and inline-image replay across detach.
 (Disk-spill scrollback later shipped as `vesta-persist-scrollback`.) Also shipped: **cmux parity**
 (`2026-06-22-cmux-parity-design.md`) — worktree-isolated sessions (`vesta worktree`),
 attention rings, the richer sidebar (cards with tails/heat), embedded browser pane.
+And **cmux workspaces** (`2026-08-24-cmux-workspaces-design.md`) — the flat
+workspace model with visual groups, `windows.json` v2 + migration, `ws`/`group`
+CLI verbs, and clean cold restore after a reboot. Deferred there: lite mode
+(`vesta-lite`, see `PARKED.md`), group icons, pinning, PR/branch badges.
 
 ## Self-checks
 
