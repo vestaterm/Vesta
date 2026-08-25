@@ -127,7 +127,7 @@ vesta close                      # close the focused pane
 vesta send-keys <target> <text>  # type into a pane + run it (target = pane id or "focused"; --no-enter to skip the Return)
 vesta send-keys --all|--session <N>|--project <name> <text>   # broadcast: active workspace's panes / workspace N (or legacy P.S) / every workspace in group <name> — a bare row answers to its own name (reply: pane count)
 vesta capture                    # dump the focused pane's screen
-vesta pane status <paneID>       # JSON for one pane: cwd, title, alive, attention, workspace, project/group
+vesta pane status <paneID>       # JSON for one pane: cwd, title, alive, attention, workspace (flat index) + legacy "P.S" session, project/group
 vesta list                       # the active workspace's panes (+ tab index/count)
 vesta tab new|next|prev|close    # tab control (one workspace = one tab)
 vesta sessions [--json] [--project <name>]   # list workspaces; --json for structured records (id, workspace, name, project, panes, active/attention, cwd when the row reports one; --project implies --json)
@@ -223,6 +223,7 @@ What you get:
 
 # 4. from the CLI, read the sidebar the daemon is holding up
 vesta sessions            # one line per workspace, ▸ marks the active one
+                          # "▸ [2] 1 1" → `select 2` (flat) or `select 1 1` (legacy pair)
 vesta kill <id>           # ends one for real
 ```
 
