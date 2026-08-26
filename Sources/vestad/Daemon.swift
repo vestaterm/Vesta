@@ -4,6 +4,10 @@ import VestaMux
 import Darwin
 #endif
 
+/// Monotonic nanoseconds that PAUSE across system sleep — a lid-close must never read as
+/// a stale heartbeat (watchdog) or a spent send budget (sendFrame).
+private func uptimeNanos() -> UInt64 { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) }
+
 final class Daemon {
     private var listenFD: Int32 = -1
     // Single-instance lock fd. Held for the process lifetime AND across a self-exec upgrade
@@ -96,6 +100,9 @@ final class Daemon {
             return
         }
         for ss in state.sessions {
+            // parseUpgradeState is structural only — drop entries whose pid/fd would be
+            // dangerous to adopt (kill(-1) territory) rather than trusting the snapshot.
+            guard ss.pid > 1, ss.masterFD >= 0 else { continue }
             sessions[ss.paneID] = Session(adopting: ss, logEnabled: logEnabled)
         }
         unlink(statePath)   // adopted → the snapshot has done its job
@@ -114,9 +121,52 @@ final class Daemon {
     /// Bind the listen socket and enter the select loop. Called by both run() (fresh) and
     /// resume() (post-upgrade) — the lock is already held by the time we get here.
     private func serve() {
+        startWatchdog()   // first: the startup work below (exe hash) must be watched too
         _ = selfExeSHA   // force the once-at-startup hash before we start serving `info`
         guard bindListenSocket() else { return }   // bind failure → exit (releases the lock)
         loop()
+    }
+
+    // ── watchdog ─────────────────────────────────────────────────────────────
+    // A wedged daemon is strictly worse than a dead one: it still holds the single-instance
+    // flock (so a lazily-spawned replacement exits) and its listen backlog still accepts
+    // connects (so relays hello into the void and every pane sits blank until the user
+    // manually SIGKILLs vestad). Dying, by contrast, is a fully handled path: relays see
+    // EOF, respawn a fresh daemon, and cold-restore scrollback from the on-disk logs.
+    // So: the select loop bumps a heartbeat each iteration; a background thread converts
+    // any >60s stall into a clean exit. Every loop operation is individually bounded
+    // (nonblocking fds, 10s sendFrame budget, SIGKILL-before-waitpid), so 60s of silence
+    // is a genuine wedge — killing live shells here loses nothing the wedge hadn't
+    // already made unreachable. CLOCK_UPTIME_RAW pauses across system sleep, so an
+    // overnight lid-close can't read as a stale heartbeat and false-trigger the exit.
+    private final class Heartbeat: @unchecked Sendable {   // NSLock-guarded — safe to share with the watchdog thread
+        private let lock = NSLock()
+        private var last = uptimeNanos()
+        func beat() { lock.lock(); last = uptimeNanos(); lock.unlock() }
+        func nanosSinceBeat() -> UInt64 {
+            lock.lock(); let l = last; lock.unlock()
+            return uptimeNanos() &- l
+        }
+    }
+    private let heartbeat = Heartbeat()
+    private func beat() { heartbeat.beat() }
+    private func startWatchdog() {
+        beat()
+        let hb = heartbeat
+        Thread.detachNewThread {
+            while true {
+                sleep(10)   // raw sleep: keep this loop allocation-free (forkpty runs on the main thread)
+                if hb.nanosSinceBeat() > 60_000_000_000 {
+                    // stderr is /dev/null in production (spawnDaemon), so also leave a note on
+                    // disk — otherwise a watchdog exit is indistinguishable from a crash.
+                    let msg = "vestad watchdog: main loop wedged >60s — exiting so relays respawn a fresh daemon\n"
+                    fputs(msg, stderr)
+                    let log = open(MuxPaths.base + "/watchdog.log", O_WRONLY | O_CREAT | O_APPEND, 0o600)
+                    if log >= 0 { _ = msg.withCString { write(log, $0, strlen($0)) }; close(log) }
+                    _exit(70)   // EX_SOFTWARE; _exit so a wedged main thread can't block teardown
+                }
+            }
+        }
     }
 
     /// (Re)bind the daemon's unix listen socket. Also used to re-bind after an execv that
@@ -135,13 +185,21 @@ final class Daemon {
         }
         let lr = listen(fd, 16)
         guard bound == 0, lr == 0 else { close(fd); return false }
+        // Non-blocking accept: a connection that dies between select() and accept() must
+        // return EWOULDBLOCK, not park the whole daemon inside accept() forever.
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK)
         chmod(path, 0o600)            // owner-only: this socket carries keystrokes + scrollback
         listenFD = fd
         return true
     }
 
     private func loop() {
+        // Debug lever: VESTA_DEBUG_WEDGE=1 blocks the loop forever, exactly like the wedge the
+        // watchdog exists for. Every real loop operation is bounded now, so without this there
+        // is no way to exercise the watchdog-fires path end-to-end.
+        if ProcessInfo.processInfo.environment["VESTA_DEBUG_WEDGE"] == "1" { while true { sleep(60) } }
         while true {
+            beat()   // watchdog heartbeat: this loop is alive
             var rset = fd_set()
             var maxFD: Int32 = 0
             if listenFD >= 0 { __darwin_fd_set(listenFD, &rset); maxFD = listenFD }
@@ -202,7 +260,10 @@ final class Daemon {
             for c in s.clients where !sendFrame(c, frame) { stuck.append(c) }
             for c in s.subscribers where !sendFrame(c, frame) { stuck.append(c) }
             for c in stuck { closeClient(c) }   // drop desynced/stuck clients after iterating
-        } else if n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+        } else if n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            // EINTR excluded: a signal-interrupted read is not a dead shell, and marking a
+            // LIVE session dead now reaps it via SIGKILL (reapAndDecode) — a killed shell,
+            // where the old code merely wedged on waitpid.
             s.markDead()
         }
     }
@@ -264,13 +325,22 @@ final class Daemon {
     }
 
     /// Block until `pid` is reaped, then decode the shell-convention exit code.
-    /// Safe from hanging the select loop: called ONLY after the master PTY returned
-    /// EOF/error (all the child's slave fds are closed → it has exited or is exiting)
-    /// or after an explicit SIGKILL, so the child is dead/dying and waitpid returns
-    /// promptly. Swift exposes no W* macros, so decode via bit ops.
+    /// Every caller means "this session is over" (PTY EOF/error or explicit kill), so a
+    /// SIGKILL first is always correct — and it turns the one case where the child had NOT
+    /// actually exited (a spurious markDead) from an unbounded waitpid that wedged the whole
+    /// single-threaded daemon into a prompt reap. No-op on an already-dead/zombie child.
+    /// Swift exposes no W* macros, so decode via bit ops.
     private func reapAndDecode(_ pid: pid_t) -> Int32 {
+        // Same guard ProcessTree.swift treats as load-bearing: an unvalidated pid from a
+        // corrupt upgrade snapshot could be 0/-1, and kill(-1, SIGKILL) is every process
+        // the user owns. resume() filters these too — belt and suspenders.
+        guard pid > 1 else { return 1 }
+        kill(pid, SIGKILL)
         var st: Int32 = 0
-        while waitpid(pid, &st, 0) < 0 && errno == EINTR {}   // retry on EINTR
+        while waitpid(pid, &st, 0) < 0 {
+            if errno == EINTR { continue }
+            return 1   // ECHILD/EINVAL: not our child — don't claim a clean exit 0
+        }
         if (st & 0x7f) == 0 { return (st >> 8) & 0xff }        // WIFEXITED → WEXITSTATUS
         let sig = st & 0x7f                                     // WTERMSIG
         return 128 + sig                                        // signalled → 128+signal
@@ -436,6 +506,9 @@ final class Daemon {
     ///  - state-file write fails                   → error reply, no change
     ///  - execv itself fails (bad arch/ENOEXEC)    → re-arm CLOEXEC, re-bind socket, error reply
     private func performUpgrade(newBinary: String, replyTo fd: Int32) {
+        beat()   // the SHA + state-file write below can be slow on a saturated disk — this is
+                 // deliberate work, not a wedge, and a watchdog exit mid-upgrade kills every shell
+        defer { beat() }
         func fail(_ msg: String) {
             fputs("vestad upgrade refused: \(msg)\n", stderr)
             if !sendFrame(fd, encode(ServerFrame.upgradeResult(ok: false, message: msg))) { closeClient(fd) }
@@ -498,9 +571,13 @@ final class Daemon {
     /// frame would permanently desync that client's decoder). Client fds are
     /// O_NONBLOCK, so a full send buffer yields EAGAIN: we wait (bounded poll) for the
     /// fd to drain rather than truncating, but bail after 5s so one stuck client can't
-    /// stall the single-threaded daemon forever.
+    /// stall the single-threaded daemon forever. The 5s poll alone is not enough: a
+    /// client draining a trickle at a time passes poll every round and never times out,
+    /// so a whole-frame budget (10s) caps the worst case — a stuck client costs one
+    /// bounded stall, then it's dropped.
     @discardableResult
     private func sendFrame(_ fd: Int32, _ data: Data) -> Bool {
+        let deadline = uptimeNanos() + 10_000_000_000
         return data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
             guard let base = raw.baseAddress else { return true }
             var off = 0
@@ -510,8 +587,13 @@ final class Daemon {
                 if n < 0 {
                     if errno == EINTR { continue }
                     if errno == EAGAIN || errno == EWOULDBLOCK {
+                        beat()   // bounded stall, not a wedge — keep the watchdog quiet
+                        let now = uptimeNanos()
+                        if now > deadline { return false }   // frame budget spent → drop
                         var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-                        let pr = poll(&pfd, 1, 5000)   // wait up to 5s for writable
+                        // Clamp the wait to the remaining budget so 10s means 10s, not 15.
+                        let ms = Int32(min(5000, (deadline - now) / 1_000_000))
+                        let pr = poll(&pfd, 1, max(ms, 1))   // wait (≤5s) for writable
                         if pr > 0 { continue }          // drained → retry write
                         if pr < 0 && errno == EINTR { continue }   // signal → retry
                         return false                    // timeout or poll error → drop
