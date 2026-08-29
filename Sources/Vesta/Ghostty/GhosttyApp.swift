@@ -246,6 +246,22 @@ final class GhosttyApp {
                 }
             }
             return true
+        case GHOSTTY_ACTION_MOUSE_SHAPE:
+            let raw = action.action.mouse_shape.rawValue
+            nonisolated(unsafe) let u = ud
+            DispatchQueue.main.async { MainActor.assumeIsolated {
+                guard TerminalPane.isLive(u) else { return }
+                Unmanaged<TerminalPane>.fromOpaque(u).takeUnretainedValue().setMouseShape(raw)
+            }}
+            return true
+        case GHOSTTY_ACTION_OPEN_URL:
+            let u = action.action.open_url
+            guard let ptr = u.url else { return false }
+            let str = String(decoding: UnsafeRawBufferPointer(start: ptr, count: Int(u.len)),
+                             as: UTF8.self)
+            guard let url = URL(string: str) else { return false }
+            DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+            return true
         case GHOSTTY_ACTION_SEARCH_TOTAL:
             let total = Int(action.action.search_total.total)
             nonisolated(unsafe) let u = ud
