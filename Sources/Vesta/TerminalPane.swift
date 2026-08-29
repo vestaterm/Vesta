@@ -648,6 +648,13 @@ import GhosttyKit
         var action = GHOSTTY_ACTION_RELEASE
         if mods.rawValue & mod != 0 { action = GHOSTTY_ACTION_PRESS }
         _ = keyAction(action, event: event)
+
+        // Link highlighting is mods-sensitive, so re-run hover with the new mods:
+        // holding/releasing the key underlines the link under the idle pointer.
+        if let p = window?.mouseLocationOutsideOfEventStream {
+            let local = convert(p, from: nil)
+            if bounds.contains(local) { sendMousePos(at: local, mods: mods) }
+        }
     }
 
     @discardableResult
@@ -746,12 +753,37 @@ import GhosttyKit
     }
 
     private func sendMousePos(_ event: NSEvent) {
-        guard let surface else { return }
-        let pos = convert(event.locationInWindow, from: nil)
-        // ghostty uses a top-left origin; AppKit is bottom-left.
-        ghostty_surface_mouse_pos(surface, pos.x, frame.height - pos.y,
-                                  ghosttyMods(event.modifierFlags))
+        sendMousePos(at: convert(event.locationInWindow, from: nil),
+                     mods: ghosttyMods(event.modifierFlags))
     }
+
+    private func sendMousePos(at pos: NSPoint, mods: ghostty_input_mods_e) {
+        guard let surface else { return }
+        // ghostty uses a top-left origin; AppKit is bottom-left.
+        ghostty_surface_mouse_pos(surface, pos.x, frame.height - pos.y, mods)
+    }
+
+    /// Cursor ghostty asks for: I-beam over text, pointing hand over a link.
+    // ponytail: only the shapes a terminal actually emits; add resize/crosshair
+    // if some mouse-mode app turns out to need them.
+    private var mouseCursor: NSCursor = .iBeam
+
+    func setMouseShape(_ raw: UInt32) {
+        let cursor: NSCursor
+        switch ghostty_action_mouse_shape_e(raw) {
+        case GHOSTTY_MOUSE_SHAPE_POINTER: cursor = .pointingHand
+        case GHOSTTY_MOUSE_SHAPE_DEFAULT: cursor = .arrow
+        default: cursor = .iBeam
+        }
+        guard cursor !== mouseCursor else { return }
+        mouseCursor = cursor
+        window?.invalidateCursorRects(for: self)
+        // Cursor rects only re-apply on the next move; land the change now.
+        if let p = window?.mouseLocationOutsideOfEventStream,
+           bounds.contains(convert(p, from: nil)) { cursor.set() }
+    }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: mouseCursor) }
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
