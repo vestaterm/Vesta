@@ -774,16 +774,13 @@ import GhosttyKit
 
     private func mouseMods(_ flags: NSEvent.ModifierFlags, linkMods: Bool) -> ghostty_input_mods_e {
         var mods = ghosttyMods(flags).rawValue
-        if linkMods {
-            mods |= GHOSTTY_MODS_SUPER.rawValue
-            // While an app holds the mouse (Claude Code, vim), ghostty checks links
-            // only if shift is down — and then strips shift back off before matching.
-            // Outside capture the extra shift would fail the match, so it goes on
-            // only while captured.
-            if let s = surface, ghostty_surface_mouse_captured(s) {
-                mods |= GHOSTTY_MODS_SHIFT.rawValue
-            }
-        }
+        // ⌘ only, and only ⌘ — it has no bit in the mouse protocol, so it can't reach
+        // the program in the pane. Hover inside an app that grabs the mouse would need
+        // ⇧ as well (⇧ is what frees the mouse from the app, and ghostty won't look for
+        // links under capture without it), and ⇧ *is* encodable: faking it put a phantom
+        // ⇧ in every wheel report Claude Code and vim received. There you hold ⇧⌘, which
+        // is ghostty's own rule.
+        if linkMods { mods |= GHOSTTY_MODS_SUPER.rawValue }
         return ghostty_input_mods_e(mods)
     }
 
@@ -850,10 +847,9 @@ import GhosttyKit
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
-        // The hover fake sits in ghostty's tracked mods until something changes them,
-        // and a wheel report to the app is encoded WITH those mods — so an app that
-        // grabs the mouse (Claude Code, vim) saw ⇧+wheel and ignored it. Put the real
-        // mods back before the wheel lands; the highlight returns on the next move.
+        // A wheel report to the app is encoded with ghostty's tracked mouse mods, so
+        // the hover fake must never be sitting in them when the wheel lands. ⌘ isn't
+        // encodable today, but this is the boundary where that would leak.
         if VestaConfig.shared.linkHover {
             sendMousePos(at: convert(event.locationInWindow, from: nil),
                          mods: mouseMods(event.modifierFlags, linkMods: false))
