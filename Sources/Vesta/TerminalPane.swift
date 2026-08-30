@@ -774,11 +774,12 @@ import GhosttyKit
 
     private func mouseMods(_ flags: NSEvent.ModifierFlags, linkMods: Bool) -> ghostty_input_mods_e {
         var mods = ghosttyMods(flags).rawValue
-        // ⌘ only. Making hover work inside apps that hold the mouse needs ⇧ as well
-        // (ghostty skips link detection under capture unless shift is down), but ⇧ is
-        // encodable in the mouse protocol, so it rode along into every wheel report and
-        // Claude Code saw ⇧+wheel instead of a wheel. ⌘ has no such bit. Inside those
-        // apps, links take a real ⌘-hover — which is ghostty's own behavior.
+        // ⌘ only, and only ⌘ — it has no bit in the mouse protocol, so it can't reach
+        // the program in the pane. Hover inside an app that grabs the mouse would need
+        // ⇧ as well (⇧ is what frees the mouse from the app, and ghostty won't look for
+        // links under capture without it), and ⇧ *is* encodable: faking it put a phantom
+        // ⇧ in every wheel report Claude Code and vim received. There you hold ⇧⌘, which
+        // is ghostty's own rule.
         if linkMods { mods |= GHOSTTY_MODS_SUPER.rawValue }
         return ghostty_input_mods_e(mods)
     }
