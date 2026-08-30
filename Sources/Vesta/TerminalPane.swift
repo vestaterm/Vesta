@@ -800,8 +800,10 @@ import GhosttyKit
         case GHOSTTY_MOUSE_SHAPE_DEFAULT: cursor = .arrow
         default: cursor = .iBeam
         }
+        let leftALink = mouseCursor === NSCursor.pointingHand && cursor !== NSCursor.pointingHand
         guard cursor !== mouseCursor else { return }
         mouseCursor = cursor
+        if leftALink { unstickLinkHighlight() }
         window?.invalidateCursorRects(for: self)
         // Cursor rects only re-apply on the next move; land the change now.
         if let p = window?.mouseLocationOutsideOfEventStream,
@@ -809,6 +811,18 @@ import GhosttyKit
     }
 
     override func resetCursorRects() { addCursorRect(bounds, cursor: mouseCursor) }
+
+    /// ghostty drops the hover highlight without marking the row dirty (it only queues a
+    /// render), so the underline stays painted on the cached row until something else
+    /// repaints it. Its out-of-viewport path *does* mark it — bounce through that, then
+    /// put the pointer back where it is.
+    private func unstickLinkHighlight() {
+        guard let surface, let p = window?.mouseLocationOutsideOfEventStream else { return }
+        let local = convert(p, from: nil)
+        guard bounds.contains(local) else { return }   // mouseExited already took this path
+        ghostty_surface_mouse_pos(surface, -1, -1, ghosttyMods([]))
+        sendMousePos(at: local, mods: ghosttyMods(NSEvent.modifierFlags))
+    }
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
