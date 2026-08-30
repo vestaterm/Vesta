@@ -767,7 +767,12 @@ import GhosttyKit
     /// the real mods, which re-runs detection without the fake — that's how a plain
     /// click keeps selecting text while the pointer still gets its underline.
     private func sendMousePos(_ event: NSEvent, linkMods: Bool = false) {
-        var mods = ghosttyMods(event.modifierFlags).rawValue
+        sendMousePos(at: convert(event.locationInWindow, from: nil),
+                     mods: mouseMods(event.modifierFlags, linkMods: linkMods))
+    }
+
+    private func mouseMods(_ flags: NSEvent.ModifierFlags, linkMods: Bool) -> ghostty_input_mods_e {
+        var mods = ghosttyMods(flags).rawValue
         if linkMods {
             mods |= GHOSTTY_MODS_SUPER.rawValue
             // While an app holds the mouse (Claude Code, vim), ghostty checks links
@@ -778,8 +783,7 @@ import GhosttyKit
                 mods |= GHOSTTY_MODS_SHIFT.rawValue
             }
         }
-        sendMousePos(at: convert(event.locationInWindow, from: nil),
-                     mods: ghostty_input_mods_e(mods))
+        return ghostty_input_mods_e(mods)
     }
 
     private func sendMousePos(at pos: NSPoint, mods: ghostty_input_mods_e) {
@@ -817,11 +821,22 @@ import GhosttyKit
     /// repaints it. Its out-of-viewport path *does* mark it — bounce through that, then
     /// put the pointer back where it is.
     private func unstickLinkHighlight() {
-        guard let surface, let p = window?.mouseLocationOutsideOfEventStream else { return }
-        let local = convert(p, from: nil)
-        guard bounds.contains(local) else { return }   // mouseExited already took this path
-        ghostty_surface_mouse_pos(surface, -1, -1, ghosttyMods([]))
-        sendMousePos(at: local, mods: ghosttyMods(NSEvent.modifierFlags))
+        // Never mid-gesture: ghostty keeps updating mouse state through a negative
+        // position (it wants to autoscroll there), so a bounce during a drag would
+        // stretch the selection to the top-left corner before the restore lands.
+        guard let surface, NSEvent.pressedMouseButtons == 0,
+              let win = window, win.isKeyWindow else { return }
+        let p = win.mouseLocationOutsideOfEventStream
+        // The action arrives a hop late; the pointer may have left for another pane or
+        // window by now, and mouseExited already covers leaving this one.
+        let hit = win.contentView?.hitTest(p)
+        guard hit === self || hit?.isDescendant(of: self) == true else { return }
+        // Same mods the hover path sends: real ones (bare mods would reset ghostty's
+        // tracked modifiers and repaint the screen twice), plus the link fake, so a
+        // link the pointer has already moved onto still highlights.
+        let mods = mouseMods(NSEvent.modifierFlags, linkMods: VestaConfig.shared.linkHover)
+        ghostty_surface_mouse_pos(surface, -1, -1, mods)
+        sendMousePos(at: convert(p, from: nil), mods: mods)
     }
 
     override func scrollWheel(with event: NSEvent) {
