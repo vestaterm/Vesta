@@ -154,7 +154,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
             tip: "Underline a URL and switch to the hand cursor when the pointer is over it.")
         addSection("Terminal", [
             row("Link hover", linkBox, key: "vesta-link-hover"),
-            caption("Off: links only light up while ⌘ is held (ghostty's own rule)."),
+            caption("Underline + hand cursor when you point at a URL. Off: links light up only while ⌘ is held, which is also what happens inside apps that grab the mouse (Claude Code, vim) either way."),
             row("Open links with", linkClickPopup(), key: "vesta-link-click"),
             caption("A real ⌘-click always opens a link. The looser modes trade a stray click opening your browser for not reaching for the key — worth pairing with Link hover, which is the only sign that the text under the pointer is a link. They stay off inside apps that grab the mouse (Claude Code, vim), where ⌘-click remains the way."),
         ])

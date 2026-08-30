@@ -774,16 +774,12 @@ import GhosttyKit
 
     private func mouseMods(_ flags: NSEvent.ModifierFlags, linkMods: Bool) -> ghostty_input_mods_e {
         var mods = ghosttyMods(flags).rawValue
-        if linkMods {
-            mods |= GHOSTTY_MODS_SUPER.rawValue
-            // While an app holds the mouse (Claude Code, vim), ghostty checks links
-            // only if shift is down — and then strips shift back off before matching.
-            // Outside capture the extra shift would fail the match, so it goes on
-            // only while captured.
-            if let s = surface, ghostty_surface_mouse_captured(s) {
-                mods |= GHOSTTY_MODS_SHIFT.rawValue
-            }
-        }
+        // ⌘ only. Making hover work inside apps that hold the mouse needs ⇧ as well
+        // (ghostty skips link detection under capture unless shift is down), but ⇧ is
+        // encodable in the mouse protocol, so it rode along into every wheel report and
+        // Claude Code saw ⇧+wheel instead of a wheel. ⌘ has no such bit. Inside those
+        // apps, links take a real ⌘-hover — which is ghostty's own behavior.
+        if linkMods { mods |= GHOSTTY_MODS_SUPER.rawValue }
         return ghostty_input_mods_e(mods)
     }
 
@@ -850,10 +846,9 @@ import GhosttyKit
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
-        // The hover fake sits in ghostty's tracked mods until something changes them,
-        // and a wheel report to the app is encoded WITH those mods — so an app that
-        // grabs the mouse (Claude Code, vim) saw ⇧+wheel and ignored it. Put the real
-        // mods back before the wheel lands; the highlight returns on the next move.
+        // A wheel report to the app is encoded with ghostty's tracked mouse mods, so
+        // the hover fake must never be sitting in them when the wheel lands. ⌘ isn't
+        // encodable today, but this is the boundary where that would leak.
         if VestaConfig.shared.linkHover {
             sendMousePos(at: convert(event.locationInWindow, from: nil),
                          mods: mouseMods(event.modifierFlags, linkMods: false))
