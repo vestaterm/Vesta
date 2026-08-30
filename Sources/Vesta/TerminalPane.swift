@@ -707,6 +707,7 @@ import GhosttyKit
         ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT,
                                      ghosttyMods(event.modifierFlags))
         ghostty_surface_mouse_pressure(surface, 0, 0)
+        if unstickPending { unstickLinkHighlight() }
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -820,15 +821,23 @@ import GhosttyKit
     /// render), so the underline stays painted on the cached row until something else
     /// repaints it. Its out-of-viewport path *does* mark it — bounce through that, then
     /// put the pointer back where it is.
+    /// Set when a bounce arrived mid-gesture; mouseUp replays it.
+    private var unstickPending = false
+
     private func unstickLinkHighlight() {
+        guard let surface, let win = window else { return }
         // Never mid-gesture: ghostty keeps updating mouse state through a negative
         // position (it wants to autoscroll there), so a bounce during a drag would
         // stretch the selection to the top-left corner before the restore lands.
-        guard let surface, NSEvent.pressedMouseButtons == 0,
-              let win = window, win.isKeyWindow else { return }
+        // A plain click on a link drops the hover with the button still down, so the
+        // bounce has to be replayed on release or the underline stays painted.
+        guard NSEvent.pressedMouseButtons == 0 else { unstickPending = true; return }
+        unstickPending = false
         let p = win.mouseLocationOutsideOfEventStream
         // The action arrives a hop late; the pointer may have left for another pane or
-        // window by now, and mouseExited already covers leaving this one.
+        // window by now, and mouseExited already covers leaving this one. The hit test
+        // is the whole check — hover (and its underline) runs in non-key windows too,
+        // since the tracking area is .activeAlways.
         let hit = win.contentView?.hitTest(p)
         guard hit === self || hit?.isDescendant(of: self) == true else { return }
         // Same mods the hover path sends: real ones (bare mods would reset ghostty's
