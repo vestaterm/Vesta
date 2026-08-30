@@ -149,6 +149,14 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
             row("Pane schematic", panesBox, key: "vesta-sidebar-panes"),
         ])
 
+        // ── Terminal ────────────────────────────────────────────────────────────────
+        let linkBox = check(cfg.linkHover, #selector(linkHoverChanged(_:)),
+            tip: "Underline a URL and switch to the hand cursor when the pointer is over it.")
+        addSection("Terminal", [
+            row("Link hover", linkBox, key: "vesta-link-hover"),
+            caption("Off: links only light up while ⌘ is held (ghostty's own rule). ⌘-click opens the link either way."),
+        ])
+
         // ── Sessions ──────────────────────────────────────────────────────────────────
         let persistBox = check(cfg.persist, #selector(persistChanged(_:)),
             tip: "Run shells under the daemon so they survive an app restart.")
@@ -484,6 +492,10 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
     }
     @objc private func panesChanged(_ b: NSButton) {
         setVestaConfigKey("vesta-sidebar-panes", b.state == .on ? "true" : "false"); onReload()
+    }
+    // Terminal — panes read VestaConfig.shared per hover, so the reload is enough.
+    @objc private func linkHoverChanged(_ b: NSButton) {
+        setVestaConfigKey("vesta-link-hover", b.state == .on ? "true" : "false"); onReload()
     }
     // Sessions — the daemon reads these at (next) startup; no live reload.
     @objc private func persistChanged(_ b: NSButton) {

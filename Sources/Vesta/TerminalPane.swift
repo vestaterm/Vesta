@@ -745,13 +745,22 @@ import GhosttyKit
         ghostty_surface_mouse_pos(surface, -1, -1, ghosttyMods(event.modifierFlags))
     }
 
-    /// `hovering` fakes ⌘ into the mods: ghostty only highlights a link while super
-    /// is held, and hovering is the only thing that reads these mods. The press paths
-    /// pass the real mods, which re-runs link detection without the fake — so a plain
-    /// click still selects and only a real ⌘-click opens the link (Terminal.app's deal).
+    /// `hovering` fakes ⌘ into the mods: ghostty only matches a URL while ⌘ is held,
+    /// and hover is the only thing that reads these mods. The press paths pass the
+    /// real mods, which re-runs link detection without the fake — so a plain click
+    /// still selects and only a real ⌘-click opens the link (Terminal.app's deal).
     private func sendMousePos(_ event: NSEvent, hovering: Bool = false) {
         var mods = ghosttyMods(event.modifierFlags).rawValue
-        if hovering { mods |= GHOSTTY_MODS_SUPER.rawValue }
+        if hovering, VestaConfig.shared.linkHover {
+            mods |= GHOSTTY_MODS_SUPER.rawValue
+            // While an app holds the mouse (Claude Code, vim), ghostty checks links
+            // only if shift is down — and then strips shift back off before matching.
+            // Outside capture the extra shift would fail the match, so it goes on
+            // only while captured.
+            if let s = surface, ghostty_surface_mouse_captured(s) {
+                mods |= GHOSTTY_MODS_SHIFT.rawValue
+            }
+        }
         sendMousePos(at: convert(event.locationInWindow, from: nil),
                      mods: ghostty_input_mods_e(mods))
     }
