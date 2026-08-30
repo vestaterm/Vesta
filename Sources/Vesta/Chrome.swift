@@ -69,6 +69,7 @@ final class VestaWindowController: NSWindowController {
     // Mutable container for the sidebar rows — cleared+refilled by setSidebar.
     private var projectsStack: NSStackView!
     private var wsCount: NSTextField?        // WORKSPACES count, pinned in the header (not scrolled)
+    private var projScroll: NSScrollView?    // wraps the row list; appearance tracks surface
 
     // Drag-to-reorder state. While a press or drag is live, setSidebar is suppressed (the
     // ~1Hz sidebar rebuild would otherwise destroy the row mid-interaction — even a plain
@@ -323,6 +324,7 @@ final class VestaWindowController: NSWindowController {
         frozenShade?.layer?.backgroundColor = t.background.cgColor
         sidebar?.layer?.backgroundColor = glass
             ? surface.withAlphaComponent(VestaConfig.shared.sidebarOpacity).cgColor : surface.cgColor
+        if let projScroll { applyScrollAppearance(projScroll) }
         flattenTitlebarSoon()
         prefixPill?.textColor = t.accent
         prefixPill?.layer?.borderColor = t.accent.cgColor
@@ -587,19 +589,20 @@ final class VestaWindowController: NSWindowController {
         projectsStack = stack   // setSidebar clears + refills it
 
         // Scroll the list so many workspaces don't grow the window. A flipped clip view
-        // anchors content to the top.
-        let scroll = NSScrollView()
+        // anchors content to the top; the appearance tracks the surface so the overlay scroller
+        // knob matches the theme instead of defaulting to a light system knob.
+        let scroll = OverlayScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.drawsBackground = false
-        // No scroller: AppKit drew its knob slot as a full-height bar down the sidebar's
-        // right edge — a second divider beside the cards — and in legacy style it also
-        // ate 17pt out of every card's width. The wheel and trackpad still scroll.
-        scroll.hasVerticalScroller = false
+        scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
         scroll.automaticallyAdjustsContentInsets = false
         scroll.contentView = FlippedClipView()
         scroll.contentView.drawsBackground = false
         scroll.documentView = stack
+        applyScrollAppearance(scroll)
+        projScroll = scroll
 
         let footBlock = makeFooter()
 
@@ -632,6 +635,14 @@ final class VestaWindowController: NSWindowController {
             footBlock.bottomAnchor.constraint(equalTo: v.bottomAnchor),
         ])
         return v
+    }
+
+    /// Match the scroller knob to the surface: a dark surface gets the dark appearance (light
+    /// knob), a light surface the aqua appearance — so the overlay scroller never clashes.
+    private func applyScrollAppearance(_ scroll: NSScrollView) {
+        let c = surface.usingColorSpace(.deviceRGB)
+        let lum = c.map { 0.299 * $0.redComponent + 0.587 * $0.greenComponent + 0.114 * $0.blueComponent } ?? 0
+        scroll.appearance = NSAppearance(named: lum < 0.5 ? .darkAqua : .aqua)
     }
 
     // MARK: – Row builders
@@ -1987,6 +1998,18 @@ private final class UpdateBadge: NSTextField {
     required init?(coder: NSCoder) { fatalError() }
     override func resetCursorRects() { if isClickable { addCursorRect(bounds, cursor: .pointingHand) } }
     @objc private func fire() { if isClickable { handler() } }
+}
+
+/// The workspace list's scroll view, pinned to overlay scrollers. AppKit re-derives
+/// `scrollerStyle` from the system preference — a plugged-in mouse, or "Show scroll
+/// bars: Always" — and a legacy scroller paints a full-height track just inside the
+/// sidebar's right hairline (reads as a second divider beside the cards) and reserves
+/// ~17pt, so every card sits that much short of its 8pt inset.
+private final class OverlayScrollView: NSScrollView {
+    override var scrollerStyle: NSScroller.Style {
+        get { .overlay }
+        set {}   // AppKit reasserting the system style is exactly what we're refusing
+    }
 }
 
 /// Top-anchored clip view: default NSClipView is bottom-up, which makes a short list sit at the
