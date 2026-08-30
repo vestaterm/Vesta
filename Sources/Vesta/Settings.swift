@@ -199,7 +199,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
             let list = NSStackView(views: pluginBoxes)
             list.orientation = .vertical; list.alignment = .leading; list.spacing = 7
             list.translatesAutoresizingMaskIntoConstraints = false
-            let listScroll = NSScrollView()
+            let listScroll = OverlayScrollView()
             listScroll.hasVerticalScroller = true; listScroll.autohidesScrollers = true
             listScroll.drawsBackground = false
             listScroll.translatesAutoresizingMaskIntoConstraints = false

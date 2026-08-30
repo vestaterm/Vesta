@@ -119,10 +119,9 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
         listStack.spacing = 1
         listStack.translatesAutoresizingMaskIntoConstraints = false
 
-        let scroll = NSScrollView()
+        let scroll = OverlayScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true          // overflow is scrollable + discoverable
-        scroll.scrollerStyle = .overlay            // floats over content, reserves no width
         scroll.autohidesScrollers = true           // hidden until the list actually overflows
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let clip = FlippedClipView()               // top-anchor the list so it hugs from the top

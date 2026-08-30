@@ -591,12 +591,12 @@ final class VestaWindowController: NSWindowController {
         // Scroll the list so many workspaces don't grow the window. A flipped clip view
         // anchors content to the top; the appearance tracks the surface so the overlay scroller
         // knob matches the theme instead of defaulting to a light system knob.
-        let scroll = NSScrollView()
+        let scroll = OverlayScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
-        scroll.scrollerStyle = .overlay
+        scroll.autohidesScrollers = true
         scroll.automaticallyAdjustsContentInsets = false
         scroll.contentView = FlippedClipView()
         scroll.contentView.drawsBackground = false
@@ -1998,6 +1998,20 @@ private final class UpdateBadge: NSTextField {
     required init?(coder: NSCoder) { fatalError() }
     override func resetCursorRects() { if isClickable { addCursorRect(bounds, cursor: .pointingHand) } }
     @objc private func fire() { if isClickable { handler() } }
+}
+
+/// A list scroll view pinned to overlay scrollers. AppKit re-derives `scrollerStyle`
+/// from the system preference — a plugged-in mouse, or "Show scroll bars: Always" —
+/// and a legacy scroller paints a full-height track down the list (in the sidebar it
+/// reads as a second divider beside the cards) and reserves ~17pt, so rows sit that
+/// much short of the inset their constraints ask for. Used by every list in the app;
+/// the settings page and config editor stay on the system style, where an always-on
+/// scrollbar is the affordance the user asked for and nothing sits under it.
+final class OverlayScrollView: NSScrollView {
+    override var scrollerStyle: NSScroller.Style {
+        get { .overlay }
+        set {}   // AppKit reasserting the system style is exactly what we're refusing
+    }
 }
 
 /// Top-anchored clip view: default NSClipView is bottom-up, which makes a short list sit at the
