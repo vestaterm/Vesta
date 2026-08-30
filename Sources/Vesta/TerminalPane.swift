@@ -682,7 +682,22 @@ import GhosttyKit
         // (and after a prior selection the position sits at the previous drag's end),
         // so without this a click/drag selects from the wrong cell and a plain click
         // can spuriously extend the old selection.
-        sendMousePos(event)
+        //
+        // ghostty opens the link under the pointer on release if the press left it
+        // "over a link" — which is decided by the mods on this position update. So
+        // the click modes are just a question of whether we fake them here.
+        //
+        // Not while an app holds the mouse, though: ghostty swallows the release of a
+        // click that opened a link but still forwards the press, so the app would be
+        // left believing the button is down. ⌘-click there, like ghostty itself.
+        var opens: Bool
+        switch VestaConfig.shared.linkClick {
+        case .cmd:    opens = false                     // real ⌘ or nothing
+        case .double: opens = event.clickCount == 2     // 3+ is line-select, not a link
+        case .single: opens = true
+        }
+        if opens, ghostty_surface_mouse_captured(surface) { opens = false }
+        sendMousePos(event, linkMods: opens)
         ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT,
                                      ghosttyMods(event.modifierFlags))
     }
@@ -729,14 +744,16 @@ import GhosttyKit
         }
     }
 
-    override func mouseMoved(with event: NSEvent) { sendMousePos(event, hovering: true) }
+    override func mouseMoved(with event: NSEvent) {
+        sendMousePos(event, linkMods: VestaConfig.shared.linkHover)
+    }
     override func mouseDragged(with event: NSEvent) { sendMousePos(event) }
     override func rightMouseDragged(with event: NSEvent) { sendMousePos(event) }
     override func otherMouseDragged(with event: NSEvent) { sendMousePos(event) }
 
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
-        sendMousePos(event, hovering: true)
+        sendMousePos(event, linkMods: VestaConfig.shared.linkHover)
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -745,13 +762,13 @@ import GhosttyKit
         ghostty_surface_mouse_pos(surface, -1, -1, ghosttyMods(event.modifierFlags))
     }
 
-    /// `hovering` fakes ⌘ into the mods: ghostty only matches a URL while ⌘ is held,
-    /// and hover is the only thing that reads these mods. The press paths pass the
-    /// real mods, which re-runs link detection without the fake — so a plain click
-    /// still selects and only a real ⌘-click opens the link (Terminal.app's deal).
-    private func sendMousePos(_ event: NSEvent, hovering: Bool = false) {
+    /// `linkMods` fakes ⌘ into the mods: ghostty only matches a URL while ⌘ is held,
+    /// and link detection is the only thing that reads them. Passing false hands over
+    /// the real mods, which re-runs detection without the fake — that's how a plain
+    /// click keeps selecting text while the pointer still gets its underline.
+    private func sendMousePos(_ event: NSEvent, linkMods: Bool = false) {
         var mods = ghosttyMods(event.modifierFlags).rawValue
-        if hovering, VestaConfig.shared.linkHover {
+        if linkMods {
             mods |= GHOSTTY_MODS_SUPER.rawValue
             // While an app holds the mouse (Claude Code, vim), ghostty checks links
             // only if shift is down — and then strips shift back off before matching.
