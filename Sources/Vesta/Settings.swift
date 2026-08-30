@@ -154,7 +154,9 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
             tip: "Underline a URL and switch to the hand cursor when the pointer is over it.")
         addSection("Terminal", [
             row("Link hover", linkBox, key: "vesta-link-hover"),
-            caption("Off: links only light up while ⌘ is held (ghostty's own rule). ⌘-click opens the link either way."),
+            caption("Off: links only light up while ⌘ is held (ghostty's own rule)."),
+            row("Open links with", linkClickPopup(), key: "vesta-link-click"),
+            caption("A real ⌘-click always opens a link; the looser modes trade a stray click opening your browser for not reaching for the key."),
         ])
 
         // ── Sessions ──────────────────────────────────────────────────────────────────
@@ -440,6 +442,21 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
     private static let defaultFontFamily = "JetBrains Mono"
     private static let defaultSuffix = " (default)"
 
+    /// Which click opens the link under the pointer (`vesta-link-click`).
+    private func linkClickPopup() -> NSPopUpButton {
+        let p = NSPopUpButton()
+        p.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        p.addItems(withTitles: Self.linkClickTitles.map(\.1))
+        let cur = VestaConfig.shared.linkClick
+        p.selectItem(at: Self.linkClickTitles.firstIndex { $0.0 == cur } ?? 0)
+        p.target = self; p.action = #selector(linkClickChanged(_:))
+        return p
+    }
+
+    private static let linkClickTitles: [(LinkClick, String)] = [
+        (.cmd, "⌘-click (default)"), (.double, "Double-click"), (.single, "Single click"),
+    ]
+
     /// Terminal font picker (ghostty `font-family`). Bundled families first, then
     /// every installed family; the default is tagged "(default)". Applies + reloads.
     private func fontPopup() -> NSPopUpButton {
@@ -493,9 +510,13 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
     @objc private func panesChanged(_ b: NSButton) {
         setVestaConfigKey("vesta-sidebar-panes", b.state == .on ? "true" : "false"); onReload()
     }
-    // Terminal — panes read VestaConfig.shared per hover, so the reload is enough.
+    // Terminal — panes read VestaConfig.shared per mouse event, so the reload is enough.
     @objc private func linkHoverChanged(_ b: NSButton) {
         setVestaConfigKey("vesta-link-hover", b.state == .on ? "true" : "false"); onReload()
+    }
+    @objc private func linkClickChanged(_ p: NSPopUpButton) {
+        let mode = Self.linkClickTitles[p.indexOfSelectedItem].0
+        setVestaConfigKey("vesta-link-click", mode.rawValue); onReload()
     }
     // Sessions — the daemon reads these at (next) startup; no live reload.
     @objc private func persistChanged(_ b: NSButton) {

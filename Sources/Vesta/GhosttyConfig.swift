@@ -182,6 +182,13 @@ func loadGhosttyConfig() -> (theme: Theme, settings: [String: String]) {
     return (theme, settings)
 }
 
+/// What it takes to open the link under the pointer. ⌘-click is ghostty's own
+/// rule and the default; the looser modes trade a stray click opening a browser
+/// for not having to reach for a modifier.
+enum LinkClick: String {
+    case cmd, double, single
+}
+
 // MARK: - vesta-* customization
 
 /// Vesta's own config knobs, read from the SAME ghostty config file (keys
@@ -206,6 +213,7 @@ struct VestaConfig {
     var sidebarOpacity: CGFloat // vesta-sidebar-opacity: sidebar tint alpha in glass mode
     var linkHover: Bool         // vesta-link-hover: underline + hand cursor on plain hover.
                                 // Off = ghostty's own rule, which only matches a URL while ⌘ is held.
+    var linkClick: LinkClick    // vesta-link-click: which click opens the link under the pointer
     var terminalOpacity: CGFloat // ghostty background-opacity (read here so the chrome can
                                  // un-paint the opaque backing that would block see-through)
 
@@ -224,6 +232,7 @@ struct VestaConfig {
         glassSidebar = (s["vesta-glass-sidebar"].map { $0 == "true" || $0 == "1" }) ?? false
         sidebarOpacity = CGFloat(min(max(s["vesta-sidebar-opacity"].flatMap(Double.init) ?? 0.55, 0), 1))
         linkHover    = (s["vesta-link-hover"].map { $0 != "false" && $0 != "0" }) ?? true
+        linkClick    = LinkClick(rawValue: s["vesta-link-click"] ?? "") ?? .cmd
         terminalOpacity = CGFloat(min(max(s["background-opacity"].flatMap(Double.init) ?? 1, 0), 1))
     }
 
@@ -265,6 +274,8 @@ func ghosttyConfigSelfCheck() -> String {
     assert(hc.accent == ghosttyColor("#889b94"), "vesta-accent parsed")
     assert(hc.sidebarWidth == 260, "vesta-sidebar-width parsed")
     assert(VestaConfig([:]).sidebarWidth == 224, "vesta defaults preserved")
+    assert(VestaConfig(["vesta-link-click": "single"]).linkClick == .single, "vesta-link-click parsed")
+    assert(VestaConfig(["vesta-link-click": "nonsense"]).linkClick == .cmd, "bad link-click falls back to ⌘")
 
     // Malformed / edge lines must be skipped or normalized, never crash.
     let junk = """

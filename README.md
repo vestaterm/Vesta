@@ -277,6 +277,7 @@ look, so an untouched config changes nothing.
 | `vesta-sidebar-tails` | true | workspace cards show the last ~4 rendered lines of their focused pane (content-aware for TUI agents: anchors on Claude Code's last `⏺` block, filters its input box). Also gates background materialization of restored workspaces at launch |
 | `vesta-sidebar-panes` | false | multi-pane cards draw their real split layout (focused pane highlighted); off = a dim `⊞N` count still shows |
 | `vesta-link-hover` | true | URLs underline and the cursor turns into a hand when you point at one; `⌘`-click opens it. `false` = ghostty's own rule, where a link only lights up while `⌘` is held |
+| `vesta-link-click` | cmd | which click opens the link under the pointer: `cmd` (⌘-click, ghostty's own rule), `double`, or `single`. A real ⌘-click opens in every mode |
 | `vesta-glass-sidebar` | false | translucent sidebar — behind-window blur with the surface color as a tint; titlebar over the sidebar matches. Applies on relaunch |
 | `vesta-sidebar-opacity` | 0.55 | sidebar tint strength in glass mode (0..1) |
 | `vesta-shell-integration` | true | inject zsh OSC 133 marks into daemon-spawned shells so card heat (✓/✗) works out of the box; `false` = opt out |
