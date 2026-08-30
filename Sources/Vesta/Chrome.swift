@@ -69,7 +69,6 @@ final class VestaWindowController: NSWindowController {
     // Mutable container for the sidebar rows — cleared+refilled by setSidebar.
     private var projectsStack: NSStackView!
     private var wsCount: NSTextField?        // WORKSPACES count, pinned in the header (not scrolled)
-    private var projScroll: NSScrollView?    // wraps the row list; appearance tracks surface
 
     // Drag-to-reorder state. While a press or drag is live, setSidebar is suppressed (the
     // ~1Hz sidebar rebuild would otherwise destroy the row mid-interaction — even a plain
@@ -324,7 +323,6 @@ final class VestaWindowController: NSWindowController {
         frozenShade?.layer?.backgroundColor = t.background.cgColor
         sidebar?.layer?.backgroundColor = glass
             ? surface.withAlphaComponent(VestaConfig.shared.sidebarOpacity).cgColor : surface.cgColor
-        if let projScroll { applyScrollAppearance(projScroll) }
         flattenTitlebarSoon()
         prefixPill?.textColor = t.accent
         prefixPill?.layer?.borderColor = t.accent.cgColor
@@ -589,20 +587,19 @@ final class VestaWindowController: NSWindowController {
         projectsStack = stack   // setSidebar clears + refills it
 
         // Scroll the list so many workspaces don't grow the window. A flipped clip view
-        // anchors content to the top; the appearance tracks the surface so the overlay scroller
-        // knob matches the theme instead of defaulting to a light system knob.
+        // anchors content to the top.
         let scroll = NSScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.drawsBackground = false
-        scroll.hasVerticalScroller = true
+        // No scroller: AppKit drew its knob slot as a full-height bar down the sidebar's
+        // right edge — a second divider beside the cards — and in legacy style it also
+        // ate 17pt out of every card's width. The wheel and trackpad still scroll.
+        scroll.hasVerticalScroller = false
         scroll.hasHorizontalScroller = false
-        scroll.scrollerStyle = .overlay
         scroll.automaticallyAdjustsContentInsets = false
         scroll.contentView = FlippedClipView()
         scroll.contentView.drawsBackground = false
         scroll.documentView = stack
-        applyScrollAppearance(scroll)
-        projScroll = scroll
 
         let footBlock = makeFooter()
 
@@ -635,14 +632,6 @@ final class VestaWindowController: NSWindowController {
             footBlock.bottomAnchor.constraint(equalTo: v.bottomAnchor),
         ])
         return v
-    }
-
-    /// Match the scroller knob to the surface: a dark surface gets the dark appearance (light
-    /// knob), a light surface the aqua appearance — so the overlay scroller never clashes.
-    private func applyScrollAppearance(_ scroll: NSScrollView) {
-        let c = surface.usingColorSpace(.deviceRGB)
-        let lum = c.map { 0.299 * $0.redComponent + 0.587 * $0.greenComponent + 0.114 * $0.blueComponent } ?? 0
-        scroll.appearance = NSAppearance(named: lum < 0.5 ? .darkAqua : .aqua)
     }
 
     // MARK: – Row builders
