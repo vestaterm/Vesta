@@ -841,6 +841,14 @@ import GhosttyKit
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
+        // The hover fake sits in ghostty's tracked mods until something changes them,
+        // and a wheel report to the app is encoded WITH those mods — so an app that
+        // grabs the mouse (Claude Code, vim) saw ⇧+wheel and ignored it. Put the real
+        // mods back before the wheel lands; the highlight returns on the next move.
+        if VestaConfig.shared.linkHover {
+            sendMousePos(at: convert(event.locationInWindow, from: nil),
+                         mods: mouseMods(event.modifierFlags, linkMods: false))
+        }
         var x = event.scrollingDeltaX
         var y = event.scrollingDeltaY
         let precision = event.hasPreciseScrollingDeltas
