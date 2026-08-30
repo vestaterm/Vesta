@@ -689,7 +689,8 @@ import GhosttyKit
         //
         // Not while an app holds the mouse, though: ghostty swallows the release of a
         // click that opened a link but still forwards the press, so the app would be
-        // left believing the button is down. ⌘-click there, like ghostty itself.
+        // left believing the button is down. Links there take ⇧⌘ — ⇧ frees the pointer
+        // from the app, and without it ghostty never marks the pointer as over a link.
         var opens: Bool
         switch VestaConfig.shared.linkClick {
         case .cmd:    opens = false                     // real ⌘ or nothing
@@ -847,13 +848,6 @@ import GhosttyKit
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
-        // A wheel report to the app is encoded with ghostty's tracked mouse mods, so
-        // the hover fake must never be sitting in them when the wheel lands. ⌘ isn't
-        // encodable today, but this is the boundary where that would leak.
-        if VestaConfig.shared.linkHover {
-            sendMousePos(at: convert(event.locationInWindow, from: nil),
-                         mods: mouseMods(event.modifierFlags, linkMods: false))
-        }
         var x = event.scrollingDeltaX
         var y = event.scrollingDeltaY
         let precision = event.hasPreciseScrollingDeltas

@@ -156,7 +156,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
             row("Link hover", linkBox, key: "vesta-link-hover"),
             caption("Underline + hand cursor when you point at a URL. Inside apps that grab the mouse (Claude Code, vim) hold ⇧⌘ — ⇧ is what frees the pointer from the app. Off: ⌘-hover everywhere, which is ghostty's own rule."),
             row("Open links with", linkClickPopup(), key: "vesta-link-click"),
-            caption("A real ⌘-click always opens a link. The looser modes trade a stray click opening your browser for not reaching for the key — worth pairing with Link hover, which is the only sign that the text under the pointer is a link. They stay off inside apps that grab the mouse (Claude Code, vim), where ⌘-click remains the way."),
+            caption("A real ⌘-click always opens a link. The looser modes trade a stray click opening your browser for not reaching for the key — worth pairing with Link hover, which is the only sign that the text under the pointer is a link. They stay off inside apps that grab the mouse (Claude Code, vim), where a link takes ⇧⌘-click."),
         ])
 
         // ── Sessions ──────────────────────────────────────────────────────────────────
