@@ -204,6 +204,8 @@ struct VestaConfig {
     var glassSidebar: Bool      // vesta-glass-sidebar: translucent sidebar (colors become tints).
                                 // Terminal translucency is SEPARATE: ghostty's own background-opacity.
     var sidebarOpacity: CGFloat // vesta-sidebar-opacity: sidebar tint alpha in glass mode
+    var linkHover: Bool         // vesta-link-hover: underline + hand cursor on plain hover.
+                                // Off = ghostty's own rule, which only matches a URL while ⌘ is held.
     var terminalOpacity: CGFloat // ghostty background-opacity (read here so the chrome can
                                  // un-paint the opaque backing that would block see-through)
 
@@ -221,6 +223,7 @@ struct VestaConfig {
         sidebarPanes = (s["vesta-sidebar-panes"].map { $0 == "true" || $0 == "1" }) ?? false
         glassSidebar = (s["vesta-glass-sidebar"].map { $0 == "true" || $0 == "1" }) ?? false
         sidebarOpacity = CGFloat(min(max(s["vesta-sidebar-opacity"].flatMap(Double.init) ?? 0.55, 0), 1))
+        linkHover    = (s["vesta-link-hover"].map { $0 != "false" && $0 != "0" }) ?? true
         terminalOpacity = CGFloat(min(max(s["background-opacity"].flatMap(Double.init) ?? 1, 0), 1))
     }
 
