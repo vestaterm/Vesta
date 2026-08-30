@@ -686,12 +686,17 @@ import GhosttyKit
         // ghostty opens the link under the pointer on release if the press left it
         // "over a link" — which is decided by the mods on this position update. So
         // the click modes are just a question of whether we fake them here.
-        let opens: Bool
+        //
+        // Not while an app holds the mouse, though: ghostty swallows the release of a
+        // click that opened a link but still forwards the press, so the app would be
+        // left believing the button is down. ⌘-click there, like ghostty itself.
+        var opens: Bool
         switch VestaConfig.shared.linkClick {
         case .cmd:    opens = false                     // real ⌘ or nothing
-        case .double: opens = event.clickCount >= 2
+        case .double: opens = event.clickCount == 2     // 3+ is line-select, not a link
         case .single: opens = true
         }
+        if opens, ghostty_surface_mouse_captured(surface) { opens = false }
         sendMousePos(event, linkMods: opens)
         ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT,
                                      ghosttyMods(event.modifierFlags))
