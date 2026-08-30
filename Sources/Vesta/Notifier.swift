@@ -55,7 +55,7 @@ enum Notifier {
 /// with a panel pinned top-right under the titlebar, listing recent notes newest-first.
 final class NotificationsPanel: NSView {
     private let panel = NSView()
-    private let scroll = NSScrollView()
+    private let scroll = OverlayScrollView()
     private let doc = FlippedView()
     private var heightC: NSLayoutConstraint!          // scroll height = content (capped); set after layout
     private let onDelete: (UUID) -> Void

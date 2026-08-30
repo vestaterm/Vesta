@@ -596,7 +596,6 @@ final class VestaWindowController: NSWindowController {
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
-        scroll.autohidesScrollers = true
         scroll.automaticallyAdjustsContentInsets = false
         scroll.contentView = FlippedClipView()
         scroll.contentView.drawsBackground = false
@@ -2005,7 +2004,7 @@ private final class UpdateBadge: NSTextField {
 /// bars: Always" — and a legacy scroller paints a full-height track just inside the
 /// sidebar's right hairline (reads as a second divider beside the cards) and reserves
 /// ~17pt, so every card sits that much short of its 8pt inset.
-private final class OverlayScrollView: NSScrollView {
+final class OverlayScrollView: NSScrollView {
     override var scrollerStyle: NSScroller.Style {
         get { .overlay }
         set {}   // AppKit reasserting the system style is exactly what we're refusing

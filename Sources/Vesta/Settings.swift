@@ -199,7 +199,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
             let list = NSStackView(views: pluginBoxes)
             list.orientation = .vertical; list.alignment = .leading; list.spacing = 7
             list.translatesAutoresizingMaskIntoConstraints = false
-            let listScroll = NSScrollView()
+            let listScroll = OverlayScrollView()
             listScroll.hasVerticalScroller = true; listScroll.autohidesScrollers = true
             listScroll.drawsBackground = false
             listScroll.translatesAutoresizingMaskIntoConstraints = false
@@ -243,7 +243,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
         ])
         btns.orientation = .horizontal; btns.spacing = 8
 
-        let scroll = NSScrollView()
+        let scroll = OverlayScrollView()
         scroll.hasVerticalScroller = true
         scroll.borderType = .lineBorder
         scroll.drawsBackground = false
@@ -276,7 +276,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
         // Everything lives in a vertical scroll view so the window never outgrows the
         // screen — the content is tall, so we scroll it inside a fixed-height window.
         let content = window!.contentView!
-        let page = NSScrollView()
+        let page = OverlayScrollView()
         page.hasVerticalScroller = true
         page.autohidesScrollers = true
         page.drawsBackground = false

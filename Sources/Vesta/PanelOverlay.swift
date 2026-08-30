@@ -196,7 +196,7 @@ final class PanelOverlay: NSView {
         // content area: a scroll view when height-capped, else the bare stack
         let content: NSView
         if maxHeight > 0 {
-            let sv = NSScrollView()
+            let sv = OverlayScrollView()
             sv.hasVerticalScroller = true; sv.autohidesScrollers = true; sv.drawsBackground = false
             sv.translatesAutoresizingMaskIntoConstraints = false
             let doc = FlippedDoc(); doc.translatesAutoresizingMaskIntoConstraints = false
