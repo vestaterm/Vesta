@@ -243,7 +243,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
         ])
         btns.orientation = .horizontal; btns.spacing = 8
 
-        let scroll = OverlayScrollView()
+        let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.borderType = .lineBorder
         scroll.drawsBackground = false
@@ -276,7 +276,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
         // Everything lives in a vertical scroll view so the window never outgrows the
         // screen — the content is tall, so we scroll it inside a fixed-height window.
         let content = window!.contentView!
-        let page = OverlayScrollView()
+        let page = NSScrollView()
         page.hasVerticalScroller = true
         page.autohidesScrollers = true
         page.drawsBackground = false

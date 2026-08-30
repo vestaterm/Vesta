@@ -596,6 +596,7 @@ final class VestaWindowController: NSWindowController {
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
         scroll.automaticallyAdjustsContentInsets = false
         scroll.contentView = FlippedClipView()
         scroll.contentView.drawsBackground = false
@@ -1999,11 +2000,13 @@ private final class UpdateBadge: NSTextField {
     @objc private func fire() { if isClickable { handler() } }
 }
 
-/// The workspace list's scroll view, pinned to overlay scrollers. AppKit re-derives
-/// `scrollerStyle` from the system preference — a plugged-in mouse, or "Show scroll
-/// bars: Always" — and a legacy scroller paints a full-height track just inside the
-/// sidebar's right hairline (reads as a second divider beside the cards) and reserves
-/// ~17pt, so every card sits that much short of its 8pt inset.
+/// A list scroll view pinned to overlay scrollers. AppKit re-derives `scrollerStyle`
+/// from the system preference — a plugged-in mouse, or "Show scroll bars: Always" —
+/// and a legacy scroller paints a full-height track down the list (in the sidebar it
+/// reads as a second divider beside the cards) and reserves ~17pt, so rows sit that
+/// much short of the inset their constraints ask for. Used by every list in the app;
+/// the settings page and config editor stay on the system style, where an always-on
+/// scrollbar is the affordance the user asked for and nothing sits under it.
 final class OverlayScrollView: NSScrollView {
     override var scrollerStyle: NSScroller.Style {
         get { .overlay }
