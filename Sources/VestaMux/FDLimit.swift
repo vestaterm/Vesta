@@ -13,11 +13,15 @@ private let RLIM_INFINITY_VALUE = rlim_t((rlim_t(1) << 63) - 1)
 /// shells of fds ("pipe failed: too many open files"). Target 8192 for ample headroom.
 ///
 /// Pure so it can be selfchecked: never exceeds the hard cap, never *lowers* the current soft
-/// limit, and treats an unlimited (RLIM_INFINITY) hard cap as "take the full target".
+/// limit except past poll()'s OPEN_MAX ceiling (where a bigger limit means a dead daemon, not
+/// more capacity), and treats an unlimited (RLIM_INFINITY) hard cap as "take the full target".
 public func desiredFDSoftLimit(soft: rlim_t, hard: rlim_t) -> rlim_t {
     let target: rlim_t = 8192
     let capped = (hard == RLIM_INFINITY_VALUE) ? target : min(target, hard)
-    return max(soft, capped)   // never lower an already-generous inherited limit
+    // ceiling: poll() fails EINVAL once nfds passes OPEN_MAX, and the daemon polls one
+    // entry per open fd — so an inherited limit above it turns "many panes" into a dead
+    // daemon at a silent cliff. Below the 8192 target this clamp never bites.
+    return min(max(soft, capped), 10240)
 }
 
 /// Raise this process's soft `RLIMIT_NOFILE` toward `desiredFDSoftLimit`. Best-effort: on
@@ -68,9 +72,13 @@ public func fdLimitSelfCheck() {
     assert(desiredFDSoftLimit(soft: 256, hard: 10240) == 8192, "raise from default")
     // Hard cap below target clamps to the hard cap.
     assert(desiredFDSoftLimit(soft: 256, hard: 4096) == 4096, "clamp to hard cap")
-    // Never lower an already-generous inherited soft limit.
-    assert(desiredFDSoftLimit(soft: 1048576, hard: INF) == 1048576, "never lower soft")
+    // Never lower an already-generous inherited soft limit — up to poll()'s ceiling.
+    assert(desiredFDSoftLimit(soft: 9000, hard: INF) == 9000, "never lower soft")
     // Exactly at target is a no-op value.
     assert(desiredFDSoftLimit(soft: 8192, hard: INF) == 8192, "at target")
+    // Past OPEN_MAX every poll() is EINVAL and the daemon dies, so a huge inherited soft
+    // limit IS lowered — the one case where keeping it is worse than clamping it.
+    assert(desiredFDSoftLimit(soft: 1_048_576, hard: INF) == 10240, "clamped to poll's ceiling")
+    assert(desiredFDSoftLimit(soft: 10240, hard: INF) == 10240, "at the ceiling")
     print("fdLimitSelfCheck ok")
 }
