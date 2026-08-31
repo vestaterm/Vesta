@@ -211,7 +211,7 @@ final class Daemon {
             for fd in clientBufs.keys { pollFDs.append(pollfd(fd: fd, events: Int16(POLLIN), revents: 0)) }
             let n = poll(&pollFDs, nfds_t(pollFDs.count), 5000)
             if n < 0 {
-                if errno == EINTR { continue }
+                if errno == EINTR || errno == EAGAIN { continue }   // both are "call again"
                 break
             }
             // A closed fd is POLLNVAL in revents here, not EBADF from the call. Don't take
@@ -364,6 +364,11 @@ final class Daemon {
     private func readClient(_ fd: Int32) {
         var tmp = [UInt8](repeating: 0, count: 65536)
         let n = read(fd, &tmp, tmp.count)
+        // EAGAIN is not a dead client: readiness is collected before reapDeadShells() and
+        // acceptClient() run, so this fd number can have been closed and handed to a
+        // brand-new connection within this same iteration — one that hasn't sent its hello
+        // yet. Dropping it there would fail an attach the relay then has to retry.
+        if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) { return }
         if n <= 0 { closeClient(fd); return }
         clientBufs[fd, default: Data()].append(Data(tmp[0..<n]))
         lastActivity = Date()
