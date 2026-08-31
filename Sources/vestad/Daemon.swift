@@ -118,7 +118,7 @@ final class Daemon {
         lockFD = lock
     }
 
-    /// Bind the listen socket and enter the select loop. Called by both run() (fresh) and
+    /// Bind the listen socket and enter the poll loop. Called by both run() (fresh) and
     /// resume() (post-upgrade) — the lock is already held by the time we get here.
     private func serve() {
         startWatchdog()   // first: the startup work below (exe hash) must be watched too
@@ -200,38 +200,53 @@ final class Daemon {
         if ProcessInfo.processInfo.environment["VESTA_DEBUG_WEDGE"] == "1" { while true { sleep(60) } }
         while true {
             beat()   // watchdog heartbeat: this loop is alive
-            var rset = fd_set()
-            var maxFD: Int32 = 0
-            if listenFD >= 0 { __darwin_fd_set(listenFD, &rset); maxFD = listenFD }
-            for (_, s) in sessions { __darwin_fd_set(s.masterFD, &rset); maxFD = max(maxFD, s.masterFD) }
-            for fd in clientBufs.keys { __darwin_fd_set(fd, &rset); maxFD = max(maxFD, fd) }
-            var tv = timeval(tv_sec: 5, tv_usec: 0)
-            let n = select(maxFD + 1, &rset, nil, nil, &tv)
+            // poll(), not select(): fd_set is a fixed 1024-bit bitmap and FD_SET writes the
+            // bit unchecked, so with the soft limit raised to 8192 any fd ≥ 1024 was an
+            // out-of-bounds write onto maxFD and the timeout — a clobbered tv_sec parks the
+            // daemon for an arbitrary time, which is the wedge the watchdog exists to catch.
+            // poll takes an array we size ourselves, so no fd number can overflow it.
+            pollFDs.removeAll(keepingCapacity: true)   // reused: this loop runs per read
+            if listenFD >= 0 { pollFDs.append(pollfd(fd: listenFD, events: Int16(POLLIN), revents: 0)) }
+            for (_, s) in sessions { pollFDs.append(pollfd(fd: s.masterFD, events: Int16(POLLIN), revents: 0)) }
+            for fd in clientBufs.keys { pollFDs.append(pollfd(fd: fd, events: Int16(POLLIN), revents: 0)) }
+            let n = poll(&pollFDs, nfds_t(pollFDs.count), 5000)
             if n < 0 {
                 if errno == EINTR { continue }
-                // EBADF: a closed fd slipped into the set. Don't take down every shell —
-                // prune the dead fds and keep serving. (Root cause is fixed in readClient,
-                // but one stray fd must never kill the daemon.)
-                if errno == EBADF, pruneDeadFDs() { continue }
                 break
             }
+            // A closed fd is POLLNVAL in revents here, not EBADF from the call. Don't take
+            // down every shell for one stray fd — prune it and keep serving. (Root cause is
+            // fixed in readClient; this stays as the net.)
+            var ready = Set<Int32>()
+            var invalid = false
+            for p in pollFDs where p.revents != 0 {
+                if p.revents & Int16(POLLNVAL) != 0 { invalid = true; continue }
+                // HUP/ERR count as ready: the read that follows is what sees EOF and reaps
+                // the session, exactly as select()'s "readable at EOF" did.
+                if p.revents & Int16(POLLIN | POLLHUP | POLLERR) != 0 { ready.insert(p.fd) }
+            }
+            if invalid, pruneDeadFDs() { continue }
+            if invalid { break }   // the bad fd wasn't a client — same as select()'s EBADF exit
             reapDeadShells()
             processPendingDeletes()   // fire any grace-delayed log deletes whose deadline passed
             if sessions.isEmpty && clientBufs.isEmpty && idleExpired() { break }  // idle-exit
-            if listenFD >= 0 && __darwin_fd_isset(listenFD, &rset) != 0 { acceptClient() }
+            if listenFD >= 0 && ready.contains(listenFD) { acceptClient() }
             // Drain every PTY (even with zero clients → no backpressure).
-            for (_, s) in sessions where __darwin_fd_isset(s.masterFD, &rset) != 0 { drainPTY(s) }
+            for (_, s) in sessions where ready.contains(s.masterFD) { drainPTY(s) }
             // Read client frames.
-            for fd in Array(clientBufs.keys) where __darwin_fd_isset(fd, &rset) != 0 { readClient(fd) }
+            for fd in Array(clientBufs.keys) where ready.contains(fd) { readClient(fd) }
         }
         if listenFD >= 0 { close(listenFD); unlink(MuxPaths.daemonSocket) }
     }
 
+    /// Reused across loop iterations so a busy daemon isn't reallocating it per read.
+    private var pollFDs: [pollfd] = []
+
     private var lastActivity = Date()
     private func idleExpired() -> Bool { Date().timeIntervalSince(lastActivity) > 10 }
 
-    /// Drop any client fd that's no longer a valid open descriptor. Called on a select()
-    /// EBADF so a single stale fd can't kill the daemon (which would drop every shell).
+    /// Drop any client fd that's no longer a valid open descriptor. Called on a POLLNVAL
+    /// so a single stale fd can't kill the daemon (which would drop every shell).
     /// Returns true if it pruned at least one (so the caller can retry select); false
     /// means the bad fd wasn't a client — fall through to break rather than spin.
     private func pruneDeadFDs() -> Bool {
