@@ -295,25 +295,34 @@ final class GhosttyApp {
     }
 
     /// Reading the clipboard. The callback doesn't hand us a surface handle and
-    /// the Contract's TerminalPane doesn't expose one, so we return false and let
-    /// the paste binding pass through to the terminal as text.
+    /// the Contract's TerminalPane doesn't expose one, so we report it unavailable and
+    /// let the paste binding pass through to the terminal as text.
     // ponytail: paste handled by the surface's own text path, not OSC-52 read.
     nonisolated fileprivate static func readClipboard(
         _ userdata: UnsafeMutableRawPointer?,
         location: ghostty_clipboard_e,
         state: UnsafeMutableRawPointer?
-    ) -> Bool {
-        return false
+    ) -> ghostty_clipboard_read_result_e {
+        return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE
     }
 
-    /// We don't show a confirmation UI; complete the request unconfirmed.
-    // ponytail: no clipboard confirmation dialog; OSC-52 reads just no-op.
+    /// We don't show a confirmation UI, so deny. Since 1.4 ghostty holds the request (e.g. a
+    /// kitty clipboard write under `clipboard-write = ask`) until we complete or deny it —
+    /// a no-op here leaked it and left the program waiting for a reply forever.
+    // ponytail: no clipboard confirmation dialog; add one if anyone runs `ask`.
     nonisolated fileprivate static func confirmReadClipboard(
         _ userdata: UnsafeMutableRawPointer?,
-        string: UnsafePointer<CChar>?,
+        confirm: UnsafePointer<ghostty_clipboard_confirm_s>?,
         state: UnsafeMutableRawPointer?,
         request: ghostty_clipboard_request_e
-    ) {}
+    ) {
+        guard let userdata else { return }
+        nonisolated(unsafe) let u = userdata, st = state
+        DispatchQueue.main.async { MainActor.assumeIsolated {
+            guard TerminalPane.isLive(u) else { return }
+            Unmanaged<TerminalPane>.fromOpaque(u).takeUnretainedValue().denyClipboardRequest(st)
+        }}
+    }
 
     /// Writing the clipboard: copy the first text/plain entry to the pasteboard.
     nonisolated fileprivate static func writeClipboard(
@@ -331,7 +340,8 @@ final class GhosttyApp {
             guard let mime = item.mime, String(cString: mime) == "text/plain",
                   let data = item.data
             else { continue }
-            let str = String(cString: data)
+            // Binary-safe with an explicit length since ghostty 1.4 — not NUL-terminated.
+            let str = String(decoding: UnsafeRawBufferPointer(start: data, count: item.len), as: UTF8.self)
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(str, forType: .string)
             return
@@ -371,11 +381,12 @@ private func vestaWakeupCB(_ ud: UnsafeMutableRawPointer?) {
 private func vestaActionCB(_ app: ghostty_app_t?, _ target: ghostty_target_s, _ action: ghostty_action_s) -> Bool {
     GhosttyApp.action(app, target: target, action: action)
 }
-private func vestaReadClipboardCB(_ ud: UnsafeMutableRawPointer?, _ loc: ghostty_clipboard_e, _ state: UnsafeMutableRawPointer?) -> Bool {
+private func vestaReadClipboardCB(_ ud: UnsafeMutableRawPointer?, _ loc: ghostty_clipboard_e, _ state: UnsafeMutableRawPointer?,
+                                  _ mimes: UnsafePointer<UnsafePointer<CChar>?>?, _ mimesLen: Int, _ list: Bool) -> ghostty_clipboard_read_result_e {
     GhosttyApp.readClipboard(ud, location: loc, state: state)
 }
-private func vestaConfirmReadClipboardCB(_ ud: UnsafeMutableRawPointer?, _ str: UnsafePointer<CChar>?, _ state: UnsafeMutableRawPointer?, _ req: ghostty_clipboard_request_e) {
-    GhosttyApp.confirmReadClipboard(ud, string: str, state: state, request: req)
+private func vestaConfirmReadClipboardCB(_ ud: UnsafeMutableRawPointer?, _ c: UnsafePointer<ghostty_clipboard_confirm_s>?, _ state: UnsafeMutableRawPointer?, _ req: ghostty_clipboard_request_e) {
+    GhosttyApp.confirmReadClipboard(ud, confirm: c, state: state, request: req)
 }
 private func vestaWriteClipboardCB(_ ud: UnsafeMutableRawPointer?, _ loc: ghostty_clipboard_e, _ content: UnsafePointer<ghostty_clipboard_content_s>?, _ len: Int, _ confirm: Bool) {
     GhosttyApp.writeClipboard(ud, location: loc, content: content, len: len, confirm: confirm)
