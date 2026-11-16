@@ -11,8 +11,8 @@ let package = Package(
         // the macOS-only xcframework, zip it, `gh release upload ghostkit-N`, bump url+checksum.
         .binaryTarget(
             name: "GhosttyKit",
-            url: "https://github.com/vestaterm/Vesta/releases/download/ghostkit-1/GhosttyKit.xcframework.zip",
-            checksum: "412b55c8bdf007776c3f0405e53d394e9eb7c61254f588c22f4685f273f0e950"
+            url: "https://github.com/vestaterm/Vesta/releases/download/ghostkit-2/GhosttyKit.xcframework.zip",
+            checksum: "81ca71da99e05772cfe54e3f8009faaffd710a4fcdabdae0df14da1fca683c90"
         ),
         // Vendored Lua 5.4.7 (embedded scripting runtime; see Sources/CLua/PROVENANCE.txt).
         .target(
