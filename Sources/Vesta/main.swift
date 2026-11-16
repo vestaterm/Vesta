@@ -132,6 +132,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the authoritative pool — is recovered; extra windows' selections are not.)
         if !lite, !poolHydrated {
             poolHydrated = true
+            // Launched lite → the 3s launch check skipped the daemon upgrade; run it now.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.autoUpgradeDaemonIfNeeded() }
             if store.workspaces.isEmpty, hydrateFrom == nil,
                let data = try? Data(contentsOf: URL(fileURLWithPath: Self.windowsFile)) {
                 let first = parseWindowsFile(data).windows.first
@@ -752,7 +754,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         restoring = true
         defer { restoring = false }
         // vesta-lite launch: one fresh lite window, ghostty-style. windows.json is neither
-        // read nor written — the full setup (and its vestad shells) is untouched, so
+        // read nor written — the full setup is untouched (its vestad shells are stopped at quit,
+        // history kept on disk — see applicationWillTerminate), so
         // flipping the key back restores everything on the next launch. poolHydrated stays
         // false: the first FULL window created later (Settings untick → ⌘N) lazy-hydrates
         // the saved pool in newWindow instead of seeding an empty one over it.
@@ -848,6 +851,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Do NOT re-save after prepareToQuit either: the surfaces are hung up by then, so a
         // save here would read degraded cwds/tails over the good snapshot it already wrote.
         if !relaunchingForUpdate, !didQuitSave { saveWindows() }
+        // Lite-only run (no full window ever opened → pool never hydrated): nothing here needs
+        // the session daemon, so don't leave it running in the background. SIGTERM, not a
+        // clean close — the on-disk scrollback logs survive, so the full setup cold-restores
+        // (history kept, a fresh shell per pane) the next time lite is turned off.
+        // ponytail: kills full-mode shells left over from an earlier non-lite run too; that is
+        // the point of lite (no background process), at the cost of their live processes.
+        if !poolHydrated, !relaunchingForUpdate {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            p.arguments = ["-x", "vestad"]
+            try? p.run()
+        }
         #if DEBUG
         // DEV builds only: kill the session daemon on quit. vestad is single-instance per
         // user, so a stale dev daemon (ad-hoc signed, often under a TCC-protected path like
@@ -1035,7 +1050,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #if DEBUG
         return
         #else
-        guard !daemonUpgradeChecked else { return }
+        guard !daemonUpgradeChecked, poolHydrated else { return }   // lite-only run: leave it be
         daemonUpgradeChecked = true
         let bundled = Bundle.main.executableURL!.deletingLastPathComponent()
             .appendingPathComponent("vestad").path
@@ -1195,7 +1210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         a.messageText = "Quit Vesta?"
         // Lite shells are plain processes — don't promise survival the windows can't deliver.
         a.informativeText = windows.allSatisfy(\.lite)
-            ? "Lite windows close with the app — their shells end now."
+            ? (poolHydrated ? "Lite windows close with the app — their shells end now."
+                : "Lite windows close with the app — their shells end now, and so do any background workspace shells (their history is kept).")
             : "Your sessions keep running in the background and reattach next launch."
         a.alertStyle = .warning
         a.showsSuppressionButton = true
