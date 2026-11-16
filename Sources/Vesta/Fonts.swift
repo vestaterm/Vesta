@@ -22,12 +22,15 @@ enum Fonts {
     static func fontsDirectory() -> URL? {
         let fm = FileManager.default
         var candidates: [URL] = []
+        // Newer SwiftPM (Xcode 27) builds the resource bundle as a real macOS bundle, so the
+        // fonts sit under Vesta_vesta.bundle/Contents/Resources/ instead of at its root.
+        let inBundle = ["Vesta_vesta.bundle/Fonts", "Vesta_vesta.bundle/Contents/Resources/Fonts"]
         if let res = Bundle.main.resourceURL {                       // .app: Contents/Resources
-            candidates.append(res.appendingPathComponent("Vesta_vesta.bundle/Fonts"))
+            candidates += inBundle.map { res.appendingPathComponent($0) }
             candidates.append(res.appendingPathComponent("Fonts"))
         }
         // `swift run` (no .app): the SPM resource bundle sits next to the executable.
-        candidates.append(Bundle.main.bundleURL.appendingPathComponent("Vesta_vesta.bundle/Fonts"))
+        candidates += inBundle.map { Bundle.main.bundleURL.appendingPathComponent($0) }
         return candidates.first { fm.fileExists(atPath: $0.path) }
     }
 
