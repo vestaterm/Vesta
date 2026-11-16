@@ -1,27 +1,38 @@
-# Watches upstream ghostty for a new stable tag and opens an issue with the
-# GhosttyKit bump checklist. Ghostty ships stables as git tags (its only GitHub
-# "release" is the rolling `tip`), so we compare the highest v* tag against the
-# pin in .ghostty-version — which records the newest stable our current
-# GhosttyKit.xcframework build already contains.
+# Watches upstream ghostty for a new stable tag and, when one appears, rebuilds
+# GhosttyKit from it, proves Vesta still builds + selfchecks against it, publishes
+# it as the next `ghostkit-N` asset, bumps Package.swift on main, tags the next
+# patch release and dispatches release.yml. Ghostty ships stables as git tags
+# (its only GitHub "release" is the rolling `tip`), so we compare the highest v*
+# tag against the pin in .ghostty-version. Any failure opens an issue instead.
 name: ghostty watch
 
 on:
   schedule:
     - cron: "0 9 * * 1"   # Mondays 09:00 UTC
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + test the bump only (no ghostkit release, push, tag or app release)"
+        type: boolean
+        default: false
 
 permissions:
-  contents: read
+  contents: write   # ghostkit release, bump commit, tag
   issues: write
+  actions: write    # dispatch release.yml (a GITHUB_TOKEN tag push doesn't trigger it)
 
 jobs:
-  check:
-    runs-on: ubuntu-latest
+  bump:
+    runs-on: macos-26
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # tags → next version
+
       - name: Compare newest ghostty stable tag to our pin
-        env:
-          GH_TOKEN: ${{ github.token }}
+        id: check
         run: |
           set -euo pipefail
           latest=$(gh api "repos/ghostty-org/ghostty/tags?per_page=30" -q '.[].name' \
@@ -30,18 +41,83 @@ jobs:
           echo "upstream: $latest  pinned: $pin"
           newest=$(printf '%s\n%s\n' "$latest" "$pin" | sort -V | tail -1)
           [ "$newest" = "$pin" ] && { echo "up to date"; exit 0; }
-          title="ghostty $latest is out — consider a GhosttyKit bump (pinned: $pin)"
-          if gh issue list --state open --search "in:title \"$title\"" --json number -q '.[].number' | grep -q .; then
-            echo "issue already open"; exit 0
-          fi
-          body="Upstream ghostty tagged **$latest** (we're pinned at **$pin** — the newest stable our current GhosttyKit build contains). Release notes: https://ghostty.org/docs/install/release-notes
+          git clone -q --depth 1 --branch "$latest" https://github.com/ghostty-org/ghostty "$RUNNER_TEMP/ghostty"
+          zig=$(sed -nE 's/.*minimum_zig_version = "([^"]+)".*/\1/p' "$RUNNER_TEMP/ghostty/build.zig.zon")
+          { echo "tag=$latest"; echo "pin=$pin"; echo "zig=$zig"; } >> "$GITHUB_OUTPUT"
 
-          Bump cycle:
-          - [ ] Rebuild \`GhosttyKit.xcframework\` from the \`$latest\` tag (macOS arm64+x86_64, iOS slices stripped)
-          - [ ] Publish it as the next \`ghostkit-N\` release asset
-          - [ ] Bump the binaryTarget URL + checksum in \`Package.swift\`
-          - [ ] Update \`.ghostty-version\` to \`$latest\`
-          - [ ] \`swift build\` + \`vesta selfcheck\` green
-          - [ ] Sandbox smoke: splits, persist relay reattach, OSC 133 heat, glass/transparency, drag-drop
-          - [ ] Normal PR + review + merge"
-          gh issue create --title "$title" --body "$body"
+      - if: steps.check.outputs.tag
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - if: steps.check.outputs.tag
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ steps.check.outputs.zig }}
+
+      - name: Build GhosttyKit.xcframework
+        if: steps.check.outputs.tag
+        working-directory: ${{ runner.temp }}/ghostty
+        run: |
+          set -euo pipefail
+          xcodebuild -downloadComponent MetalToolchain || true   # Xcode 26+ ships metal separately
+          zig build -Doptimize=ReleaseFast -Demit-xcframework=true -Demit-macos-app=false \
+                    -Dxcframework-target=universal
+          # Vesta ships macOS only; `universal` has been macOS-only since 1.4. Fail
+          # loudly rather than ship iOS slices if that ever changes.
+          ! grep -q '<string>ios</string>' macos/GhosttyKit.xcframework/Info.plist
+          cp -R macos/GhosttyKit.xcframework "$GITHUB_WORKSPACE/"
+
+      - name: Build + selfcheck Vesta against the new kit
+        if: steps.check.outputs.tag
+        run: |
+          set -euo pipefail
+          cp Package.swift /tmp/Package.swift.orig
+          # Point the binaryTarget at the local build for the test (ponytail: sed over
+          # the 2 url/checksum lines — keep them on their own lines in Package.swift).
+          sed -i '' -E -e 's|^( *)url: ".*GhosttyKit.xcframework.zip",|\1path: "GhosttyKit.xcframework"|' \
+                       -e '/^ *checksum: "[0-9a-f]{64}"/d' Package.swift
+          grep -q 'path: "GhosttyKit.xcframework"' Package.swift
+          swift build -c debug
+          swift run vesta selfcheck
+          cp /tmp/Package.swift.orig Package.swift
+
+      - name: Publish ghostkit-N, bump main, tag + dispatch release
+        if: steps.check.outputs.tag && !inputs.dry_run && github.ref == 'refs/heads/main'
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          n=$(( $(gh release list -L 200 --json tagName -q '.[].tagName' | grep -c '^ghostkit-') + 1 ))
+          ditto -c -k --keepParent GhosttyKit.xcframework GhosttyKit.xcframework.zip
+          sum=$(swift package compute-checksum GhosttyKit.xcframework.zip)
+          # --latest=false: the in-app updater reads releases/latest, which must stay the app.
+          gh release create "ghostkit-$n" GhosttyKit.xcframework.zip --latest=false \
+            --title "GhosttyKit $n (ghostty $TAG)" \
+            --notes "Prebuilt macOS-only \`GhosttyKit.xcframework\` from ghostty $TAG. Auto-fetched by \`swift build\` via the URL+checksum binaryTarget in Package.swift."
+          sed -i '' -E -e "s|releases/download/ghostkit-[0-9]+/|releases/download/ghostkit-$n/|" \
+                       -e "s|checksum: \"[0-9a-f]{64}\"|checksum: \"$sum\"|" Package.swift
+          echo "$TAG" > .ghostty-version
+          ver=$(git tag -l 'v*' | sort -V | tail -1 | awk -F. -v OFS=. '{$NF+=1; print}')
+          git config user.name "vesta-release-bot"
+          git config user.email "releases@users.noreply.github.com"
+          git commit -am "chore: bump GhosttyKit to ghostty $TAG (ghostkit-$n)"
+          git push origin HEAD:main
+          git tag "$ver" && git push origin "$ver"
+          gh workflow run release.yml --ref "$ver"
+          for i in $(gh issue list --state open --search 'in:title "GhosttyKit bump"' --json number -q '.[].number'); do
+            gh issue close "$i" -c "Bumped automatically to $TAG; releasing $ver."
+          done
+
+      - name: Open an issue on failure
+        if: failure() && steps.check.outputs.tag && !inputs.dry_run
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+          PIN: ${{ steps.check.outputs.pin }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="ghostty $TAG is out — GhosttyKit bump failed (pinned: $PIN)"
+          gh issue list --state open --search "in:title \"$title\"" --json number -q '.[].number' | grep -q . && exit 0
+          gh issue create --title "$title" --body "The automatic GhosttyKit bump to **$TAG** failed: $RUN
+
+          Most likely ghostty's C API changed and Vesta needs a code change, or the build toolchain moved (zig/Xcode). Fix it on a branch, then re-run the **ghostty watch** workflow (or do the bump by hand: rebuild the xcframework, \`gh release create ghostkit-N --latest=false\`, bump url+checksum in Package.swift + \`.ghostty-version\`)."
