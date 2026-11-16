@@ -132,6 +132,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the authoritative pool — is recovered; extra windows' selections are not.)
         if !lite, !poolHydrated {
             poolHydrated = true
+            // Launched lite → the 3s launch check skipped the daemon upgrade; run it now.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.autoUpgradeDaemonIfNeeded() }
             if store.workspaces.isEmpty, hydrateFrom == nil,
                let data = try? Data(contentsOf: URL(fileURLWithPath: Self.windowsFile)) {
                 let first = parseWindowsFile(data).windows.first
@@ -1208,7 +1210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         a.messageText = "Quit Vesta?"
         // Lite shells are plain processes — don't promise survival the windows can't deliver.
         a.informativeText = windows.allSatisfy(\.lite)
-            ? "Lite windows close with the app — their shells end now."
+            ? (poolHydrated ? "Lite windows close with the app — their shells end now."
+                : "Lite windows close with the app — their shells end now, and so do any background workspace shells (their history is kept).")
             : "Your sessions keep running in the background and reattach next launch."
         a.alertStyle = .warning
         a.showsSuppressionButton = true

@@ -172,7 +172,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate {
             tip: "New windows open ghostty-like: no sidebar, plain shells that die on close.")
         addSection("Sessions", [
             row("Lite mode", liteBox, key: "vesta-lite"),
-            caption("New windows (and the next launch) open lite: titlebar + terminal only, no workspaces, shells end when the window closes. Your full workspace setup is kept and returns when turned off. ⌥⌘N opens a single lite window any time."),
+            caption("New windows (and the next launch) open lite: titlebar + terminal only, no workspaces, shells end when the window closes. Your full workspace setup is kept and returns when turned off (with history, in fresh shells — background shells stop when a lite-only session quits). ⌥⌘N opens a single lite window any time."),
             row("Persist shells", persistBox, key: "vesta-persist"),
             caption("Shells survive quitting the app. Off: new sessions are plain shells — nothing survives quit, and daemon features (heat, in-place updates) are off."),
             row("Persist scrollback", scrollbackBox, key: "vesta-persist-scrollback"),
