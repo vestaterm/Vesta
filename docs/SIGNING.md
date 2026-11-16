@@ -19,9 +19,14 @@ only optional CI input is the vendored ghostty themes (gitignored):
 |---|---|
 | `GHOSTTY_RESOURCES_URL` | *(optional)* URL to a tar.gz/zip of ghostty's `Resources/ghostty` dir (the bundled themes). If omitted, named themes won't bundle. |
 
-> To publish a new GhosttyKit build: rebuild the macOS-only xcframework, upload
-> the zip as a release asset (`gh release upload ghostkit-N GhosttyKit.xcframework.zip`),
-> then bump the `url` + `checksum` in `Package.swift`.
+> GhosttyKit bumps are automatic: `.github/workflows/ghostty-watch.yml` (Mondays, or
+> run it by hand) notices a new ghostty stable tag, builds the xcframework, checks
+> Vesta builds + selfchecks against it, publishes `ghostkit-N` (`--latest=false`),
+> bumps `Package.swift` + `.ghostty-version` on `main`, tags the next patch version and
+> dispatches the release. If the build breaks (ghostty changed its C API), it opens an
+> issue instead and keeps the kit as a 7-day run artifact
+> (`gh run download <id> -n GhosttyKit`) so you can fix the code against it.
+> Run it with `dry_run` to build + test without publishing anything.
 
 ## 2. Developer ID certificate (repo **Secrets**)
 
