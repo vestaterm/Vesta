@@ -65,7 +65,24 @@ jobs:
           # Vesta ships macOS only; `universal` has been macOS-only since 1.4. Fail
           # loudly rather than ship iOS slices if that ever changes.
           ! grep -q '<string>ios</string>' macos/GhosttyKit.xcframework/Info.plist
+          # SwiftPM requires static libs to be named lib*.a; 1.4 emits ghostty-internal.a.
+          cd macos/GhosttyKit.xcframework
+          for a in */*.a; do
+            b=$(basename "$a"); case "$b" in lib*) continue;; esac
+            mv "$a" "$(dirname "$a")/lib$b"
+            sed -i '' "s|<string>$b</string>|<string>lib$b</string>|" Info.plist
+          done
+          cd - >/dev/null
           cp -R macos/GhosttyKit.xcframework "$GITHUB_WORKSPACE/"
+
+      # Kept 7 days so a failed bump can be fixed locally against the exact kit
+      # (`gh run download <id> -n GhosttyKit`, then point Package.swift at it by path).
+      - if: steps.check.outputs.tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: GhosttyKit
+          path: GhosttyKit.xcframework
+          retention-days: 7
 
       - name: Build + selfcheck Vesta against the new kit
         if: steps.check.outputs.tag
