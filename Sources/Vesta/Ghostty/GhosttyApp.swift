@@ -306,14 +306,23 @@ final class GhosttyApp {
         return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE
     }
 
-    /// We don't show a confirmation UI; complete the request unconfirmed.
-    // ponytail: no clipboard confirmation dialog; OSC-52 reads just no-op.
+    /// We don't show a confirmation UI, so deny. Since 1.4 ghostty holds the request (e.g. a
+    /// kitty clipboard write under `clipboard-write = ask`) until we complete or deny it —
+    /// a no-op here leaked it and left the program waiting for a reply forever.
+    // ponytail: no clipboard confirmation dialog; add one if anyone runs `ask`.
     nonisolated fileprivate static func confirmReadClipboard(
         _ userdata: UnsafeMutableRawPointer?,
         confirm: UnsafePointer<ghostty_clipboard_confirm_s>?,
         state: UnsafeMutableRawPointer?,
         request: ghostty_clipboard_request_e
-    ) {}
+    ) {
+        guard let userdata else { return }
+        nonisolated(unsafe) let u = userdata, st = state
+        DispatchQueue.main.async { MainActor.assumeIsolated {
+            guard TerminalPane.isLive(u) else { return }
+            Unmanaged<TerminalPane>.fromOpaque(u).takeUnretainedValue().denyClipboardRequest(st)
+        }}
+    }
 
     /// Writing the clipboard: copy the first text/plain entry to the pasteboard.
     nonisolated fileprivate static func writeClipboard(

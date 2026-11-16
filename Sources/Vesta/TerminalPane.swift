@@ -422,6 +422,9 @@ import GhosttyKit
 
     /// Called (on the main actor) by GhosttyApp's action callback when ghostty
     /// reports a new title / working directory for this surface.
+    func denyClipboardRequest(_ state: UnsafeMutableRawPointer?) {
+        if let surface { ghostty_surface_deny_clipboard_request(surface, state) }
+    }
     func setLiveTitle(_ t: String) { if t != title { title = t; onUpdate?() } }
     func setLiveCwd(_ c: String)   { if c != cwd  { cwd = c;  onUpdate?() } }
 
